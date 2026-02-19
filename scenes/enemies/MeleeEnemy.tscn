@@ -1,0 +1,240 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/enemies/enemy_base.gd" id="1_mwlb7"]
+[ext_resource type="Texture2D" path="res://assets/external/ElthenAssets/dwarf/Dwarf Sprite Sheet 1.3v.png" id="2_2ax37"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_a6smb"]
+radius = 12.0
+
+[node name="MeleeEnemy" type="CharacterBody2D"]
+collision_layer = 1
+collision_mask = 0
+script = ExtResource("1_mwlb7")
+max_health = 70.0
+move_speed = 95.0
+attack_damage = 12.0
+attack_range = 44.0
+attack_cooldown = 1.2
+attack_windup = 0.22
+xp_reward = 28
+drop_chance = 0.55
+drop_table = ["iron_shard", "sturdy_hide", "swift_boots"]
+is_miniboss = false
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("CircleShape2D_a6smb")
+
+[node name="MonsterSprite" type="Sprite2D" parent="."]
+texture_filter = 1
+z_index = 2
+position = Vector2(0, -12)
+scale = Vector2(2, 2)
+texture = ExtResource("2_2ax37")
+hframes = 8
+vframes = 8
+modulate = Color(0.95, 0.78, 0.78, 1)
+
+[node name="Shadow" type="Polygon2D" parent="."]
+z_index = -3
+color = Color(0, 0, 0, 0.38)
+polygon = PackedVector2Array(-19, 0, -17, -4, -11, -6, 0, -7, 11, -6, 17, -4, 19, 0, 17, 4, 11, 6, 0, 7, -11, 6, -17, 4)
+
+[node name="Body" type="Polygon2D" parent="."]
+z_index = 2
+color = Color(0.42, 0.1, 0.11, 1)
+polygon = PackedVector2Array(0, -15, 12, -8, 13, 9, 0, 16, -13, 9, -12, -8)
+
+[node name="TorsoShade" type="Polygon2D" parent="Body"]
+position = Vector2(0, 4)
+color = Color(0.16, 0.04, 0.05, 0.6)
+polygon = PackedVector2Array(-10, -2, 10, -2, 8, 8, -8, 8)
+
+[node name="RibPlate" type="Polygon2D" parent="Body"]
+position = Vector2(0, 1)
+color = Color(0.54, 0.22, 0.2, 0.85)
+polygon = PackedVector2Array(-8, -4, 8, -4, 7, 5, -7, 5)
+
+[node name="RibPlateRivetL" type="Polygon2D" parent="Body/RibPlate"]
+position = Vector2(-4, 0)
+color = Color(0.76, 0.66, 0.56, 0.8)
+polygon = PackedVector2Array(-1, -1, 1, -1, 1, 1, -1, 1)
+
+[node name="RibPlateRivetR" type="Polygon2D" parent="Body/RibPlate"]
+position = Vector2(4, 0)
+color = Color(0.76, 0.66, 0.56, 0.8)
+polygon = PackedVector2Array(-1, -1, 1, -1, 1, 1, -1, 1)
+
+[node name="ChestScar" type="Polygon2D" parent="Body"]
+position = Vector2(1, -2)
+rotation = 0.24
+color = Color(0.62, 0.3, 0.28, 0.55)
+polygon = PackedVector2Array(-1, -7, 1, -7, 1, 7, -1, 7)
+
+[node name="ShoulderScar" type="Polygon2D" parent="Body"]
+position = Vector2(-6, -7)
+rotation = -0.4
+color = Color(0.62, 0.3, 0.28, 0.45)
+polygon = PackedVector2Array(-1, -4, 1, -4, 1, 4, -1, 4)
+
+[node name="WaistClothBack" type="Polygon2D" parent="Body"]
+z_index = -1
+position = Vector2(0, 12)
+color = Color(0.2, 0.06, 0.07, 0.95)
+polygon = PackedVector2Array(-5, -2, 5, -2, 4, 10, -4, 10)
+
+[node name="WaistClothFront" type="Polygon2D" parent="Body"]
+position = Vector2(0, 12)
+color = Color(0.3, 0.1, 0.1, 0.95)
+polygon = PackedVector2Array(-4, -1, 4, -1, 3, 9, -3, 9)
+
+[node name="WaistClothTear" type="Polygon2D" parent="Body/WaistClothFront"]
+position = Vector2(0, 7)
+color = Color(0.2, 0.06, 0.08, 0.8)
+polygon = PackedVector2Array(-1, -2, 1, -2, 0, 2)
+
+[node name="LeftLeg" type="Polygon2D" parent="Body"]
+position = Vector2(-4, 14)
+rotation = -0.08
+color = Color(0.26, 0.06, 0.08, 1)
+polygon = PackedVector2Array(-3, -8, 3, -8, 4, 6, -4, 6)
+
+[node name="LeftKneeSpike" type="Polygon2D" parent="Body/LeftLeg"]
+position = Vector2(0, -1)
+color = Color(0.68, 0.6, 0.54, 1)
+polygon = PackedVector2Array(-2, 1, 0, -3, 2, 1)
+
+[node name="RightLeg" type="Polygon2D" parent="Body"]
+position = Vector2(4, 14)
+rotation = 0.08
+color = Color(0.22, 0.05, 0.07, 1)
+polygon = PackedVector2Array(-3, -8, 3, -8, 4, 6, -4, 6)
+
+[node name="RightKneeSpike" type="Polygon2D" parent="Body/RightLeg"]
+position = Vector2(0, -1)
+color = Color(0.68, 0.6, 0.54, 1)
+polygon = PackedVector2Array(-2, 1, 0, -3, 2, 1)
+
+[node name="Head" type="Polygon2D" parent="Body"]
+position = Vector2(0, -16)
+color = Color(0.68, 0.56, 0.48, 1)
+polygon = PackedVector2Array(0, -6, 5, -3, 5, 4, 0, 7, -5, 4, -5, -3)
+
+[node name="Jaw" type="Polygon2D" parent="Body/Head"]
+position = Vector2(0, 6)
+color = Color(0.46, 0.31, 0.3, 1)
+polygon = PackedVector2Array(-4, -2, 4, -2, 3, 3, -3, 3)
+
+[node name="EyeLeft" type="Polygon2D" parent="Body/Head"]
+position = Vector2(-2, 0)
+color = Color(0.06, 0.01, 0.01, 1)
+polygon = PackedVector2Array(-1, -1, 1, -1, 1, 1, -1, 1)
+
+[node name="EyeRight" type="Polygon2D" parent="Body/Head"]
+position = Vector2(2, 0)
+color = Color(0.06, 0.01, 0.01, 1)
+polygon = PackedVector2Array(-1, -1, 1, -1, 1, 1, -1, 1)
+
+[node name="SpineSpikeA" type="Polygon2D" parent="Body"]
+position = Vector2(-4, -19)
+rotation = -0.2
+color = Color(0.74, 0.68, 0.6, 1)
+polygon = PackedVector2Array(-2, 2, 0, -5, 2, 2)
+
+[node name="SpineSpikeB" type="Polygon2D" parent="Body"]
+position = Vector2(2, -20)
+rotation = 0.2
+color = Color(0.74, 0.68, 0.6, 1)
+polygon = PackedVector2Array(-2, 2, 0, -5, 2, 2)
+
+[node name="LeftArm" type="Polygon2D" parent="Body"]
+position = Vector2(-9, -1)
+rotation = -0.4
+color = Color(0.32, 0.08, 0.09, 1)
+polygon = PackedVector2Array(-3, -8, 3, -8, 4, 7, -4, 7)
+
+[node name="LeftShoulder" type="Polygon2D" parent="Body/LeftArm"]
+position = Vector2(0, -8)
+color = Color(0.56, 0.22, 0.2, 1)
+polygon = PackedVector2Array(-4, -3, 4, -3, 4, 3, -4, 3)
+
+[node name="LeftClaw" type="Polygon2D" parent="Body/LeftArm"]
+position = Vector2(0, 7)
+color = Color(0.74, 0.68, 0.62, 1)
+polygon = PackedVector2Array(-3, -1, 2, -1, 4, 3, -4, 3)
+
+[node name="RightArm" type="Polygon2D" parent="Body"]
+position = Vector2(9, -1)
+rotation = 0.38
+color = Color(0.32, 0.08, 0.09, 1)
+polygon = PackedVector2Array(-3, -8, 3, -8, 4, 7, -4, 7)
+
+[node name="RightShoulder" type="Polygon2D" parent="Body/RightArm"]
+position = Vector2(0, -8)
+color = Color(0.56, 0.22, 0.2, 1)
+polygon = PackedVector2Array(-4, -3, 4, -3, 4, 3, -4, 3)
+
+[node name="RightClaw" type="Polygon2D" parent="Body/RightArm"]
+position = Vector2(0, 7)
+color = Color(0.74, 0.68, 0.62, 1)
+polygon = PackedVector2Array(-2, -1, 3, -1, 4, 3, -4, 3)
+
+[node name="Weapon" type="Polygon2D" parent="Body"]
+position = Vector2(13, -3)
+rotation = 0.2
+color = Color(0.52, 0.53, 0.57, 1)
+polygon = PackedVector2Array(-2, -2, 14, -4, 18, 0, 14, 4, -2, 2, -7, 0)
+
+[node name="WeaponEdge" type="Polygon2D" parent="Body/Weapon"]
+position = Vector2(7, 0)
+color = Color(0.78, 0.82, 0.88, 0.5)
+polygon = PackedVector2Array(-6, -1, 6, -2, 8, 0, 6, 2, -6, 1)
+
+[node name="WeaponScratch" type="Polygon2D" parent="Body/Weapon"]
+position = Vector2(10, 0)
+rotation = -0.28
+color = Color(0.22, 0.18, 0.16, 0.75)
+polygon = PackedVector2Array(-1, -3, 1, -3, 1, 3, -1, 3)
+
+[node name="WeaponGrip" type="Polygon2D" parent="Body/Weapon"]
+position = Vector2(-4, 0)
+color = Color(0.16, 0.13, 0.12, 1)
+polygon = PackedVector2Array(-1, -4, 1, -4, 1, 4, -1, 4)
+
+[node name="WeaponNotchA" type="Polygon2D" parent="Body/Weapon"]
+position = Vector2(4, -2)
+color = Color(0.22, 0.18, 0.16, 0.9)
+polygon = PackedVector2Array(-1, -1, 1, -1, 1, 1, -1, 1)
+
+[node name="WeaponNotchB" type="Polygon2D" parent="Body/Weapon"]
+position = Vector2(8, 2)
+color = Color(0.22, 0.18, 0.16, 0.9)
+polygon = PackedVector2Array(-1, -1, 1, -1, 1, 1, -1, 1)
+
+[node name="WeaponTrail" type="Line2D" parent="."]
+visible = false
+z_index = 4
+default_color = Color(0.86, 0.44, 0.24, 0.72)
+width = 2.8
+round_precision = 8
+joint_mode = 2
+begin_cap_mode = 1
+end_cap_mode = 1
+points = PackedVector2Array(0, 0, 1, 0)
+
+[node name="SlashEffect" type="Line2D" parent="."]
+visible = false
+z_index = 4
+default_color = Color(0.94, 0.52, 0.3, 0.9)
+width = 4.0
+round_precision = 8
+joint_mode = 2
+begin_cap_mode = 1
+end_cap_mode = 1
+points = PackedVector2Array(0, 0, 12, 0, 24, 0)
+
+[node name="AttackTelegraph" type="Line2D" parent="."]
+visible = false
+z_index = -1
+default_color = Color(0.94, 0.52, 0.3, 0.9)
+width = 3.0
+points = PackedVector2Array(0, 0, 52, 0)

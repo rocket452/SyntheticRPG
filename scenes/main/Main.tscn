@@ -1,0 +1,13 @@
+[gd_scene load_steps=4 format=3 uid="uid://b41rx3h8ivuw4"]
+
+[ext_resource type="Script" uid="uid://b7jqqxbaa175i" path="res://scripts/main/main.gd" id="1_6ec6u"]
+[ext_resource type="PackedScene" path="res://scenes/world/Arena.tscn" id="2_2s7jx"]
+[ext_resource type="PackedScene" path="res://scenes/ui/HUD.tscn" id="3_2ywrd"]
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_6ec6u")
+
+[node name="Arena" parent="." instance=ExtResource("2_2s7jx")]
+position = Vector2(800, 460)
+
+[node name="HUD" parent="." instance=ExtResource("3_2ywrd")]

@@ -1,0 +1,16 @@
+# Godot 4+ generated artifacts
+.godot/
+.import/
+
+# Mono
+*.csproj
+*.sln
+
+# OS / editor
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Local debug/video scratch artifacts
+.tmp_*

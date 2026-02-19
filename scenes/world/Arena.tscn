@@ -1,0 +1,55 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/arena/arena.gd" id="1_mk3ox"]
+[ext_resource type="Script" path="res://scripts/systems/isometric_floor.gd" id="2_xv3s0"]
+
+[node name="Arena" type="Node2D"]
+script = ExtResource("1_mk3ox")
+arena_min_x = -560.0
+arena_max_x = 560.0
+arena_min_y = -135.0
+arena_max_y = 135.0
+camera_limit_padding = Vector2(58, 60)
+
+[node name="Floor" type="Node2D" parent="."]
+script = ExtResource("2_xv3s0")
+arena_width = 1160.0
+arena_height = 400.0
+sidewalk_height = 52.0
+lane_count = 3
+divider_dash = 58.0
+divider_gap = 34.0
+vertical_grid_step = 120.0
+
+[node name="Center" type="Marker2D" parent="."]
+position = Vector2(0, 0)
+
+[node name="PlayerSpawn" type="Marker2D" parent="."]
+position = Vector2(-500, 78)
+
+[node name="HealerSpawn" type="Marker2D" parent="."]
+position = Vector2(-370, -78)
+
+[node name="SpawnPoints" type="Node2D" parent="."]
+
+[node name="SpawnA" type="Marker2D" parent="SpawnPoints"]
+position = Vector2(80, -76)
+
+[node name="SpawnB" type="Marker2D" parent="SpawnPoints"]
+position = Vector2(220, 66)
+
+[node name="SpawnC" type="Marker2D" parent="SpawnPoints"]
+position = Vector2(330, -58)
+
+[node name="SpawnD" type="Marker2D" parent="SpawnPoints"]
+position = Vector2(430, 84)
+
+[node name="SpawnE" type="Marker2D" parent="SpawnPoints"]
+position = Vector2(520, -24)
+
+[node name="SpawnF" type="Marker2D" parent="SpawnPoints"]
+position = Vector2(540, 112)
+
+[node name="Actors" type="Node2D" parent="."]
+
+[node name="Drops" type="Node2D" parent="."]

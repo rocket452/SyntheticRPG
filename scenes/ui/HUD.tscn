@@ -1,0 +1,43 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/hud.gd" id="1_6nupk"]
+
+[node name="HUD" type="CanvasLayer"]
+script = ExtResource("1_6nupk")
+
+[node name="HealthLabel" type="Label" parent="."]
+position = Vector2(20, 18)
+text = "Health: 0 / 0"
+
+[node name="XPLabel" type="Label" parent="."]
+position = Vector2(20, 44)
+text = "Level 1 XP: 0 / 100"
+
+[node name="CooldownLabel" type="Label" parent="."]
+position = Vector2(20, 70)
+text = "Basic Ready  Cleave Ready  Lunge Ready  Roll Ready"
+
+[node name="ItemsLabel" type="Label" parent="."]
+position = Vector2(20, 96)
+text = "Inventory: -"
+
+[node name="ObjectiveLabel" type="Label" parent="."]
+position = Vector2(520, 18)
+text = "Objective: -"
+
+[node name="StatusLabel" type="Label" parent="."]
+position = Vector2(20, 860)
+text = ""
+
+[node name="VictoryPanel" type="Panel" parent="."]
+visible = false
+position = Vector2(620, 340)
+size = Vector2(360, 180)
+
+[node name="Message" type="Label" parent="VictoryPanel"]
+position = Vector2(42, 56)
+text = "Victory"
+horizontal_alignment = 1
+
+[node name="StatusTimer" type="Timer" parent="."]
+one_shot = true
