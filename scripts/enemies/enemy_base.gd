@@ -9,12 +9,20 @@ signal died(enemy: EnemyBase)
 @export var attack_range: float = 46.0
 @export var attack_cooldown: float = 1.2
 @export var attack_windup: float = 0.2
+@export var attack_prestrike_hold_duration: float = 0.0
+@export var attack_hold_frame: int = 2
+@export var attack_recovery_hold_duration: float = 0.0
+@export var blocked_counter_stun_duration: float = 0.44
+@export var melee_trade_damage_scale: float = 1.0
+@export var melee_trade_reach_bonus: float = 12.0
+@export var melee_trade_depth_tolerance: float = 52.0
 @export var xp_reward: int = 26
 @export var drop_chance: float = 0.45
 @export var drop_table: Array[String] = ["iron_shard", "sturdy_hide"]
 @export var hit_stun_duration: float = 0.22
 @export var outgoing_hit_stun_duration: float = 0.2
 @export var hit_effect_duration: float = 0.14
+@export var hurt_anim_duration: float = 0.4
 @export var hit_knockback_speed: float = 190.0
 @export var hit_knockback_decay: float = 980.0
 @export var lane_min_x: float = -760.0
@@ -28,32 +36,39 @@ signal died(enemy: EnemyBase)
 @export var debug_orientation_overlay: bool = false
 @export var debug_focus_nearest_enemy_only: bool = true
 
-const MONSTER_HD_HFRAMES: int = 8
-const MONSTER_HD_VFRAMES: int = 8
-const MONSTER_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/dwarf/Dwarf Sprite Sheet 1.3v.png")
+const MONSTER_HD_HFRAMES: int = 10
+const MONSTER_HD_VFRAMES: int = 20
+const MONSTER_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/mintotaur/Minotaur - Sprite Sheet Cropped.png")
 const MONSTER_TEXTURES: Dictionary = {
 	"idle": MONSTER_SHEET,
 	"run": MONSTER_SHEET,
 	"attack": MONSTER_SHEET,
+	"hurt": MONSTER_SHEET,
 	"death": MONSTER_SHEET
 }
 const MONSTER_FPS: Dictionary = {
 	"idle": 9.0,
 	"run": 12.0,
 	"attack": 13.0,
+	"hurt": 11.0,
 	"death": 8.0
 }
 const MONSTER_ACTION_ROWS: Dictionary = {
 	"idle": 0,
 	"run": 1,
-	"attack": 2,
-	"death": 7
+	"attack": 3,
+	"hurt": 4,
+	"death": 9
 }
 const MONSTER_ACTION_FRAME_COUNTS: Dictionary = {
 	"idle": 5,
 	"run": 8,
-	"attack": 7,
-	"death": 7
+	"attack": 9,
+	"hurt": 5,
+	"death": 6
+}
+const MONSTER_ACTION_FRAME_COLUMNS: Dictionary = {
+	"hurt": [1, 2, 3, 4]
 }
 const MONSTER_HD_ROW_DIRECTIONS: Array[Vector2] = [
 	Vector2(-0.70710677, -0.70710677),
@@ -70,12 +85,15 @@ const MONSTER_HD_ROW_NAMES: Array[String] = ["NW", "N", "W", "SW", "SE", "S", "E
 var current_health: float = 0.0
 var attack_cooldown_left: float = 0.0
 var attack_windup_left: float = 0.0
+var attack_prestrike_hold_left: float = 0.0
+var attack_recovery_hold_left: float = 0.0
 var pending_attack: bool = false
 var player: Node = null
 var dead: bool = false
 var knockback_velocity: Vector2 = Vector2.ZERO
 
 var hit_flash_left: float = 0.0
+var hurt_anim_left: float = 0.0
 var stun_left: float = 0.0
 var attack_flash_left: float = 0.0
 var attack_anim_left: float = 0.0
@@ -91,6 +109,7 @@ var monster_anim_time: float = 0.0
 var using_external_monster_sprite: bool = false
 var monster_sprite_base_position: Vector2 = Vector2.ZERO
 var external_sprite_facing_direction: Vector2 = Vector2.RIGHT
+var committed_attack_facing_direction: Vector2 = Vector2.RIGHT
 var debug_overlay_root: Node2D = null
 var debug_label: Label = null
 var debug_row_line: Line2D = null
@@ -197,12 +216,17 @@ func _physics_process(delta: float) -> void:
 	if dead:
 		return
 
+	var previous_attack_anim_left := attack_anim_left
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
+	hurt_anim_left = maxf(0.0, hurt_anim_left - delta)
 	stun_left = maxf(0.0, stun_left - delta)
 	attack_flash_left = maxf(0.0, attack_flash_left - delta)
 	attack_anim_left = maxf(0.0, attack_anim_left - delta)
+	attack_recovery_hold_left = maxf(0.0, attack_recovery_hold_left - delta)
 	slash_effect_left = maxf(0.0, slash_effect_left - delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.45))
+	if previous_attack_anim_left > 0.0 and attack_anim_left <= 0.0:
+		attack_recovery_hold_left = maxf(attack_recovery_hold_left, attack_recovery_hold_duration)
 
 	if not is_instance_valid(player):
 		_reacquire_player()
@@ -213,7 +237,14 @@ func _physics_process(delta: float) -> void:
 		return
 
 	var to_player: Vector2 = player.global_position - global_position
-	if to_player.length_squared() > 0.0001:
+	var committed_attack_active := (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001
+	if committed_attack_active:
+		if using_external_monster_sprite:
+			external_sprite_facing_direction = committed_attack_facing_direction
+			rotation = 0.0
+		else:
+			rotation = lerp_angle(rotation, committed_attack_facing_direction.angle(), clampf(delta * 16.0, 0.0, 1.0))
+	elif to_player.length_squared() > 0.0001:
 		if using_external_monster_sprite:
 			external_sprite_facing_direction = to_player.normalized()
 			rotation = 0.0
@@ -223,6 +254,8 @@ func _physics_process(delta: float) -> void:
 	if stun_left > 0.0:
 		pending_attack = false
 		attack_windup_left = 0.0
+		attack_prestrike_hold_left = 0.0
+		attack_recovery_hold_left = 0.0
 		velocity = knockback_velocity
 		knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
 		attack_telegraph.visible = false
@@ -234,11 +267,28 @@ func _physics_process(delta: float) -> void:
 
 	if pending_attack:
 		velocity = Vector2.ZERO
-		attack_windup_left -= delta
-		if attack_windup_left <= 0.0:
+		if attack_windup_left > 0.0:
+			attack_windup_left = maxf(0.0, attack_windup_left - delta)
+			if attack_windup_left <= 0.0:
+				attack_prestrike_hold_left = maxf(0.0, attack_prestrike_hold_duration)
+				if attack_prestrike_hold_left > 0.0:
+					var hold_frame_count := int(MONSTER_ACTION_FRAME_COUNTS.get("attack", MONSTER_HD_HFRAMES))
+					var hold_frame := clampi(attack_hold_frame, 0, max(0, hold_frame_count - 1))
+					monster_anim_time = float(hold_frame)
+		elif attack_prestrike_hold_left > 0.0:
+			attack_prestrike_hold_left = maxf(0.0, attack_prestrike_hold_left - delta)
+		if attack_windup_left <= 0.0 and attack_prestrike_hold_left <= 0.0:
 			pending_attack = false
 			attack_cooldown_left = attack_cooldown
 			_perform_attack()
+		move_and_slide()
+		_clamp_to_arena()
+		_update_visuals(delta, to_player)
+		_update_health_bar()
+		return
+
+	if attack_recovery_hold_left > 0.0:
+		velocity = Vector2.ZERO
 		move_and_slide()
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
@@ -255,6 +305,14 @@ func _physics_process(delta: float) -> void:
 		if attack_cooldown_left <= 0.0:
 			pending_attack = true
 			attack_windup_left = attack_windup
+			attack_prestrike_hold_left = 0.0
+			attack_recovery_hold_left = 0.0
+			var initial_attack_facing := to_player.normalized()
+			if initial_attack_facing.length_squared() <= 0.0001:
+				initial_attack_facing = external_sprite_facing_direction
+			if initial_attack_facing.length_squared() <= 0.0001:
+				initial_attack_facing = Vector2.RIGHT
+			committed_attack_facing_direction = initial_attack_facing.normalized()
 
 	move_and_slide()
 	_clamp_to_arena()
@@ -379,11 +437,10 @@ func _perform_attack() -> void:
 	var player_target := _query_player_hit(attack_range + 12.0)
 	if player_target == null:
 		return
-	if player_target.receive_hit(attack_damage, global_position, false, outgoing_hit_stun_duration):
-		_spawn_hit_effect(player_target.global_position + Vector2(0.0, -14.0), Color(1.0, 0.44, 0.3, 0.95), 10.0)
+	_attempt_player_hit(player_target, attack_damage, false, outgoing_hit_stun_duration)
 
 
-func receive_hit(amount: float, source_position: Vector2, stun_duration: float = 0.0) -> bool:
+func receive_hit(amount: float, source_position: Vector2, stun_duration: float = 0.0, apply_hit_stun: bool = true) -> bool:
 	if dead:
 		return false
 
@@ -394,22 +451,89 @@ func receive_hit(amount: float, source_position: Vector2, stun_duration: float =
 
 	current_health = maxf(0.0, current_health - amount)
 	hit_flash_left = 0.12
-	stun_left = maxf(stun_left, maxf(hit_stun_duration, stun_duration))
-	pending_attack = false
-	attack_windup_left = 0.0
-	attack_cooldown_left = maxf(attack_cooldown_left, stun_left + 0.08)
-	attack_anim_left = 0.0
-	attack_flash_left = 0.0
-	weapon_trail_alpha = 0.0
-	weapon_trail.visible = false
-	slash_effect.visible = false
-	attack_telegraph.visible = false
-	velocity = Vector2.ZERO
+	hurt_anim_left = maxf(hurt_anim_left, hurt_anim_duration)
+	var applied_stun := maxf(hit_stun_duration, stun_duration) if apply_hit_stun else maxf(0.0, stun_duration)
+	stun_left = maxf(stun_left, applied_stun)
+	if applied_stun > 0.0:
+		pending_attack = false
+		attack_windup_left = 0.0
+		attack_prestrike_hold_left = 0.0
+		attack_recovery_hold_left = 0.0
+		attack_cooldown_left = maxf(attack_cooldown_left, stun_left + 0.08)
+		attack_anim_left = 0.0
+		attack_flash_left = 0.0
+		weapon_trail_alpha = 0.0
+		weapon_trail.visible = false
+		slash_effect.visible = false
+		attack_telegraph.visible = false
+		velocity = Vector2.ZERO
 	_spawn_hit_effect(global_position + Vector2(0.0, -12.0), Color(1.0, 0.78, 0.42, 0.95), 8.0)
 	if current_health <= 0.0:
 		_die()
 
 	return true
+
+
+func can_trade_melee_with(target: Node2D) -> bool:
+	if dead:
+		return false
+	if stun_left > 0.0:
+		return false
+	if not is_instance_valid(target):
+		return false
+	var to_target := target.global_position - global_position
+	if absf(to_target.y) > melee_trade_depth_tolerance:
+		return false
+	var max_distance := attack_range + melee_trade_reach_bonus
+	return to_target.length_squared() <= max_distance * max_distance
+
+
+func get_trade_damage() -> float:
+	return maxf(1.0, attack_damage * melee_trade_damage_scale)
+
+
+func get_trade_stun_duration() -> float:
+	return outgoing_hit_stun_duration
+
+
+func _attempt_player_hit(player_target: Player, damage: float, guard_break: bool = false, stun_duration: float = 0.0) -> bool:
+	if player_target == null or not is_instance_valid(player_target):
+		return false
+	var was_blocked := _is_player_blocking_attack(player_target)
+	var landed := player_target.receive_hit(damage, global_position, guard_break, stun_duration)
+	if landed:
+		_spawn_hit_effect(player_target.global_position + Vector2(0.0, -14.0), Color(1.0, 0.44, 0.3, 0.95), 10.0)
+	if was_blocked and not guard_break:
+		_apply_blocked_counter_stun()
+	return landed
+
+
+func _is_player_blocking_attack(player_target: Player) -> bool:
+	if player_target == null or not is_instance_valid(player_target):
+		return false
+	if not player_target.is_blocking:
+		return false
+	var incoming_direction := (global_position - player_target.global_position).normalized()
+	if incoming_direction == Vector2.ZERO:
+		incoming_direction = Vector2.LEFT if player_target.facing_direction.x >= 0.0 else Vector2.RIGHT
+	var block_threshold := cos(deg_to_rad(player_target.block_arc_degrees * 0.5))
+	return player_target.facing_direction.dot(incoming_direction) >= block_threshold
+
+
+func _apply_blocked_counter_stun() -> void:
+	stun_left = maxf(stun_left, blocked_counter_stun_duration)
+	pending_attack = false
+	attack_windup_left = 0.0
+	attack_prestrike_hold_left = 0.0
+	attack_cooldown_left = maxf(attack_cooldown_left, blocked_counter_stun_duration + 0.1)
+	if attack_anim_left <= 0.0 and attack_recovery_hold_left <= 0.0:
+		attack_flash_left = 0.0
+		weapon_trail_alpha = 0.0
+		weapon_trail.visible = false
+		slash_effect.visible = false
+	attack_telegraph.visible = false
+	velocity = Vector2.ZERO
+	_spawn_hit_effect(global_position + Vector2(0.0, -12.0), Color(0.86, 0.9, 1.0, 0.88), 6.0)
 
 
 func _query_player_hit(max_distance: float) -> Player:
@@ -511,7 +635,9 @@ func _update_visuals(delta: float, to_player: Vector2) -> void:
 
 func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vector2) -> void:
 	var facing := to_player
-	if velocity.length_squared() > 0.001:
+	if (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001:
+		facing = committed_attack_facing_direction
+	elif velocity.length_squared() > 0.001:
 		facing = velocity
 	if facing.length_squared() <= 0.0001:
 		facing = Vector2.RIGHT
@@ -521,7 +647,9 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	var action_key := "idle"
 	if dead:
 		action_key = "death"
-	elif pending_attack or attack_anim_left > 0.0:
+	elif hurt_anim_left > 0.0:
+		action_key = "hurt"
+	elif pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0:
 		action_key = "attack"
 	elif movement_ratio > 0.08:
 		action_key = "run"
@@ -540,23 +668,48 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	if sheet == null:
 		return
 	var frame_count := int(MONSTER_ACTION_FRAME_COUNTS.get(action_key, MONSTER_HD_HFRAMES))
+	var frame_columns: Array = MONSTER_ACTION_FRAME_COLUMNS.get(action_key, [])
+	var has_custom_columns := not frame_columns.is_empty()
+	if has_custom_columns:
+		frame_count = frame_columns.size()
 	if monster_anim_name != action_key or monster_sprite.texture != sheet:
 		monster_anim_name = action_key
 		monster_anim_time = 0.0
 		monster_sprite.texture = sheet
 		monster_sprite.hframes = MONSTER_HD_HFRAMES
 		monster_sprite.vframes = MONSTER_HD_VFRAMES
-		monster_sprite.frame_coords = Vector2i(0, row)
+		var first_column := int(frame_columns[0]) if has_custom_columns else 0
+		monster_sprite.frame_coords = Vector2i(first_column, row)
 	var fps := float(MONSTER_FPS.get(action_key, 8.0))
-	monster_anim_time += delta * fps
+	var holding_attack_frame := action_key == "attack" and pending_attack and attack_windup_left <= 0.0 and attack_prestrike_hold_left > 0.0
+	var preparing_attack_hold := action_key == "attack" and pending_attack and attack_windup_left > 0.0 and attack_prestrike_hold_duration > 0.0
+	var holding_recovery_frame := action_key == "attack" and not pending_attack and attack_anim_left <= 0.0 and attack_recovery_hold_left > 0.0
+	if not holding_attack_frame and not holding_recovery_frame:
+		monster_anim_time += delta * fps
 	var frame_index: int
 	if action_key == "death" and dead:
 		frame_index = mini(int(floor(monster_anim_time)), frame_count - 1)
 	elif action_key == "attack":
-		frame_index = mini(int(floor(monster_anim_time)), frame_count - 1)
+		if holding_attack_frame:
+			frame_index = clampi(attack_hold_frame, 0, max(0, frame_count - 1))
+			monster_anim_time = float(frame_index)
+		elif preparing_attack_hold:
+			var pre_hold_frame := clampi(attack_hold_frame, 0, max(0, frame_count - 1))
+			frame_index = mini(int(floor(monster_anim_time)), pre_hold_frame)
+			if frame_index >= pre_hold_frame:
+				monster_anim_time = float(pre_hold_frame)
+		elif holding_recovery_frame:
+			frame_index = frame_count - 1
+			monster_anim_time = float(frame_index)
+		else:
+			frame_index = mini(int(floor(monster_anim_time)), frame_count - 1)
+	elif action_key == "hurt":
+		var hurt_progress := 1.0 - (hurt_anim_left / maxf(0.01, hurt_anim_duration))
+		frame_index = mini(int(floor(clampf(hurt_progress, 0.0, 1.0) * float(frame_count))), frame_count - 1)
 	else:
 		frame_index = int(floor(monster_anim_time)) % frame_count
-	monster_sprite.frame_coords = Vector2i(frame_index, row)
+	var source_column := int(frame_columns[frame_index]) if has_custom_columns else frame_index
+	monster_sprite.frame_coords = Vector2i(source_column, row)
 
 
 func _pick_debug_facing_row(direction: Vector2, fallback_row: int = 6) -> int:
@@ -636,9 +789,14 @@ func _update_attack_telegraph(to_player: Vector2) -> void:
 		return
 
 	attack_telegraph.visible = true
+	var aim_direction := to_player
+	if committed_attack_facing_direction.length_squared() > 0.0001:
+		aim_direction = committed_attack_facing_direction
+	if aim_direction.length_squared() <= 0.0001:
+		aim_direction = Vector2.RIGHT
 	var safe_windup := maxf(0.01, attack_windup)
 	var progress := clampf(1.0 - (attack_windup_left / safe_windup), 0.0, 1.0)
-	attack_telegraph.rotation = to_player.angle()
+	attack_telegraph.rotation = aim_direction.angle()
 	attack_telegraph.width = lerpf(2.0, 7.0, progress)
 	attack_telegraph.default_color = Color(0.96, lerpf(0.64, 0.3, progress), lerpf(0.36, 0.18, progress), 0.9)
 	attack_telegraph.points = PackedVector2Array([
@@ -656,8 +814,15 @@ func _die() -> void:
 
 
 func _start_attack_animation(duration: float, strength: float) -> void:
+	var attack_facing := external_sprite_facing_direction
+	if attack_facing.length_squared() <= 0.0001 and is_instance_valid(player):
+		attack_facing = (player.global_position - global_position).normalized()
+	if attack_facing.length_squared() <= 0.0001:
+		attack_facing = Vector2.RIGHT
+	committed_attack_facing_direction = attack_facing.normalized()
 	attack_anim_total = maxf(0.01, duration)
 	attack_anim_left = attack_anim_total
+	attack_recovery_hold_left = 0.0
 	attack_anim_strength = strength
 	weapon_trail_alpha = maxf(weapon_trail_alpha, 1.0)
 
@@ -716,8 +881,11 @@ func _update_model_animation(delta: float, movement_ratio: float, to_player: Vec
 		if cloth_front_visual != null:
 			cloth_front_visual.rotation += attack_swing * 0.04
 
-	if to_player.length_squared() > 0.0001:
-		body_visual.rotation = lerp_angle(body_visual.rotation, to_player.angle() * 0.16, clampf(delta * 10.0, 0.0, 1.0))
+	var body_aim := to_player
+	if (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001:
+		body_aim = committed_attack_facing_direction
+	if body_aim.length_squared() > 0.0001:
+		body_visual.rotation = lerp_angle(body_visual.rotation, body_aim.angle() * 0.16, clampf(delta * 10.0, 0.0, 1.0))
 	else:
 		body_visual.rotation = lerp_angle(body_visual.rotation, 0.0, clampf(delta * 8.0, 0.0, 1.0))
 
@@ -744,6 +912,13 @@ func _set_model_palette(body_color: Color, head_color: Color, arm_color: Color, 
 
 
 func _update_weapon_fx(delta: float) -> void:
+	if using_external_monster_sprite:
+		weapon_trail.visible = false
+		slash_effect.visible = false
+		weapon_trail_points.clear()
+		weapon_trail_alpha = 0.0
+		return
+
 	var slash_active := slash_effect_left > 0.0
 	if slash_active:
 		var slash_progress := 1.0 - (slash_effect_left / maxf(0.01, slash_effect_total))

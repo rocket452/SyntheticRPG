@@ -111,6 +111,8 @@ func _begin_shockwave() -> void:
 	shockwave_telegraph_left = shockwave_telegraph
 	pending_attack = false
 	attack_windup_left = 0.0
+	attack_prestrike_hold_left = 0.0
+	attack_recovery_hold_left = 0.0
 	velocity = Vector2.ZERO
 	attack_telegraph.visible = false
 	weapon_trail.visible = false
@@ -135,7 +137,7 @@ func _release_shockwave() -> void:
 		return
 
 	if global_position.distance_to(player.global_position) <= shockwave_range and player.has_method("receive_hit"):
-		player.receive_hit(shockwave_damage, global_position, true)
+		_attempt_player_hit(player, shockwave_damage, true)
 
 
 func _perform_attack() -> void:
@@ -149,7 +151,7 @@ func _perform_attack() -> void:
 		return
 
 	if global_position.distance_to(player.global_position) <= attack_range + 18.0 and player.has_method("receive_hit"):
-		player.receive_hit(attack_damage, global_position)
+		_attempt_player_hit(player, attack_damage, false, outgoing_hit_stun_duration)
 
 
 func _update_shockwave_telegraph(progress: float) -> void:

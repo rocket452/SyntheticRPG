@@ -53,6 +53,7 @@ signal item_looted(item_name: String, total_owned: int)
 @export var hit_effect_duration: float = 0.14
 @export var hit_knockback_speed: float = 250.0
 @export var hit_knockback_decay: float = 1300.0
+@export var blocked_knockback_move_scale: float = 0.6
 
 @export var pickup_radius: float = 34.0
 @export var health_bar_width: float = 74.0
@@ -74,6 +75,7 @@ const PLAYER_HD_TEXTURES: Dictionary = {
 	"attack": PLAYER_SHEET,
 	"lunge": PLAYER_SHEET,
 	"roll": PLAYER_SHEET,
+	"hurt": PLAYER_SHEET,
 	"block": PLAYER_SHEET,
 	"death": PLAYER_SHEET
 }
@@ -83,6 +85,7 @@ const PLAYER_HD_FPS: Dictionary = {
 	"attack": 13.0,
 	"lunge": 13.0,
 	"roll": 9.0,
+	"hurt": 11.0,
 	"block": 9.0,
 	"death": 8.0
 }
@@ -92,6 +95,7 @@ const PLAYER_ACTION_ROWS: Dictionary = {
 	"attack": 2,
 	"lunge": 2,
 	"roll": 4,
+	"hurt": 4,
 	"block": 3,
 	"death": 5
 }
@@ -101,6 +105,7 @@ const PLAYER_ACTION_FRAME_COUNTS: Dictionary = {
 	"attack": 7,
 	"lunge": 7,
 	"roll": 4,
+	"hurt": 3,
 	"block": 8,
 	"death": 4
 }
@@ -110,9 +115,11 @@ const PLAYER_ACTION_FRAME_COLUMNS: Dictionary = {
 	"attack": [1, 2, 3, 4, 5, 6],
 	"lunge": [1, 2, 3, 4, 5, 6],
 	"roll": [0, 1, 2, 3],
+	"hurt": [1, 2, 3],
 	"block": [0, 1, 2, 3, 4, 5, 6, 7],
 	"death": [0, 1, 2, 3]
 }
+const PLAYER_BLOCK_HOLD_FRAME_INDEX: int = 3
 const BASIC_COMBO_MAX_HITS: int = 3
 const BASIC_COMBO_DAMAGE_MULTIPLIERS: Array = [1.0, 1.14, 1.34]
 const BASIC_COMBO_RANGE_MULTIPLIERS: Array = [1.0, 1.08, 1.18]
@@ -462,11 +469,15 @@ func receive_hit(amount: float, source_position: Vector2, guard_break: bool = fa
 	current_health = maxf(0.0, current_health - damage_to_apply)
 	health_changed.emit(current_health, max_health)
 	hit_flash_left = 0.12
-	stun_left = maxf(stun_left, maxf(hit_stun_duration, stun_duration))
-	_interrupt_combat_for_stun()
-	basic_attack_cooldown_left = maxf(basic_attack_cooldown_left, stun_left)
-	ability_1_cooldown_left = maxf(ability_1_cooldown_left, stun_left)
-	ability_2_cooldown_left = maxf(ability_2_cooldown_left, stun_left)
+	var applied_stun := 0.0 if blocked else maxf(hit_stun_duration, stun_duration)
+	if not blocked:
+		applied_stun = maxf(applied_stun, _get_hurt_animation_duration())
+	if applied_stun > 0.0:
+		stun_left = maxf(stun_left, applied_stun)
+		_interrupt_combat_for_stun()
+		basic_attack_cooldown_left = maxf(basic_attack_cooldown_left, stun_left)
+		ability_1_cooldown_left = maxf(ability_1_cooldown_left, stun_left)
+		ability_2_cooldown_left = maxf(ability_2_cooldown_left, stun_left)
 	attack_anim_left = 0.0
 	weapon_trail_alpha = 0.0
 	weapon_trail.visible = false
@@ -479,6 +490,15 @@ func receive_hit(amount: float, source_position: Vector2, guard_break: bool = fa
 		_die()
 
 	return true
+
+
+func _get_hurt_animation_duration() -> float:
+	var frame_columns: Array = PLAYER_ACTION_FRAME_COLUMNS.get("hurt", [])
+	var frame_count := frame_columns.size() if not frame_columns.is_empty() else int(PLAYER_ACTION_FRAME_COUNTS.get("hurt", 0))
+	var fps := float(PLAYER_HD_FPS.get("hurt", 0.0))
+	if frame_count <= 0 or fps <= 0.0:
+		return hit_stun_duration
+	return float(frame_count) / fps
 
 
 func _tick_timers(delta: float) -> void:
@@ -784,6 +804,8 @@ func _apply_movement() -> void:
 	if attack_windup_left > 0.0:
 		movement_multiplier *= 0.72
 	velocity = movement_vector * move_speed * movement_multiplier
+	if is_blocking and knockback_velocity.length_squared() > 0.0001:
+		velocity += knockback_velocity * blocked_knockback_move_scale
 
 
 func _clamp_to_lane() -> void:
@@ -802,8 +824,8 @@ func _get_movement_vector() -> Vector2:
 
 
 func _update_facing_direction() -> void:
-	# Keep the current facing while in hit-stun so knockback does not flip orientation.
-	if stun_left > 0.0:
+	# Keep the current facing while guarding or in hit-stun so knockback does not flip orientation.
+	if stun_left > 0.0 or is_blocking:
 		return
 	var movement_vector := _get_movement_vector()
 	if absf(movement_vector.x) > 0.08:
@@ -836,8 +858,12 @@ func _apply_melee_strike(damage: float, attack_range: float, arc_degrees: float)
 			continue
 
 		hit_ids[enemy_id] = true
-		if enemy.receive_hit(damage, global_position, outgoing_hit_stun_duration):
+		if enemy.receive_hit(damage, global_position, 0.0, false):
 			_spawn_hit_effect(enemy.global_position + Vector2(0.0, -12.0), Color(1.0, 0.8, 0.44, 0.95), 9.0)
+			if not is_dead and enemy.can_trade_melee_with(self):
+				receive_hit(enemy.get_trade_damage(), enemy.global_position, false, enemy.get_trade_stun_duration())
+				if is_dead:
+					return
 
 
 func _query_attack_hits(attack_range: float) -> Array:
@@ -1139,6 +1165,8 @@ func _update_player_sprite(delta: float, movement_ratio: float) -> void:
 	var action_key := "idle"
 	if is_dead:
 		action_key = "death"
+	elif stun_left > 0.0:
+		action_key = "hurt"
 	elif is_rolling:
 		action_key = "roll"
 	elif lunge_time_left > 0.0:
@@ -1186,10 +1214,15 @@ func _update_player_sprite(delta: float, movement_ratio: float) -> void:
 		else:
 			var attack_progress := 1.0 - (attack_anim_left / maxf(0.01, attack_anim_total))
 			frame_index = mini(int(floor(clampf(attack_progress, 0.0, 1.0) * float(frame_count))), frame_count - 1)
+	elif action_key == "block":
+		var hold_frame := clampi(PLAYER_BLOCK_HOLD_FRAME_INDEX, 0, frame_count - 1)
+		frame_index = mini(int(floor(player_sprite_anim_time)), hold_frame)
 	elif action_key == "lunge":
 		var lunge_progress := 1.0 - (lunge_time_left / maxf(0.01, ability_2_lunge_duration))
 		frame_index = mini(int(floor(clampf(lunge_progress, 0.0, 1.0) * float(frame_count))), frame_count - 1)
 	elif action_key == "roll":
+		frame_index = mini(int(floor(player_sprite_anim_time)), frame_count - 1)
+	elif action_key == "hurt":
 		frame_index = mini(int(floor(player_sprite_anim_time)), frame_count - 1)
 	else:
 		frame_index = int(floor(player_sprite_anim_time)) % frame_count

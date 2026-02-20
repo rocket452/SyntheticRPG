@@ -1,7 +1,7 @@
 [gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://scripts/enemies/enemy_base.gd" id="1_mwlb7"]
-[ext_resource type="Texture2D" path="res://assets/external/ElthenAssets/dwarf/Dwarf Sprite Sheet 1.3v.png" id="2_2ax37"]
+[ext_resource type="Texture2D" path="res://assets/external/ElthenAssets/mintotaur/Minotaur - Sprite Sheet Cropped.png" id="2_2ax37"]
 
 [sub_resource type="CircleShape2D" id="CircleShape2D_a6smb"]
 radius = 12.0
@@ -16,6 +16,9 @@ attack_damage = 12.0
 attack_range = 44.0
 attack_cooldown = 1.2
 attack_windup = 0.22
+attack_prestrike_hold_duration = 0.5
+attack_hold_frame = 0
+attack_recovery_hold_duration = 0.18
 xp_reward = 28
 drop_chance = 0.55
 drop_table = ["iron_shard", "sturdy_hide", "swift_boots"]
@@ -30,8 +33,8 @@ z_index = 2
 position = Vector2(0, -12)
 scale = Vector2(2, 2)
 texture = ExtResource("2_2ax37")
-hframes = 8
-vframes = 8
+hframes = 10
+vframes = 20
 modulate = Color(0.95, 0.78, 0.78, 1)
 
 [node name="Shadow" type="Polygon2D" parent="."]
