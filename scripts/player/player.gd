@@ -7,19 +7,28 @@ enum QueuedAttack {
 	ABILITY_1
 }
 
+enum CombatState {
+	IDLE_MOVE,
+	CHARGING_ATTACK,
+	ATTACK_WINDUP,
+	ATTACK_ACTIVE,
+	ATTACK_RECOVERY,
+	HITSTUN
+}
+
 signal health_changed(current: float, maximum: float)
 signal xp_changed(current: int, needed: int, level: int)
 signal cooldowns_changed(values: Dictionary)
 signal died
 signal item_looted(item_name: String, total_owned: int)
 
-@export var move_speed: float = 220.0
+@export var move_speed: float = 97.5
 @export var max_health: float = 120.0
-@export var basic_attack_damage: float = 18.0
+@export var basic_attack_damage: float = 15.0
 @export var basic_attack_range: float = 62.0
 @export var basic_attack_arc_degrees: float = 90.0
-@export var basic_attack_cooldown: float = 0.45
-@export var basic_attack_windup: float = 0.08
+@export var basic_attack_cooldown: float = 0.58
+@export var basic_attack_windup: float = 0.12
 @export var basic_combo_chain_window: float = 0.42
 
 @export var ability_1_damage: float = 30.0
@@ -34,8 +43,13 @@ signal item_looted(item_name: String, total_owned: int)
 @export var ability_2_cooldown: float = 4.5
 @export var ability_2_lunge_speed: float = 460.0
 @export var ability_2_lunge_duration: float = 0.22
+@export var ability_2_arrive_distance: float = 16.0
+@export var ability_2_min_dash_distance: float = 10.0
+@export var ability_2_min_duration: float = 0.08
+@export_range(-1.0, 1.0, 0.05) var ability_2_facing_dot_threshold: float = 0.2
+@export var ability_2_instant_block_grace: float = 0.26
 
-@export var roll_speed: float = 420.0
+@export var roll_speed: float = 210.0
 @export var roll_duration: float = 0.24
 @export var roll_cooldown: float = 1.0
 
@@ -54,6 +68,35 @@ signal item_looted(item_name: String, total_owned: int)
 @export var hit_knockback_speed: float = 250.0
 @export var hit_knockback_decay: float = 1300.0
 @export var blocked_knockback_move_scale: float = 0.6
+@export var block_shield_radius: float = 57.6
+@export var block_shield_y_offset: float = -10.0
+@export var block_shield_line_width: float = 6.0
+@export var block_shield_pulse_speed: float = 7.5
+@export var block_shield_segments: int = 28
+
+@export var min_charge_time: float = 0.15
+@export var max_charge_time: float = 1.0
+@export var charge_curve_exponent: float = 2.0
+@export var charge_max_damage_mult: float = 1.5
+@export var charge_max_knockback_mult: float = 2.0
+@export var charge_base_hitstop: float = 0.08
+@export var charge_max_hitstop: float = 0.15
+@export var charge_armor_start: float = 0.25
+@export var charge_armor_end: float = 1.0
+@export var armor_break_threshold: float = 32.0
+@export var charge_cancel_lockout: float = 0.12
+@export var heavy_lunge_impulse: float = 180.0
+@export var heavy_lunge_decay: float = 760.0
+@export var charge_windup_duration: float = 0.07
+@export var charge_active_duration: float = 0.2
+@export var charge_recovery_duration: float = 0.26
+@export var charge_range_bonus: float = 34.0
+@export var charge_arc_bonus: float = 24.0
+@export var charge_enemy_stun_min: float = 0.14
+@export var charge_enemy_stun_max: float = 0.34
+@export var hit_confirm_cancel_enabled: bool = true
+@export var camera_shake_duration: float = 0.14
+@export var camera_shake_strength: float = 5.0
 
 @export var pickup_radius: float = 34.0
 @export var health_bar_width: float = 74.0
@@ -130,6 +173,14 @@ const BASIC_COMBO_ANIM_DURATION_MULTIPLIERS: Array = [1.0, 1.06, 1.2]
 const BASIC_COMBO_ANIM_STRENGTH_MULTIPLIERS: Array = [1.0, 1.18, 1.36]
 const BASIC_ATTACK_BASE_ANIM_DURATION: float = 0.18
 const BASIC_ATTACK_BASE_ANIM_STRENGTH: float = 1.05
+const COMBAT_STATE_NAMES: Dictionary = {
+	CombatState.IDLE_MOVE: "IDLE_MOVE",
+	CombatState.CHARGING_ATTACK: "CHARGING_ATTACK",
+	CombatState.ATTACK_WINDUP: "ATTACK_WINDUP",
+	CombatState.ATTACK_ACTIVE: "ATTACK_ACTIVE",
+	CombatState.ATTACK_RECOVERY: "ATTACK_RECOVERY",
+	CombatState.HITSTUN: "HITSTUN"
+}
 
 var current_health: float = 0.0
 var current_xp: int = 0
@@ -165,14 +216,24 @@ var queued_basic_combo_hit_index: int = 1
 var queued_basic_combo_damage: float = 0.0
 var queued_basic_combo_range: float = 0.0
 var queued_basic_combo_arc_degrees: float = 0.0
+var queued_melee_hit_stun_duration: float = 0.0
+var queued_melee_hit_knockback_scale: float = 1.0
+var queued_melee_hit_hitstop: float = 0.0
+var queued_melee_hit_vfx_scale: float = 1.0
 
 var lunge_time_left: float = 0.0
+var lunge_total_duration: float = 0.0
 var lunge_direction: Vector2 = Vector2.ZERO
 var lunge_strike_applied: bool = false
+var ally_dash_block_grace_left: float = 0.0
+var instant_dash_block_latched: bool = false
 var knockback_velocity: Vector2 = Vector2.ZERO
+var charge_lunge_velocity: Vector2 = Vector2.ZERO
 
 var hit_flash_left: float = 0.0
+var hurt_anim_left: float = 0.0
 var stun_left: float = 0.0
+var hitstop_left: float = 0.0
 var anim_time: float = 0.0
 var attack_anim_left: float = 0.0
 var attack_anim_total: float = 0.0
@@ -186,6 +247,30 @@ var player_sprite_anim_key: String = ""
 var player_sprite_anim_time: float = 0.0
 var using_external_player_sprite: bool = false
 var character_sprite_base_position: Vector2 = Vector2.ZERO
+var light_attack_recovery_left: float = 0.0
+var combat_state: CombatState = CombatState.IDLE_MOVE
+var combat_state_name: String = "IDLE_MOVE"
+var is_charging_attack: bool = false
+var charge_time: float = 0.0
+var charge_release_direction: Vector2 = Vector2.RIGHT
+var charge_release_windup_left: float = 0.0
+var charge_attack_active_left: float = 0.0
+var charge_attack_recovery_left: float = 0.0
+var charge_attack_hit_pending: bool = false
+var charge_attack_hit_confirmed: bool = false
+var charge_attack_damage: float = 0.0
+var charge_attack_range: float = 0.0
+var charge_attack_arc: float = 0.0
+var charge_attack_knockback_scale: float = 1.0
+var charge_attack_hitstop: float = 0.0
+var charge_attack_vfx_scale: float = 1.0
+var charge_attack_enemy_stun: float = 0.0
+var charge_attack_anim_strength: float = 1.0
+var camera_base_offset: Vector2 = Vector2.ZERO
+var camera_shake_left: float = 0.0
+var camera_shake_current_strength: float = 0.0
+var autoplay_test_enabled: bool = false
+var autoplay_log_path: String = ""
 
 var head_base_position: Vector2 = Vector2.ZERO
 var cape_base_position: Vector2 = Vector2.ZERO
@@ -265,6 +350,9 @@ var health_bar_fill: Line2D = null
 func _ready() -> void:
 	add_to_group("player")
 	current_health = max_health
+	camera_base_offset = camera_2d.offset if is_instance_valid(camera_2d) else Vector2.ZERO
+	_configure_autoplay_logging()
+	_set_combat_state(CombatState.IDLE_MOVE)
 	attack_telegraph.visible = false
 	using_external_player_sprite = is_instance_valid(character_sprite)
 	if using_external_player_sprite:
@@ -310,6 +398,11 @@ func _ready() -> void:
 	cape_fold_base_alpha = cape_fold_visual.color.a
 	weapon_trail.visible = false
 	slash_effect.visible = false
+	block_indicator.visible = false
+	block_indicator.closed = true
+	block_indicator.round_precision = 8
+	block_indicator.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	block_indicator.end_cap_mode = Line2D.LINE_CAP_ROUND
 	_setup_health_bar()
 	_update_health_bar()
 	emit_initial_state()
@@ -320,6 +413,12 @@ func _physics_process(delta: float) -> void:
 		return
 
 	_tick_timers(delta)
+	_update_camera_shake(delta)
+	if hitstop_left > 0.0:
+		_update_health_bar()
+		_update_visual_feedback(0.0)
+		_emit_cooldown_state()
+		return
 	_update_facing_direction()
 	if stun_left > 0.0:
 		_interrupt_combat_for_stun()
@@ -450,8 +549,10 @@ func receive_hit(amount: float, source_position: Vector2, guard_break: bool = fa
 
 	var damage_to_apply := amount
 	var blocked := false
+	var incoming_direction := (source_position - global_position).normalized()
+	if incoming_direction == Vector2.ZERO:
+		incoming_direction = Vector2.LEFT if facing_direction.x >= 0.0 else Vector2.RIGHT
 	if is_blocking and not guard_break:
-		var incoming_direction := (source_position - global_position).normalized()
 		var block_threshold := cos(deg_to_rad(block_arc_degrees * 0.5))
 		if facing_direction.dot(incoming_direction) >= block_threshold:
 			damage_to_apply *= (1.0 - block_damage_reduction)
@@ -463,28 +564,47 @@ func receive_hit(amount: float, source_position: Vector2, guard_break: bool = fa
 	var knockback_direction := (global_position - source_position).normalized()
 	if knockback_direction == Vector2.ZERO:
 		knockback_direction = Vector2.LEFT if facing_direction.x >= 0.0 else Vector2.RIGHT
+	var can_super_armor := _has_super_armor() and not blocked and not guard_break
+	var super_armor_active := can_super_armor and damage_to_apply < armor_break_threshold
 	var knockback_strength := hit_knockback_speed * (0.45 if blocked else 1.0)
+	if super_armor_active:
+		knockback_strength *= 0.45
 	knockback_velocity = knockback_direction * knockback_strength
 
 	current_health = maxf(0.0, current_health - damage_to_apply)
 	health_changed.emit(current_health, max_health)
 	hit_flash_left = 0.12
-	var applied_stun := 0.0 if blocked else maxf(hit_stun_duration, stun_duration)
+	var applied_stun := 0.0 if blocked or super_armor_active else maxf(hit_stun_duration, stun_duration)
 	if not blocked:
-		applied_stun = maxf(applied_stun, _get_hurt_animation_duration())
+		if super_armor_active:
+			applied_stun = 0.0
+		else:
+			var hurt_duration := _get_hurt_animation_duration()
+			hurt_anim_left = maxf(hurt_anim_left, hurt_duration)
+			applied_stun = maxf(applied_stun, hurt_duration)
 	if applied_stun > 0.0:
 		stun_left = maxf(stun_left, applied_stun)
 		_interrupt_combat_for_stun()
 		basic_attack_cooldown_left = maxf(basic_attack_cooldown_left, stun_left)
 		ability_1_cooldown_left = maxf(ability_1_cooldown_left, stun_left)
 		ability_2_cooldown_left = maxf(ability_2_cooldown_left, stun_left)
-	attack_anim_left = 0.0
-	weapon_trail_alpha = 0.0
-	weapon_trail.visible = false
-	slash_effect.visible = false
-	is_rolling = false
-	is_invulnerable = false
-	_spawn_hit_effect(global_position + Vector2(0.0, -14.0), Color(1.0, 0.42, 0.3, 0.95), 10.0)
+		_set_combat_state(CombatState.HITSTUN)
+	elif not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0:
+		_set_combat_state(CombatState.IDLE_MOVE)
+	if not super_armor_active:
+		attack_anim_left = 0.0
+		light_attack_recovery_left = 0.0
+		weapon_trail_alpha = 0.0
+		weapon_trail.visible = false
+		slash_effect.visible = false
+		is_rolling = false
+		is_invulnerable = false
+	charge_attack_hit_confirmed = false
+	_spawn_hit_effect(
+		global_position + Vector2(0.0, -14.0),
+		Color(0.58, 0.86, 1.0, 0.95) if super_armor_active else Color(1.0, 0.42, 0.3, 0.95),
+		8.0 if super_armor_active else 10.0
+	)
 
 	if current_health <= 0.0:
 		_die()
@@ -508,10 +628,18 @@ func _tick_timers(delta: float) -> void:
 	roll_cooldown_left = maxf(0.0, roll_cooldown_left - delta)
 	basic_combo_window_left = maxf(0.0, basic_combo_window_left - delta)
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
+	hurt_anim_left = maxf(0.0, hurt_anim_left - delta)
 	stun_left = maxf(0.0, stun_left - delta)
+	hitstop_left = maxf(0.0, hitstop_left - delta)
 	attack_anim_left = maxf(0.0, attack_anim_left - delta)
+	light_attack_recovery_left = maxf(0.0, light_attack_recovery_left - delta)
+	ally_dash_block_grace_left = maxf(0.0, ally_dash_block_grace_left - delta)
 	slash_effect_left = maxf(0.0, slash_effect_left - delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.35))
+	charge_lunge_velocity = charge_lunge_velocity.move_toward(Vector2.ZERO, heavy_lunge_decay * delta)
+	_tick_charge_attack_state(delta)
+	if stun_left <= 0.0 and combat_state == CombatState.HITSTUN and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0:
+		_set_combat_state(CombatState.IDLE_MOVE)
 	if basic_combo_window_left <= 0.0 and attack_windup_left <= 0.0 and attack_anim_left <= 0.0:
 		basic_combo_step = 0
 	if queued_melee_hit_pending and attack_windup_left <= 0.0 and attack_anim_left <= 0.0:
@@ -525,6 +653,11 @@ func _tick_timers(delta: float) -> void:
 		else:
 			_update_attack_telegraph_progress()
 
+	if combat_state == CombatState.ATTACK_ACTIVE and attack_anim_left <= 0.0 and light_attack_recovery_left > 0.0 and charge_attack_active_left <= 0.0:
+		_set_combat_state(CombatState.ATTACK_RECOVERY)
+	if light_attack_recovery_left <= 0.0 and combat_state == CombatState.ATTACK_RECOVERY and charge_attack_recovery_left <= 0.0 and charge_attack_active_left <= 0.0 and attack_windup_left <= 0.0 and not is_charging_attack:
+		_set_combat_state(CombatState.IDLE_MOVE)
+
 	if is_rolling:
 		roll_time_left -= delta
 		if roll_time_left <= 0.0:
@@ -535,13 +668,338 @@ func _tick_timers(delta: float) -> void:
 		lunge_time_left -= delta
 		if lunge_time_left <= 0.0:
 			lunge_time_left = 0.0
+			lunge_total_duration = 0.0
 			_apply_lunge_strike()
 
-	if basic_combo_buffered and basic_attack_cooldown_left <= 0.0 and attack_windup_left <= 0.0 and attack_anim_left <= 0.0 and queued_attack == QueuedAttack.NONE and not is_rolling and lunge_time_left <= 0.0 and stun_left <= 0.0 and not is_blocking:
+	if basic_combo_buffered and basic_attack_cooldown_left <= 0.0 and attack_windup_left <= 0.0 and attack_anim_left <= 0.0 and light_attack_recovery_left <= 0.0 and queued_attack == QueuedAttack.NONE and not is_rolling and lunge_time_left <= 0.0 and stun_left <= 0.0 and not is_blocking and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0:
 		_start_basic_combo_attack()
 
 
+func _configure_autoplay_logging() -> void:
+	autoplay_test_enabled = _is_autoplay_requested()
+	if not autoplay_test_enabled:
+		autoplay_log_path = ""
+		return
+	autoplay_log_path = OS.get_environment("AUTOPLAY_LOG_PATH")
+	if autoplay_log_path.is_empty():
+		autoplay_log_path = ProjectSettings.globalize_path("res://artifacts/log.txt")
+
+
+func _is_env_enabled(key: String) -> bool:
+	var raw := OS.get_environment(key).strip_edges().to_lower()
+	if raw.is_empty():
+		return false
+	return raw not in ["0", "false", "off", "no"]
+
+
+func _is_autoplay_requested() -> bool:
+	if _is_env_enabled("AUTOPLAY_TEST"):
+		return true
+	for arg in OS.get_cmdline_user_args():
+		var normalized := String(arg).strip_edges().to_lower()
+		if normalized == "--autoplay_test" or normalized == "autoplay_test" or normalized == "--autoplay_test=1":
+			return true
+	return false
+
+
+func _autoplay_log(message: String) -> void:
+	if not autoplay_test_enabled:
+		return
+	print(message)
+	if autoplay_log_path.is_empty():
+		return
+	var file := FileAccess.open(autoplay_log_path, FileAccess.READ_WRITE)
+	if file == null:
+		file = FileAccess.open(autoplay_log_path, FileAccess.WRITE)
+	if file == null:
+		return
+	file.seek_end()
+	file.store_line(message)
+
+
+func _set_combat_state(next_state: CombatState) -> void:
+	if combat_state == next_state:
+		return
+	combat_state = next_state
+	combat_state_name = String(COMBAT_STATE_NAMES.get(next_state, "UNKNOWN"))
+	match combat_state:
+		CombatState.ATTACK_WINDUP:
+			_autoplay_log("STATE WINDUP")
+		CombatState.ATTACK_ACTIVE:
+			_autoplay_log("STATE ACTIVE")
+		CombatState.ATTACK_RECOVERY:
+			_autoplay_log("STATE RECOVERY")
+		_:
+			pass
+
+
+func _can_start_charge_attack() -> bool:
+	return basic_attack_cooldown_left <= 0.0 and attack_anim_left <= 0.0 and light_attack_recovery_left <= 0.0 and attack_windup_left <= 0.0 and queued_attack == QueuedAttack.NONE and not is_rolling and lunge_time_left <= 0.0 and stun_left <= 0.0 and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0
+
+
+func _start_charge_attack() -> void:
+	if not _can_start_charge_attack():
+		return
+	is_charging_attack = true
+	charge_time = 0.0
+	charge_release_direction = _resolve_charge_release_direction()
+	charge_attack_hit_pending = false
+	charge_attack_hit_confirmed = false
+	charge_attack_active_left = 0.0
+	charge_attack_recovery_left = 0.0
+	charge_release_windup_left = 0.0
+	_reset_basic_combo_state()
+	_clear_queued_melee_hit()
+	_set_combat_state(CombatState.CHARGING_ATTACK)
+	_autoplay_log("CHARGE_START")
+	_show_attack_telegraph(basic_attack_range, basic_attack_arc_degrees, Color(0.9, 0.78, 0.3, 0.35))
+
+
+func _cancel_charge_attack() -> void:
+	is_charging_attack = false
+	charge_time = 0.0
+	charge_release_windup_left = 0.0
+	charge_attack_active_left = 0.0
+	charge_attack_hit_pending = false
+	charge_attack_hit_confirmed = false
+	attack_telegraph.visible = false
+	attack_telegraph.scale = Vector2.ONE
+	attack_telegraph.modulate.a = 1.0
+
+
+func _release_charge_attack() -> void:
+	if not is_charging_attack:
+		return
+	var release_time := charge_time
+	var charge_ratio := _get_charge_ratio()
+	var scaled_ratio := _get_scaled_charge_ratio()
+	is_charging_attack = false
+	attack_telegraph.visible = false
+	if release_time < min_charge_time:
+		_autoplay_log("CHARGE_RELEASE time=%.3f ratio=%.3f type=tap" % [release_time, charge_ratio])
+		_start_basic_combo_attack()
+		return
+
+	charge_release_direction = _resolve_charge_release_direction()
+	if absf(charge_release_direction.x) > 0.01:
+		facing_direction = Vector2.RIGHT if charge_release_direction.x > 0.0 else Vector2.LEFT
+	charge_attack_damage = basic_attack_damage * lerpf(1.0, charge_max_damage_mult, scaled_ratio)
+	charge_attack_range = basic_attack_range + (charge_range_bonus * scaled_ratio)
+	charge_attack_arc = basic_attack_arc_degrees + (charge_arc_bonus * scaled_ratio)
+	charge_attack_knockback_scale = lerpf(1.0, charge_max_knockback_mult, scaled_ratio)
+	charge_attack_hitstop = lerpf(charge_base_hitstop, charge_max_hitstop, scaled_ratio)
+	charge_attack_vfx_scale = lerpf(1.0, 1.95, scaled_ratio)
+	charge_attack_enemy_stun = lerpf(charge_enemy_stun_min, charge_enemy_stun_max, scaled_ratio)
+	charge_attack_anim_strength = lerpf(1.22, 2.08, scaled_ratio)
+	charge_release_windup_left = maxf(0.01, charge_windup_duration)
+	charge_attack_active_left = 0.0
+	charge_attack_recovery_left = 0.0
+	charge_attack_hit_pending = true
+	charge_attack_hit_confirmed = false
+	basic_attack_cooldown_left = maxf(basic_attack_cooldown_left, basic_attack_cooldown)
+	_set_combat_state(CombatState.ATTACK_WINDUP)
+	_autoplay_log("CHARGE_RELEASE time=%.3f ratio=%.3f type=heavy" % [release_time, charge_ratio])
+	_show_attack_telegraph(charge_attack_range, charge_attack_arc, Color(1.0, 0.58, 0.3, 0.42))
+	_update_attack_telegraph_progress()
+
+
+func _tick_charge_attack_state(delta: float) -> void:
+	if is_charging_attack:
+		if Input.is_action_pressed("basic_attack"):
+			charge_time = minf(max_charge_time, charge_time + delta)
+			if charge_time >= max_charge_time - 0.0001:
+				_release_charge_attack()
+		else:
+			_release_charge_attack()
+		if is_charging_attack:
+			var charge_ratio := _get_charge_ratio()
+			var scaled_ratio := _get_scaled_charge_ratio()
+			_show_attack_telegraph(
+				basic_attack_range + (charge_range_bonus * scaled_ratio * 0.6),
+				basic_attack_arc_degrees + (charge_arc_bonus * scaled_ratio * 0.5),
+				Color(0.96, 0.74, 0.34, lerpf(0.28, 0.55, charge_ratio))
+			)
+			attack_telegraph.rotation = _resolve_charge_release_direction().angle()
+			attack_telegraph.modulate.a = lerpf(0.35, 0.92, charge_ratio)
+			attack_telegraph.scale = Vector2.ONE * lerpf(0.94, 1.12, charge_ratio)
+
+	if charge_release_windup_left > 0.0:
+		charge_release_windup_left = maxf(0.0, charge_release_windup_left - delta)
+		var windup_progress := 1.0 - (charge_release_windup_left / maxf(0.01, charge_windup_duration))
+		attack_telegraph.rotation = charge_release_direction.angle()
+		attack_telegraph.modulate.a = lerpf(0.45, 0.96, windup_progress)
+		attack_telegraph.scale = Vector2.ONE * lerpf(1.0, 1.18, windup_progress)
+		if charge_release_windup_left <= 0.0:
+			_begin_charge_attack_active()
+
+	if charge_attack_active_left > 0.0:
+		if charge_attack_hit_pending:
+			_apply_charge_attack_hit()
+		charge_attack_active_left = maxf(0.0, charge_attack_active_left - delta)
+		if charge_attack_active_left <= 0.0:
+			_begin_charge_attack_recovery()
+
+	if charge_attack_recovery_left > 0.0:
+		charge_attack_recovery_left = maxf(0.0, charge_attack_recovery_left - delta)
+		if charge_attack_recovery_left <= 0.0:
+			_cancel_charge_attack_recovery()
+			if not is_rolling and stun_left <= 0.0:
+				_set_combat_state(CombatState.IDLE_MOVE)
+
+
+func _begin_charge_attack_active() -> void:
+	charge_attack_active_left = maxf(0.01, charge_active_duration)
+	_set_combat_state(CombatState.ATTACK_ACTIVE)
+	_show_instant_attack_flash(charge_attack_range, charge_attack_arc, Color(1.0, 0.58, 0.32, 0.42))
+	_start_attack_animation(lerpf(0.24, 0.34, _get_scaled_charge_ratio()), charge_attack_anim_strength)
+	if not using_external_player_sprite:
+		_trigger_slash_effect(
+			charge_attack_range,
+			charge_attack_arc,
+			Color(1.0, 0.62, 0.36, 0.92),
+			0.22 + (_get_scaled_charge_ratio() * 0.08),
+			6.4 + (_get_scaled_charge_ratio() * 2.8)
+		)
+	charge_lunge_velocity = charge_release_direction.normalized() * heavy_lunge_impulse
+
+
+func _apply_charge_attack_hit() -> void:
+	if not charge_attack_hit_pending:
+		return
+	charge_attack_hit_pending = false
+	var hit_confirmed := _apply_melee_strike(
+		charge_attack_damage,
+		charge_attack_range,
+		charge_attack_arc,
+		charge_attack_enemy_stun,
+		charge_attack_knockback_scale,
+		charge_attack_hitstop,
+		charge_attack_vfx_scale
+	)
+	if hit_confirmed:
+		charge_attack_hit_confirmed = true
+
+
+func _begin_charge_attack_recovery() -> void:
+	charge_attack_recovery_left = maxf(0.01, charge_recovery_duration)
+	_set_combat_state(CombatState.ATTACK_RECOVERY)
+
+
+func _cancel_charge_attack_recovery() -> void:
+	charge_attack_recovery_left = 0.0
+	charge_attack_hit_confirmed = false
+	charge_attack_hit_pending = false
+	charge_attack_active_left = 0.0
+	charge_release_windup_left = 0.0
+	charge_lunge_velocity = Vector2.ZERO
+	attack_telegraph.visible = false
+	attack_telegraph.scale = Vector2.ONE
+	attack_telegraph.modulate.a = 1.0
+
+
+func _can_dodge_cancel_charge_recovery() -> bool:
+	if not hit_confirm_cancel_enabled:
+		return false
+	return charge_attack_recovery_left > 0.0 and charge_attack_hit_confirmed
+
+
+func _resolve_charge_release_direction() -> Vector2:
+	if has_meta("aim_direction"):
+		var aim_meta: Variant = get_meta("aim_direction")
+		if aim_meta is Vector2:
+			var aim_direction: Vector2 = aim_meta
+			if aim_direction.length_squared() > 0.0001:
+				return aim_direction.normalized()
+	var movement_direction := _get_movement_vector()
+	if movement_direction.length_squared() > 0.0001:
+		return movement_direction.normalized()
+	if facing_direction.length_squared() > 0.0001:
+		return facing_direction.normalized()
+	return Vector2.RIGHT
+
+
+func _get_charge_ratio() -> float:
+	return clampf(charge_time / maxf(0.01, max_charge_time), 0.0, 1.0)
+
+
+func _get_scaled_charge_ratio() -> float:
+	return pow(_get_charge_ratio(), maxf(0.2, charge_curve_exponent))
+
+
+func _has_super_armor() -> bool:
+	if charge_attack_active_left > 0.0:
+		return true
+	if not is_charging_attack:
+		return false
+	var charge_progress_time := charge_time
+	return charge_progress_time >= charge_armor_start and charge_progress_time <= maxf(charge_armor_start, charge_armor_end)
+
+
+func _start_hitstop(duration: float) -> void:
+	var clamped_duration := maxf(0.0, duration)
+	if clamped_duration <= 0.0:
+		return
+	if clamped_duration > hitstop_left + 0.0001:
+		_autoplay_log("HITSTOP_START duration=%.3f" % clamped_duration)
+	hitstop_left = maxf(hitstop_left, clamped_duration)
+
+
+func _start_camera_shake(duration: float, strength: float) -> void:
+	camera_shake_left = maxf(camera_shake_left, maxf(0.0, duration))
+	camera_shake_current_strength = maxf(camera_shake_current_strength, maxf(0.0, strength))
+
+
+func _update_camera_shake(delta: float) -> void:
+	if not is_instance_valid(camera_2d):
+		return
+	if camera_shake_left > 0.0:
+		camera_shake_left = maxf(0.0, camera_shake_left - delta)
+		var shake_ratio := clampf(camera_shake_left / maxf(0.01, camera_shake_duration), 0.0, 1.0)
+		var shake := Vector2(
+			randf_range(-1.0, 1.0),
+			randf_range(-1.0, 1.0)
+		) * camera_shake_current_strength * shake_ratio
+		camera_2d.offset = camera_base_offset + shake
+		if camera_shake_left <= 0.0:
+			camera_shake_current_strength = 0.0
+			camera_2d.offset = camera_base_offset
+	else:
+		camera_2d.offset = camera_base_offset
+
+
 func _handle_actions() -> void:
+	if _can_dodge_cancel_charge_recovery() and Input.is_action_just_pressed("roll") and roll_cooldown_left <= 0.0:
+		_cancel_charge_attack_recovery()
+		_start_roll()
+		return
+
+	var wants_block := Input.is_action_pressed("block")
+	if not wants_block:
+		instant_dash_block_latched = false
+	if wants_block and _can_enter_instant_dash_block():
+		_enter_instant_dash_block()
+		return
+
+	if is_charging_attack:
+		is_blocking = false
+		if Input.is_action_just_pressed("roll") and roll_cooldown_left <= 0.0 and charge_time >= charge_cancel_lockout:
+			_cancel_charge_attack()
+			_start_roll()
+			return
+		if not Input.is_action_pressed("basic_attack"):
+			_release_charge_attack()
+		return
+
+	if charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0:
+		is_blocking = false
+		return
+	if charge_attack_recovery_left > 0.0:
+		is_blocking = false
+		return
+	if light_attack_recovery_left > 0.0:
+		is_blocking = false
+		return
+
 	if is_rolling or lunge_time_left > 0.0 or attack_windup_left > 0.0:
 		is_blocking = false
 		return
@@ -550,13 +1008,13 @@ func _handle_actions() -> void:
 		_start_roll()
 		return
 
-	is_blocking = Input.is_action_pressed("block")
+	is_blocking = wants_block
 	if is_blocking:
 		return
 
 	if Input.is_action_just_pressed("basic_attack"):
-		if basic_attack_cooldown_left <= 0.0 and attack_anim_left <= 0.0:
-			_start_basic_combo_attack()
+		if _can_start_charge_attack():
+			_start_charge_attack()
 		else:
 			basic_combo_buffered = true
 		return
@@ -569,14 +1027,16 @@ func _handle_actions() -> void:
 
 	if Input.is_action_just_pressed("ability_2") and ability_2_cooldown_left <= 0.0:
 		_reset_basic_combo_state()
-		ability_2_cooldown_left = ability_2_cooldown
-		_start_lunge()
+		if _start_ally_dash():
+			ability_2_cooldown_left = ability_2_cooldown
 
 
 func _queue_attack(kind: QueuedAttack, windup: float, attack_range: float, arc_degrees: float, telegraph_color: Color) -> void:
 	queued_attack = kind
 	attack_windup_total = maxf(0.01, windup)
 	attack_windup_left = attack_windup_total
+	light_attack_recovery_left = 0.0
+	_set_combat_state(CombatState.ATTACK_WINDUP)
 	_show_attack_telegraph(attack_range, arc_degrees, telegraph_color)
 
 
@@ -623,18 +1083,24 @@ func _resolve_queued_attack() -> void:
 			var combo_damage := queued_basic_combo_damage if queued_basic_combo_damage > 0.0 else basic_attack_damage
 			var combo_range := queued_basic_combo_range if queued_basic_combo_range > 0.0 else basic_attack_range
 			var combo_arc := queued_basic_combo_arc_degrees if queued_basic_combo_arc_degrees > 0.0 else basic_attack_arc_degrees
-			_queue_melee_hit_for_final_attack_frame(combo_damage, combo_range, combo_arc)
+			var combo_hitstop := 0.045 + (0.012 * float(combo_index))
+			var combo_knockback := 1.0 + (0.08 * float(combo_index))
+			_queue_melee_hit_for_final_attack_frame(combo_damage, combo_range, combo_arc, outgoing_hit_stun_duration, combo_knockback, combo_hitstop, 1.0 + (0.16 * float(combo_index)))
 			var combo_anim_duration := BASIC_ATTACK_BASE_ANIM_DURATION * float(BASIC_COMBO_ANIM_DURATION_MULTIPLIERS[combo_index])
 			var combo_anim_strength := BASIC_ATTACK_BASE_ANIM_STRENGTH * float(BASIC_COMBO_ANIM_STRENGTH_MULTIPLIERS[combo_index])
 			_start_attack_animation(combo_anim_duration, combo_anim_strength)
+			light_attack_recovery_left = maxf(light_attack_recovery_left, 0.14 + (0.04 * float(combo_index)))
+			_set_combat_state(CombatState.ATTACK_ACTIVE)
 			if not using_external_player_sprite:
 				var slash_duration := 0.16 + (0.02 * float(combo_index))
 				var slash_width := 4.8 + (0.7 * float(combo_index))
 				_trigger_slash_effect(combo_range, combo_arc, Color(0.94, 0.66, 0.34, 0.88), slash_duration, slash_width)
 			_clear_queued_basic_combo_attack()
 		QueuedAttack.ABILITY_1:
-			_queue_melee_hit_for_final_attack_frame(ability_1_damage, ability_1_range, ability_1_arc_degrees)
+			_queue_melee_hit_for_final_attack_frame(ability_1_damage, ability_1_range, ability_1_arc_degrees, outgoing_hit_stun_duration + 0.06, 1.25, 0.085, 1.45)
 			_start_attack_animation(0.24, 1.45)
+			light_attack_recovery_left = maxf(light_attack_recovery_left, 0.22)
+			_set_combat_state(CombatState.ATTACK_ACTIVE)
 			if not using_external_player_sprite:
 				_trigger_slash_effect(ability_1_range, ability_1_arc_degrees, Color(0.84, 0.72, 0.52, 0.9), 0.22, 6.2)
 		_:
@@ -646,11 +1112,23 @@ func _resolve_queued_attack() -> void:
 	attack_telegraph.scale = Vector2.ONE
 
 
-func _queue_melee_hit_for_final_attack_frame(damage: float, attack_range: float, arc_degrees: float) -> void:
+func _queue_melee_hit_for_final_attack_frame(
+	damage: float,
+	attack_range: float,
+	arc_degrees: float,
+	stun_duration: float = outgoing_hit_stun_duration,
+	knockback_scale: float = 1.0,
+	hitstop_duration: float = 0.05,
+	vfx_scale: float = 1.0
+) -> void:
 	queued_melee_hit_pending = true
 	queued_melee_hit_damage = damage
 	queued_melee_hit_range = attack_range
 	queued_melee_hit_arc_degrees = arc_degrees
+	queued_melee_hit_stun_duration = stun_duration
+	queued_melee_hit_knockback_scale = maxf(0.1, knockback_scale)
+	queued_melee_hit_hitstop = maxf(0.0, hitstop_duration)
+	queued_melee_hit_vfx_scale = maxf(0.25, vfx_scale)
 
 
 func _clear_queued_melee_hit() -> void:
@@ -658,6 +1136,10 @@ func _clear_queued_melee_hit() -> void:
 	queued_melee_hit_damage = 0.0
 	queued_melee_hit_range = 0.0
 	queued_melee_hit_arc_degrees = 0.0
+	queued_melee_hit_stun_duration = 0.0
+	queued_melee_hit_knockback_scale = 1.0
+	queued_melee_hit_hitstop = 0.0
+	queued_melee_hit_vfx_scale = 1.0
 
 
 func _apply_queued_melee_hit() -> void:
@@ -666,8 +1148,14 @@ func _apply_queued_melee_hit() -> void:
 	var damage := queued_melee_hit_damage
 	var attack_range := queued_melee_hit_range
 	var arc_degrees := queued_melee_hit_arc_degrees
+	var stun_duration := queued_melee_hit_stun_duration
+	var knockback_scale := queued_melee_hit_knockback_scale
+	var hitstop_duration := queued_melee_hit_hitstop
+	var vfx_scale := queued_melee_hit_vfx_scale
 	_clear_queued_melee_hit()
-	_apply_melee_strike(damage, attack_range, arc_degrees)
+	var hit_confirmed := _apply_melee_strike(damage, attack_range, arc_degrees, stun_duration, knockback_scale, hitstop_duration, vfx_scale)
+	if hit_confirmed:
+		charge_attack_hit_confirmed = true
 
 
 func _clear_queued_basic_combo_attack() -> void:
@@ -688,11 +1176,9 @@ func _apply_lunge_strike() -> void:
 	if lunge_strike_applied:
 		return
 	lunge_strike_applied = true
-	_apply_melee_strike(ability_2_damage, ability_2_range, ability_2_arc_degrees)
-	_show_instant_attack_flash(ability_2_range, ability_2_arc_degrees, Color(0.98, 0.48, 0.28, 0.34))
-	_start_attack_animation(0.22, 1.9)
-	if not using_external_player_sprite:
-		_trigger_slash_effect(ability_2_range, ability_2_arc_degrees, Color(0.98, 0.56, 0.34, 0.92), 0.18, 6.0)
+	ally_dash_block_grace_left = maxf(ally_dash_block_grace_left, maxf(0.0, ability_2_instant_block_grace))
+	light_attack_recovery_left = maxf(light_attack_recovery_left, 0.08)
+	_set_combat_state(CombatState.ATTACK_RECOVERY)
 
 
 func _show_attack_telegraph(attack_range: float, arc_degrees: float, telegraph_color: Color) -> void:
@@ -749,39 +1235,160 @@ func _start_roll() -> void:
 	roll_time_left = roll_duration
 	roll_cooldown_left = roll_cooldown
 	is_blocking = false
+	_cancel_charge_attack()
+	_cancel_charge_attack_recovery()
 	queued_attack = QueuedAttack.NONE
 	_reset_basic_combo_state()
 	_clear_queued_melee_hit()
 	attack_windup_left = 0.0
+	light_attack_recovery_left = 0.0
 	attack_telegraph.visible = false
 	slash_effect_left = 0.0
+	ally_dash_block_grace_left = 0.0
+	instant_dash_block_latched = false
 	weapon_trail_alpha = maxf(weapon_trail_alpha, 0.38)
+	_set_combat_state(CombatState.IDLE_MOVE)
 
 
-func _start_lunge() -> void:
-	lunge_direction = Vector2(signf(facing_direction.x), 0.0)
-	if lunge_direction.x == 0.0:
-		lunge_direction = Vector2.RIGHT
-	lunge_time_left = ability_2_lunge_duration
+func _start_ally_dash() -> bool:
+	var ally_target := _find_nearest_facing_ally()
+	if ally_target == null:
+		return false
+	var to_ally := ally_target.global_position - global_position
+	var ally_distance := to_ally.length()
+	if ally_distance <= 0.0001:
+		return false
+	var dash_distance := maxf(0.0, ally_distance - maxf(0.0, ability_2_arrive_distance))
+	if dash_distance <= maxf(0.0, ability_2_min_dash_distance):
+		return false
+	lunge_direction = to_ally / ally_distance
+	if absf(lunge_direction.x) > 0.01:
+		facing_direction = Vector2.RIGHT if lunge_direction.x > 0.0 else Vector2.LEFT
+	lunge_total_duration = maxf(maxf(0.01, ability_2_min_duration), dash_distance / maxf(1.0, ability_2_lunge_speed))
+	lunge_time_left = lunge_total_duration
 	lunge_strike_applied = false
+	ally_dash_block_grace_left = 0.0
+	instant_dash_block_latched = false
 	is_blocking = false
+	_cancel_charge_attack()
+	_cancel_charge_attack_recovery()
 	queued_attack = QueuedAttack.NONE
 	_reset_basic_combo_state()
 	_clear_queued_melee_hit()
 	attack_windup_left = 0.0
+	light_attack_recovery_left = 0.0
 	attack_telegraph.visible = false
 	weapon_trail_alpha = maxf(weapon_trail_alpha, 0.72)
+	_set_combat_state(CombatState.ATTACK_ACTIVE)
+	return true
+
+
+func _find_nearest_facing_ally() -> Node2D:
+	var facing := facing_direction.normalized()
+	if facing.length_squared() <= 0.0001:
+		facing = Vector2.RIGHT
+	var dot_threshold := clampf(ability_2_facing_dot_threshold, -1.0, 1.0)
+	var best_target: Node2D = null
+	var best_distance_sq := INF
+	for candidate in _get_ally_dash_candidates():
+		if not _is_valid_ally_dash_target(candidate):
+			continue
+		var to_candidate := candidate.global_position - global_position
+		var distance_sq := to_candidate.length_squared()
+		if distance_sq <= 0.0001:
+			continue
+		var candidate_direction := to_candidate / sqrt(distance_sq)
+		if facing.dot(candidate_direction) < dot_threshold:
+			continue
+		if distance_sq < best_distance_sq:
+			best_distance_sq = distance_sq
+			best_target = candidate
+	return best_target
+
+
+func _get_ally_dash_candidates() -> Array[Node2D]:
+	var candidates: Array[Node2D] = []
+	var seen_ids: Dictionary = {}
+	for node in get_tree().get_nodes_in_group("friendly_npcs"):
+		var ally := node as Node2D
+		if ally == null:
+			continue
+		var ally_id := ally.get_instance_id()
+		if seen_ids.has(ally_id):
+			continue
+		seen_ids[ally_id] = true
+		candidates.append(ally)
+	for node in get_tree().get_nodes_in_group("player"):
+		var ally_player := node as Node2D
+		if ally_player == null:
+			continue
+		var player_id := ally_player.get_instance_id()
+		if seen_ids.has(player_id):
+			continue
+		seen_ids[player_id] = true
+		candidates.append(ally_player)
+	return candidates
+
+
+func _is_valid_ally_dash_target(candidate: Node2D) -> bool:
+	if candidate == null or not is_instance_valid(candidate):
+		return false
+	if candidate == self:
+		return false
+	if candidate is Player:
+		var ally_player := candidate as Player
+		if ally_player == null or ally_player.is_dead:
+			return false
+	if candidate is FriendlyHealer:
+		var ally_healer := candidate as FriendlyHealer
+		if ally_healer == null or ally_healer.dead:
+			return false
+	return true
+
+
+func _has_ally_dash_block_window() -> bool:
+	return lunge_time_left > 0.0 or ally_dash_block_grace_left > 0.0
+
+
+func _can_enter_instant_dash_block() -> bool:
+	if not _has_ally_dash_block_window():
+		return false
+	if is_dead or stun_left > 0.0 or is_rolling:
+		return false
+	if is_charging_attack or charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0 or charge_attack_recovery_left > 0.0:
+		return false
+	return true
+
+
+func _enter_instant_dash_block() -> void:
+	if lunge_time_left > 0.0:
+		lunge_time_left = 0.0
+		lunge_total_duration = 0.0
+		lunge_strike_applied = true
+	light_attack_recovery_left = 0.0
+	ally_dash_block_grace_left = maxf(ally_dash_block_grace_left, maxf(0.0, ability_2_instant_block_grace))
+	instant_dash_block_latched = true
+	is_blocking = true
+	_set_combat_state(CombatState.IDLE_MOVE)
 
 
 func _interrupt_combat_for_stun() -> void:
 	is_blocking = false
+	_cancel_charge_attack()
+	_cancel_charge_attack_recovery()
 	queued_attack = QueuedAttack.NONE
 	_reset_basic_combo_state()
 	_clear_queued_melee_hit()
 	attack_windup_left = 0.0
+	light_attack_recovery_left = 0.0
 	attack_telegraph.visible = false
 	lunge_time_left = 0.0
+	lunge_total_duration = 0.0
 	lunge_strike_applied = false
+	ally_dash_block_grace_left = 0.0
+	instant_dash_block_latched = false
+	charge_lunge_velocity = Vector2.ZERO
+	_set_combat_state(CombatState.HITSTUN)
 
 
 func _apply_movement() -> void:
@@ -793,7 +1400,17 @@ func _apply_movement() -> void:
 		return
 
 	if lunge_time_left > 0.0:
-		velocity = Vector2(signf(lunge_direction.x), 0.0) * ability_2_lunge_speed
+		velocity = lunge_direction * ability_2_lunge_speed + charge_lunge_velocity
+		return
+
+	if is_charging_attack:
+		velocity = charge_lunge_velocity
+		return
+
+	if is_blocking:
+		velocity = charge_lunge_velocity
+		if knockback_velocity.length_squared() > 0.0001:
+			velocity += knockback_velocity * blocked_knockback_move_scale
 		return
 
 	var movement_vector := _get_movement_vector()
@@ -801,9 +1418,15 @@ func _apply_movement() -> void:
 	if movement_vector.length_squared() > 1.0:
 		movement_vector = movement_vector.normalized()
 	var movement_multiplier := block_move_multiplier if is_blocking else 1.0
+	if charge_release_windup_left > 0.0:
+		movement_multiplier *= 0.22
+	if charge_attack_active_left > 0.0:
+		movement_multiplier *= 0.12
+	if charge_attack_recovery_left > 0.0:
+		movement_multiplier *= 0.46
 	if attack_windup_left > 0.0:
 		movement_multiplier *= 0.72
-	velocity = movement_vector * move_speed * movement_multiplier
+	velocity = movement_vector * move_speed * movement_multiplier + charge_lunge_velocity
 	if is_blocking and knockback_velocity.length_squared() > 0.0001:
 		velocity += knockback_velocity * blocked_knockback_move_scale
 
@@ -825,7 +1448,12 @@ func _get_movement_vector() -> Vector2:
 
 func _update_facing_direction() -> void:
 	# Keep the current facing while guarding or in hit-stun so knockback does not flip orientation.
-	if stun_left > 0.0 or is_blocking:
+	if stun_left > 0.0 or is_blocking or charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0:
+		return
+	if is_charging_attack:
+		var charge_move_vector := _get_movement_vector()
+		if absf(charge_move_vector.x) > 0.08:
+			facing_direction = Vector2.RIGHT if charge_move_vector.x > 0.0 else Vector2.LEFT
 		return
 	var movement_vector := _get_movement_vector()
 	if absf(movement_vector.x) > 0.08:
@@ -835,12 +1463,23 @@ func _update_facing_direction() -> void:
 		facing_direction = Vector2.RIGHT if velocity.x > 0.0 else Vector2.LEFT
 
 
-func _apply_melee_strike(damage: float, attack_range: float, arc_degrees: float) -> void:
+func _apply_melee_strike(
+	damage: float,
+	attack_range: float,
+	arc_degrees: float,
+	stun_duration: float = outgoing_hit_stun_duration,
+	knockback_scale: float = 1.0,
+	hitstop_duration: float = 0.05,
+	vfx_scale: float = 1.0
+) -> bool:
 	var facing := facing_direction.normalized()
 	if facing == Vector2.ZERO:
 		facing = Vector2.RIGHT
 	var arc_threshold := cos(deg_to_rad(arc_degrees * 0.5))
 	var hit_ids: Dictionary = {}
+	var hit_confirmed := false
+	var strongest_hitstop := 0.0
+	var strongest_vfx_scale := 1.0
 	for result in _query_attack_hits(attack_range):
 		var enemy := result.get("collider") as EnemyBase
 		if enemy == null or not is_instance_valid(enemy):
@@ -858,12 +1497,22 @@ func _apply_melee_strike(damage: float, attack_range: float, arc_degrees: float)
 			continue
 
 		hit_ids[enemy_id] = true
-		if enemy.receive_hit(damage, global_position, 0.0, false):
-			_spawn_hit_effect(enemy.global_position + Vector2(0.0, -12.0), Color(1.0, 0.8, 0.44, 0.95), 9.0)
+		if enemy.receive_hit(damage, global_position, stun_duration, true, knockback_scale):
+			hit_confirmed = true
+			var hit_world_position := enemy.global_position + Vector2(0.0, -12.0)
+			strongest_hitstop = maxf(strongest_hitstop, hitstop_duration)
+			strongest_vfx_scale = maxf(strongest_vfx_scale, vfx_scale)
+			if enemy.has_method("apply_hitstop"):
+				enemy.apply_hitstop(hitstop_duration)
+			_spawn_hit_effect(hit_world_position, Color(1.0, 0.8, 0.44, 0.95), 9.0 * maxf(0.6, vfx_scale))
 			if not is_dead and enemy.can_trade_melee_with(self):
 				receive_hit(enemy.get_trade_damage(), enemy.global_position, false, enemy.get_trade_stun_duration())
 				if is_dead:
-					return
+					return true
+	if hit_confirmed:
+		_start_hitstop(strongest_hitstop)
+		_start_camera_shake(camera_shake_duration, camera_shake_strength * maxf(0.7, strongest_vfx_scale))
+	return hit_confirmed
 
 
 func _query_attack_hits(attack_range: float) -> Array:
@@ -918,7 +1567,6 @@ func _level_up() -> void:
 
 
 func _update_visual_feedback(delta: float) -> void:
-	block_indicator.rotation = 0.0 if facing_direction.x >= 0.0 else PI
 	var movement_ratio := clampf(velocity.length() / maxf(1.0, move_speed), 0.0, 1.0)
 	_update_player_sprite(delta, movement_ratio)
 
@@ -926,6 +1574,18 @@ func _update_visual_feedback(delta: float) -> void:
 	if is_blocking:
 		target_scale = Vector2(0.95, 1.05)
 		block_indicator.default_color = Color(0.66, 0.74, 0.86, 0.95)
+	elif is_charging_attack:
+		target_scale = Vector2(1.04, 0.96)
+		block_indicator.default_color = Color(0.82, 0.78, 0.46, 0.9)
+	elif charge_release_windup_left > 0.0:
+		target_scale = Vector2(1.08, 0.92)
+		block_indicator.default_color = Color(0.9, 0.52, 0.3, 0.92)
+	elif charge_attack_active_left > 0.0:
+		target_scale = Vector2(1.14, 0.86)
+		block_indicator.default_color = Color(1.0, 0.58, 0.34, 0.94)
+	elif charge_attack_recovery_left > 0.0:
+		target_scale = Vector2(0.98, 1.02)
+		block_indicator.default_color = Color(0.74, 0.56, 0.4, 0.78)
 	elif is_rolling:
 		target_scale = Vector2(1.15, 0.84)
 		block_indicator.default_color = Color(0.84, 0.7, 0.52, 0.85)
@@ -945,6 +1605,14 @@ func _update_visual_feedback(delta: float) -> void:
 			Color(0.62, 0.32, 0.34, 1.0),
 			Color(0.78, 0.72, 0.7, 1.0),
 			Color(0.26, 0.14, 0.16, 1.0)
+		)
+	elif _has_super_armor():
+		_set_model_palette(
+			Color(0.3, 0.38, 0.52, 1.0),
+			Color(0.88, 0.79, 0.7, 1.0),
+			Color(0.45, 0.54, 0.72, 1.0),
+			Color(0.86, 0.86, 0.9, 1.0),
+			Color(0.16, 0.2, 0.3, 1.0)
 		)
 	elif is_blocking:
 		_set_model_palette(
@@ -988,8 +1656,60 @@ func _update_visual_feedback(delta: float) -> void:
 		)
 
 	_update_model_animation(delta, movement_ratio)
+	_update_block_indicator_visual()
 	scale = scale.lerp(target_scale, clampf(delta * 14.0, 0.0, 1.0))
 	_update_weapon_fx(delta)
+
+
+func _is_block_pose_ready() -> bool:
+	if not is_blocking:
+		return false
+	if instant_dash_block_latched:
+		return true
+	if not using_external_player_sprite:
+		return true
+	if player_sprite_anim_key != "block":
+		return false
+	return player_sprite_anim_time >= float(PLAYER_BLOCK_HOLD_FRAME_INDEX)
+
+
+func is_block_shield_active() -> bool:
+	return _is_block_pose_ready()
+
+
+func get_block_shield_center_global() -> Vector2:
+	return global_position + Vector2(0.0, block_shield_y_offset)
+
+
+func is_point_inside_block_shield(world_point: Vector2) -> bool:
+	if not is_block_shield_active():
+		return false
+	var radius := maxf(8.0, block_shield_radius)
+	return world_point.distance_squared_to(get_block_shield_center_global()) <= radius * radius
+
+
+func _build_circle_line_points(center: Vector2, radius: float, segments: int) -> PackedVector2Array:
+	var safe_segments := maxi(10, segments)
+	var points := PackedVector2Array()
+	for i in range(safe_segments):
+		var angle := (TAU * float(i)) / float(safe_segments)
+		points.append(center + (Vector2.RIGHT.rotated(angle) * radius))
+	return points
+
+
+func _update_block_indicator_visual() -> void:
+	block_indicator.rotation = 0.0
+	if not _is_block_pose_ready():
+		block_indicator.visible = false
+		return
+
+	var pulse := 0.5 + (sin(anim_time * maxf(0.1, block_shield_pulse_speed)) * 0.5)
+	var radius := maxf(8.0, block_shield_radius * lerpf(0.96, 1.04, pulse))
+	var center_local := Vector2(0.0, block_shield_y_offset)
+	block_indicator.visible = true
+	block_indicator.points = _build_circle_line_points(center_local, radius, block_shield_segments)
+	block_indicator.width = lerpf(block_shield_line_width * 0.9, block_shield_line_width * 1.15, pulse)
+	block_indicator.default_color = Color(0.48, 0.86, 1.0, lerpf(0.42, 0.74, pulse))
 
 
 func _emit_cooldown_state() -> void:
@@ -998,7 +1718,9 @@ func _emit_cooldown_state() -> void:
 		"ability_1": ability_1_cooldown_left,
 		"ability_2": ability_2_cooldown_left,
 		"roll": roll_cooldown_left,
-		"block_active": is_blocking
+		"block_active": is_blocking,
+		"charge_ratio": _get_charge_ratio(),
+		"combat_state": combat_state_name
 	})
 
 
@@ -1007,11 +1729,21 @@ func _die() -> void:
 	is_blocking = false
 	is_rolling = false
 	is_invulnerable = false
+	_cancel_charge_attack()
+	_cancel_charge_attack_recovery()
 	_reset_basic_combo_state()
 	knockback_velocity = Vector2.ZERO
+	lunge_time_left = 0.0
+	lunge_total_duration = 0.0
+	lunge_strike_applied = false
+	ally_dash_block_grace_left = 0.0
+	instant_dash_block_latched = false
+	charge_lunge_velocity = Vector2.ZERO
+	hitstop_left = 0.0
 	velocity = Vector2.ZERO
 	weapon_trail.visible = false
 	slash_effect.visible = false
+	block_indicator.visible = false
 	gem_visual.scale = gem_base_scale
 	blade_rune_visual.scale = blade_rune_base_scale
 	blade_pommel_visual.scale = Vector2.ONE
@@ -1024,6 +1756,7 @@ func _die() -> void:
 		Color(0.5, 0.5, 0.5, 1.0),
 		Color(0.26, 0.26, 0.26, 1.0)
 	)
+	_set_combat_state(CombatState.IDLE_MOVE)
 	died.emit()
 
 
@@ -1055,8 +1788,13 @@ func _update_model_animation(delta: float, movement_ratio: float) -> void:
 		windup_progress = 1.0 - (attack_windup_left / maxf(0.01, attack_windup_total))
 	var charge_strength := 0.0
 	if lunge_time_left > 0.0:
-		charge_strength = 1.0 - (lunge_time_left / maxf(0.01, ability_2_lunge_duration))
-	var combat_energy := clampf((anticipation * 0.45) + (attack_swing * 0.5) + (windup_progress * 0.55) + (charge_strength * 0.65), 0.0, 1.0)
+		charge_strength = 1.0 - (lunge_time_left / maxf(0.01, lunge_total_duration))
+	var charged_attack_energy := _get_scaled_charge_ratio() if is_charging_attack else 0.0
+	if charge_release_windup_left > 0.0:
+		charged_attack_energy = maxf(charged_attack_energy, 1.0 - (charge_release_windup_left / maxf(0.01, charge_windup_duration)))
+	if charge_attack_active_left > 0.0:
+		charged_attack_energy = maxf(charged_attack_energy, 1.0)
+	var combat_energy := clampf((anticipation * 0.45) + (attack_swing * 0.5) + (windup_progress * 0.55) + (charge_strength * 0.65) + (charged_attack_energy * 0.8), 0.0, 1.0)
 	var glint_pulse := 0.5 + (sin((anim_time * 7.8) + (attack_progress * 7.0)) * 0.5)
 	var rune_pulse := 0.5 + (sin((anim_time * 9.4) + (attack_progress * 9.0)) * 0.5)
 
@@ -1165,13 +1903,13 @@ func _update_player_sprite(delta: float, movement_ratio: float) -> void:
 	var action_key := "idle"
 	if is_dead:
 		action_key = "death"
-	elif stun_left > 0.0:
+	elif hurt_anim_left > 0.0 or stun_left > 0.0:
 		action_key = "hurt"
 	elif is_rolling:
 		action_key = "roll"
 	elif lunge_time_left > 0.0:
-		action_key = "lunge"
-	elif attack_anim_left > 0.0 or attack_windup_left > 0.0:
+		action_key = "run"
+	elif is_charging_attack or charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0 or charge_attack_recovery_left > 0.0 or attack_anim_left > 0.0 or attack_windup_left > 0.0:
 		action_key = "attack"
 	elif is_blocking:
 		action_key = "block"
@@ -1209,7 +1947,16 @@ func _update_player_sprite(delta: float, movement_ratio: float) -> void:
 	if action_key == "death" and is_dead:
 		frame_index = mini(int(floor(player_sprite_anim_time)), frame_count - 1)
 	elif action_key == "attack":
-		if attack_windup_left > 0.0:
+		if is_charging_attack:
+			frame_index = 0
+		elif charge_release_windup_left > 0.0:
+			frame_index = 0
+		elif charge_attack_active_left > 0.0:
+			var active_progress := 1.0 - (charge_attack_active_left / maxf(0.01, charge_active_duration))
+			frame_index = mini(int(floor(clampf(active_progress, 0.0, 1.0) * float(frame_count))), frame_count - 1)
+		elif charge_attack_recovery_left > 0.0:
+			frame_index = frame_count - 1
+		elif attack_windup_left > 0.0:
 			frame_index = 0
 		else:
 			var attack_progress := 1.0 - (attack_anim_left / maxf(0.01, attack_anim_total))
@@ -1218,7 +1965,7 @@ func _update_player_sprite(delta: float, movement_ratio: float) -> void:
 		var hold_frame := clampi(PLAYER_BLOCK_HOLD_FRAME_INDEX, 0, frame_count - 1)
 		frame_index = mini(int(floor(player_sprite_anim_time)), hold_frame)
 	elif action_key == "lunge":
-		var lunge_progress := 1.0 - (lunge_time_left / maxf(0.01, ability_2_lunge_duration))
+		var lunge_progress := 1.0 - (lunge_time_left / maxf(0.01, lunge_total_duration))
 		frame_index = mini(int(floor(clampf(lunge_progress, 0.0, 1.0) * float(frame_count))), frame_count - 1)
 	elif action_key == "roll":
 		frame_index = mini(int(floor(player_sprite_anim_time)), frame_count - 1)
@@ -1228,12 +1975,8 @@ func _update_player_sprite(delta: float, movement_ratio: float) -> void:
 		frame_index = int(floor(player_sprite_anim_time)) % frame_count
 	var source_column := int(frame_columns[frame_index]) if has_custom_columns else frame_index
 	character_sprite.frame_coords = Vector2i(source_column, row)
-	if action_key == "attack" and attack_windup_left <= 0.0 and frame_index >= frame_count - 1:
+	if action_key == "attack" and not is_charging_attack and attack_windup_left <= 0.0 and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0 and frame_index >= frame_count - 1:
 		_apply_queued_melee_hit()
-	if action_key == "lunge" and frame_index >= frame_count - 1:
-		_apply_lunge_strike()
-
-
 func _update_weapon_fx(delta: float) -> void:
 	if using_external_player_sprite:
 		weapon_trail.visible = false

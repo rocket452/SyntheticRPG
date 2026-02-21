@@ -7,11 +7,29 @@ signal died(enemy: EnemyBase)
 @export var move_speed: float = 105.0
 @export var attack_damage: float = 12.0
 @export var attack_range: float = 46.0
+@export var basic_attack_hit_start_offset: float = 6.0
+@export var basic_attack_hit_end_bonus: float = 24.0
+@export var basic_attack_hit_half_width: float = 24.0
+@export var basic_attack_tip_radius: float = 20.0
 @export var attack_cooldown: float = 1.2
 @export var attack_windup: float = 0.2
 @export var attack_prestrike_hold_duration: float = 0.0
 @export var attack_hold_frame: int = 2
 @export var attack_recovery_hold_duration: float = 0.0
+@export var spin_attack_enabled: bool = true
+@export var spin_charge_duration: float = 2.0
+@export var spin_attack_duration: float = 1.35
+@export var spin_attack_radius: float = 94.0
+@export var spin_attack_edge_padding: float = 22.0
+@export var spin_attack_depth_scale: float = 0.62
+@export var spin_attack_center_offset: float = 0.0
+@export var spin_attack_damage_multiplier: float = 1.8
+@export var spin_attack_cooldown: float = 5.5
+@export var spin_trigger_range: float = 140.0
+@export var spin_hit_interval: float = 0.2
+@export var spin_guard_break: bool = false
+@export var spin_stun_bonus: float = 0.18
+@export var spin_warning_color: Color = Color(1.0, 0.18, 0.18, 0.3)
 @export var blocked_counter_stun_duration: float = 0.44
 @export var melee_trade_damage_scale: float = 1.0
 @export var melee_trade_reach_bonus: float = 12.0
@@ -43,6 +61,7 @@ const MONSTER_TEXTURES: Dictionary = {
 	"idle": MONSTER_SHEET,
 	"run": MONSTER_SHEET,
 	"attack": MONSTER_SHEET,
+	"spin": MONSTER_SHEET,
 	"hurt": MONSTER_SHEET,
 	"death": MONSTER_SHEET
 }
@@ -50,6 +69,7 @@ const MONSTER_FPS: Dictionary = {
 	"idle": 9.0,
 	"run": 12.0,
 	"attack": 13.0,
+	"spin": 16.0,
 	"hurt": 11.0,
 	"death": 8.0
 }
@@ -57,6 +77,7 @@ const MONSTER_ACTION_ROWS: Dictionary = {
 	"idle": 0,
 	"run": 1,
 	"attack": 3,
+	"spin": 6,
 	"hurt": 4,
 	"death": 9
 }
@@ -64,10 +85,12 @@ const MONSTER_ACTION_FRAME_COUNTS: Dictionary = {
 	"idle": 5,
 	"run": 8,
 	"attack": 9,
+	"spin": 8,
 	"hurt": 5,
 	"death": 6
 }
 const MONSTER_ACTION_FRAME_COLUMNS: Dictionary = {
+	"spin": [0, 1, 2, 3, 4, 5, 6, 7],
 	"hurt": [1, 2, 3, 4]
 }
 const MONSTER_HD_ROW_DIRECTIONS: Array[Vector2] = [
@@ -95,6 +118,7 @@ var knockback_velocity: Vector2 = Vector2.ZERO
 var hit_flash_left: float = 0.0
 var hurt_anim_left: float = 0.0
 var stun_left: float = 0.0
+var hitstop_left: float = 0.0
 var attack_flash_left: float = 0.0
 var attack_anim_left: float = 0.0
 var attack_anim_total: float = 0.0
@@ -122,6 +146,11 @@ var debug_last_to_player: Vector2 = Vector2.ZERO
 var health_bar_root: Node2D = null
 var health_bar_background: Line2D = null
 var health_bar_fill: Line2D = null
+var spin_attack_cooldown_left: float = 0.0
+var spin_charge_left: float = 0.0
+var spin_active_left: float = 0.0
+var spin_hit_tick_left: float = 0.0
+var spin_warning_area: Polygon2D = null
 
 @onready var shadow_visual: Polygon2D = $Shadow
 @onready var body_visual: Polygon2D = $Body
@@ -169,6 +198,7 @@ func _ready() -> void:
 	add_to_group("enemies")
 	current_health = max_health
 	attack_cooldown_left = randf_range(0.1, attack_cooldown)
+	spin_attack_cooldown_left = randf_range(spin_attack_cooldown * 0.35, spin_attack_cooldown * 0.8)
 	using_external_monster_sprite = is_instance_valid(monster_sprite)
 	if using_external_monster_sprite:
 		body_visual.visible = false
@@ -202,6 +232,7 @@ func _ready() -> void:
 	attack_telegraph.visible = false
 	weapon_trail.visible = false
 	slash_effect.visible = false
+	_setup_spin_warning_area()
 	_setup_health_bar()
 	_update_health_bar()
 	_reacquire_player()
@@ -210,10 +241,25 @@ func _ready() -> void:
 
 func _exit_tree() -> void:
 	_teardown_debug_overlay()
+	if is_instance_valid(spin_warning_area):
+		spin_warning_area.queue_free()
 
 
 func _physics_process(delta: float) -> void:
 	if dead:
+		return
+	if hitstop_left > 0.0:
+		hitstop_left = maxf(0.0, hitstop_left - delta)
+		if not is_instance_valid(player):
+			_reacquire_player()
+		var freeze_to_player := Vector2.RIGHT
+		if is_instance_valid(player):
+			freeze_to_player = player.global_position - global_position
+		velocity = Vector2.ZERO
+		move_and_slide()
+		_clamp_to_arena()
+		_update_visuals(0.0, freeze_to_player)
+		_update_health_bar()
 		return
 
 	var previous_attack_anim_left := attack_anim_left
@@ -224,6 +270,7 @@ func _physics_process(delta: float) -> void:
 	attack_anim_left = maxf(0.0, attack_anim_left - delta)
 	attack_recovery_hold_left = maxf(0.0, attack_recovery_hold_left - delta)
 	slash_effect_left = maxf(0.0, slash_effect_left - delta)
+	spin_attack_cooldown_left = maxf(0.0, spin_attack_cooldown_left - delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.45))
 	if previous_attack_anim_left > 0.0 and attack_anim_left <= 0.0:
 		attack_recovery_hold_left = maxf(attack_recovery_hold_left, attack_recovery_hold_duration)
@@ -237,21 +284,24 @@ func _physics_process(delta: float) -> void:
 		return
 
 	var to_player: Vector2 = player.global_position - global_position
-	var committed_attack_active := (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001
-	if committed_attack_active:
-		if using_external_monster_sprite:
-			external_sprite_facing_direction = committed_attack_facing_direction
-			rotation = 0.0
-		else:
-			rotation = lerp_angle(rotation, committed_attack_facing_direction.angle(), clampf(delta * 16.0, 0.0, 1.0))
-	elif to_player.length_squared() > 0.0001:
-		if using_external_monster_sprite:
-			external_sprite_facing_direction = to_player.normalized()
-			rotation = 0.0
-		else:
-			rotation = lerp_angle(rotation, to_player.angle(), clampf(delta * 10.0, 0.0, 1.0))
+	var lock_facing_from_hit := stun_left > 0.0 or hurt_anim_left > 0.0
+	var committed_attack_active := (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0 or spin_active_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001
+	if not lock_facing_from_hit:
+		if committed_attack_active:
+			if using_external_monster_sprite:
+				external_sprite_facing_direction = committed_attack_facing_direction
+				rotation = 0.0
+			else:
+				rotation = lerp_angle(rotation, committed_attack_facing_direction.angle(), clampf(delta * 16.0, 0.0, 1.0))
+		elif to_player.length_squared() > 0.0001:
+			if using_external_monster_sprite:
+				external_sprite_facing_direction = to_player.normalized()
+				rotation = 0.0
+			else:
+				rotation = lerp_angle(rotation, to_player.angle(), clampf(delta * 10.0, 0.0, 1.0))
 
 	if stun_left > 0.0:
+		_cancel_spin_attack()
 		pending_attack = false
 		attack_windup_left = 0.0
 		attack_prestrike_hold_left = 0.0
@@ -259,6 +309,32 @@ func _physics_process(delta: float) -> void:
 		velocity = knockback_velocity
 		knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
 		attack_telegraph.visible = false
+		move_and_slide()
+		_clamp_to_arena()
+		_update_visuals(delta, to_player)
+		_update_health_bar()
+		return
+
+	if spin_charge_left > 0.0:
+		velocity = Vector2.ZERO
+		spin_charge_left = maxf(0.0, spin_charge_left - delta)
+		if spin_charge_left <= 0.0:
+			_begin_spin_attack()
+		move_and_slide()
+		_clamp_to_arena()
+		_update_visuals(delta, to_player)
+		_update_health_bar()
+		return
+
+	if spin_active_left > 0.0:
+		velocity = Vector2.ZERO
+		spin_active_left = maxf(0.0, spin_active_left - delta)
+		spin_hit_tick_left = maxf(0.0, spin_hit_tick_left - delta)
+		if spin_hit_tick_left <= 0.0:
+			_perform_spin_attack_hit()
+			spin_hit_tick_left = spin_hit_interval
+		if spin_active_left <= 0.0:
+			_finish_spin_attack()
 		move_and_slide()
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
@@ -303,16 +379,19 @@ func _physics_process(delta: float) -> void:
 	else:
 		velocity = Vector2.ZERO
 		if attack_cooldown_left <= 0.0:
-			pending_attack = true
-			attack_windup_left = attack_windup
-			attack_prestrike_hold_left = 0.0
-			attack_recovery_hold_left = 0.0
-			var initial_attack_facing := to_player.normalized()
-			if initial_attack_facing.length_squared() <= 0.0001:
-				initial_attack_facing = external_sprite_facing_direction
-			if initial_attack_facing.length_squared() <= 0.0001:
-				initial_attack_facing = Vector2.RIGHT
-			committed_attack_facing_direction = initial_attack_facing.normalized()
+			if spin_attack_enabled and spin_attack_cooldown_left <= 0.0 and distance_to_player <= spin_trigger_range:
+				_begin_spin_charge(to_player)
+			else:
+				pending_attack = true
+				attack_windup_left = attack_windup
+				attack_prestrike_hold_left = 0.0
+				attack_recovery_hold_left = 0.0
+				var initial_attack_facing := to_player.normalized()
+				if initial_attack_facing.length_squared() <= 0.0001:
+					initial_attack_facing = external_sprite_facing_direction
+				if initial_attack_facing.length_squared() <= 0.0001:
+					initial_attack_facing = Vector2.RIGHT
+				committed_attack_facing_direction = initial_attack_facing.normalized()
 
 	move_and_slide()
 	_clamp_to_arena()
@@ -355,6 +434,60 @@ func _setup_health_bar() -> void:
 	health_bar_fill.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	health_bar_fill.end_cap_mode = Line2D.LINE_CAP_ROUND
 	health_bar_root.add_child(health_bar_fill)
+
+
+func _setup_spin_warning_area() -> void:
+	spin_warning_area = Polygon2D.new()
+	spin_warning_area.visible = false
+	spin_warning_area.z_index = 1
+	spin_warning_area.color = spin_warning_color
+	_rebuild_spin_warning_polygon()
+	_update_spin_warning_transform()
+	add_child(spin_warning_area)
+
+
+func _rebuild_spin_warning_polygon() -> void:
+	if spin_warning_area == null:
+		return
+	var spin_radii := _get_spin_hit_radii()
+	spin_warning_area.polygon = _build_ellipse_polygon(spin_radii.x, spin_radii.y, 44)
+
+
+func _get_spin_hit_radii() -> Vector2:
+	var extra_reach := maxf(0.0, spin_attack_edge_padding)
+	var horizontal_radius := maxf(24.0, spin_attack_radius + extra_reach)
+	var base_vertical_radius := (spin_attack_radius * clampf(spin_attack_depth_scale, 0.3, 1.0)) + (extra_reach * 0.9)
+	var vertical_radius := maxf(18.0, base_vertical_radius * 0.8)
+	return Vector2(horizontal_radius, vertical_radius)
+
+
+func _build_ellipse_polygon(radius_x: float, radius_y: float, segments: int) -> PackedVector2Array:
+	var safe_segments := maxi(10, segments)
+	var points := PackedVector2Array()
+	for i in range(safe_segments):
+		var angle := (TAU * float(i)) / float(safe_segments)
+		points.append(Vector2(cos(angle) * radius_x, sin(angle) * radius_y))
+	return points
+
+
+func _get_spin_attack_direction() -> Vector2:
+	var facing := committed_attack_facing_direction
+	if facing.length_squared() <= 0.0001:
+		facing = external_sprite_facing_direction
+	if facing.length_squared() <= 0.0001:
+		facing = Vector2.RIGHT
+	return facing.normalized()
+
+
+func _get_spin_attack_center() -> Vector2:
+	return global_position + Vector2(spin_attack_center_offset, 0.0)
+
+
+func _update_spin_warning_transform() -> void:
+	if spin_warning_area == null:
+		return
+	spin_warning_area.position = Vector2(spin_attack_center_offset, 0.0)
+	spin_warning_area.rotation = 0.0
 
 
 func _update_health_bar() -> void:
@@ -432,29 +565,96 @@ func _teardown_debug_overlay() -> void:
 func _perform_attack() -> void:
 	attack_flash_left = 0.10
 	_start_attack_animation(0.2, 1.3)
-	_trigger_slash_effect(attack_range + 12.0, 95.0, Color(0.94, 0.46, 0.26, 0.88), 0.18, 4.2)
+	var basic_hit_reach := attack_range + basic_attack_hit_end_bonus
+	_trigger_slash_effect(basic_hit_reach, 95.0, Color(0.94, 0.46, 0.26, 0.88), 0.18, 4.2)
 
-	var player_target := _query_player_hit(attack_range + 12.0)
-	if player_target == null:
+	var hit_targets := _query_friendly_hits_for_basic()
+	if hit_targets.is_empty():
 		return
-	_attempt_player_hit(player_target, attack_damage, false, outgoing_hit_stun_duration)
+	for target in hit_targets:
+		_attempt_friendly_hit(target, attack_damage, false, outgoing_hit_stun_duration)
 
 
-func receive_hit(amount: float, source_position: Vector2, stun_duration: float = 0.0, apply_hit_stun: bool = true) -> bool:
+func _begin_spin_charge(to_player: Vector2) -> void:
+	pending_attack = false
+	attack_windup_left = 0.0
+	attack_prestrike_hold_left = 0.0
+	attack_recovery_hold_left = 0.0
+	spin_charge_left = maxf(0.1, spin_charge_duration)
+	spin_active_left = 0.0
+	spin_hit_tick_left = 0.0
+	var spin_facing := to_player.normalized()
+	if spin_facing.length_squared() <= 0.0001:
+		spin_facing = external_sprite_facing_direction
+	if spin_facing.length_squared() <= 0.0001:
+		spin_facing = Vector2.RIGHT
+	committed_attack_facing_direction = spin_facing
+	_show_spin_warning()
+
+
+func _begin_spin_attack() -> void:
+	spin_charge_left = 0.0
+	spin_active_left = maxf(0.2, spin_attack_duration)
+	spin_hit_tick_left = 0.0
+	attack_flash_left = maxf(attack_flash_left, 0.22)
+	var spin_reach := _get_spin_hit_radii().x
+	_trigger_slash_effect(spin_reach * 0.95, 320.0, Color(1.0, 0.34, 0.22, 0.9), 0.26, 5.8)
+	_hide_spin_warning()
+
+
+func _finish_spin_attack() -> void:
+	spin_active_left = 0.0
+	spin_hit_tick_left = 0.0
+	spin_attack_cooldown_left = maxf(spin_attack_cooldown_left, spin_attack_cooldown)
+	attack_cooldown_left = maxf(attack_cooldown_left, attack_cooldown * 0.8)
+	attack_recovery_hold_left = maxf(attack_recovery_hold_left, 0.24)
+	_hide_spin_warning()
+
+
+func _cancel_spin_attack() -> void:
+	spin_charge_left = 0.0
+	spin_active_left = 0.0
+	spin_hit_tick_left = 0.0
+	_hide_spin_warning()
+
+
+func _perform_spin_attack_hit() -> void:
+	var hit_targets := _query_friendly_hits_for_spin()
+	if hit_targets.is_empty():
+		return
+	for target in hit_targets:
+		var landed := _attempt_friendly_hit(
+			target,
+			attack_damage * spin_attack_damage_multiplier,
+			spin_guard_break,
+			outgoing_hit_stun_duration + spin_stun_bonus
+		)
+		if landed:
+			attack_flash_left = maxf(attack_flash_left, 0.08)
+
+
+func receive_hit(amount: float, source_position: Vector2, stun_duration: float = 0.0, apply_hit_stun: bool = true, knockback_scale: float = 1.0) -> bool:
 	if dead:
 		return false
 
-	var knockback_direction := (global_position - source_position).normalized()
-	if knockback_direction == Vector2.ZERO:
-		knockback_direction = Vector2.LEFT if external_sprite_facing_direction.x >= 0.0 else Vector2.RIGHT
-	knockback_velocity = knockback_direction * hit_knockback_speed
+	var ignore_interrupts := spin_charge_left > 0.0
+	if ignore_interrupts:
+		knockback_velocity = Vector2.ZERO
+	else:
+		var knockback_direction := (global_position - source_position).normalized()
+		if knockback_direction == Vector2.ZERO:
+			knockback_direction = Vector2.LEFT if external_sprite_facing_direction.x >= 0.0 else Vector2.RIGHT
+		knockback_velocity = knockback_direction * (hit_knockback_speed * maxf(0.1, knockback_scale))
 
 	current_health = maxf(0.0, current_health - amount)
 	hit_flash_left = 0.12
-	hurt_anim_left = maxf(hurt_anim_left, hurt_anim_duration)
-	var applied_stun := maxf(hit_stun_duration, stun_duration) if apply_hit_stun else maxf(0.0, stun_duration)
-	stun_left = maxf(stun_left, applied_stun)
+	var applied_stun := 0.0
+	if not ignore_interrupts:
+		hurt_anim_left = maxf(hurt_anim_left, hurt_anim_duration)
+		applied_stun = maxf(hit_stun_duration, stun_duration) if apply_hit_stun else maxf(0.0, stun_duration)
+		stun_left = maxf(stun_left, applied_stun)
 	if applied_stun > 0.0:
+		_cancel_spin_attack()
 		pending_attack = false
 		attack_windup_left = 0.0
 		attack_prestrike_hold_left = 0.0
@@ -472,6 +672,10 @@ func receive_hit(amount: float, source_position: Vector2, stun_duration: float =
 		_die()
 
 	return true
+
+
+func apply_hitstop(duration: float) -> void:
+	hitstop_left = maxf(hitstop_left, maxf(0.0, duration))
 
 
 func can_trade_melee_with(target: Node2D) -> bool:
@@ -496,20 +700,25 @@ func get_trade_stun_duration() -> float:
 	return outgoing_hit_stun_duration
 
 
-func _attempt_player_hit(player_target: Player, damage: float, guard_break: bool = false, stun_duration: float = 0.0) -> bool:
-	if player_target == null or not is_instance_valid(player_target):
+func _attempt_friendly_hit(target: Node2D, damage: float, guard_break: bool = false, stun_duration: float = 0.0) -> bool:
+	if target == null or not is_instance_valid(target):
 		return false
-	var was_blocked := _is_player_blocking_attack(player_target)
-	var landed := player_target.receive_hit(damage, global_position, guard_break, stun_duration)
+	if not target.has_method("receive_hit"):
+		return false
+	var was_blocked := _is_target_blocking_attack(target)
+	var landed := bool(target.call("receive_hit", damage, global_position, guard_break, stun_duration))
 	if landed:
-		_spawn_hit_effect(player_target.global_position + Vector2(0.0, -14.0), Color(1.0, 0.44, 0.3, 0.95), 10.0)
+		_spawn_hit_effect(target.global_position + Vector2(0.0, -14.0), Color(1.0, 0.44, 0.3, 0.95), 10.0)
 	if was_blocked and not guard_break:
 		_apply_blocked_counter_stun()
 	return landed
 
 
-func _is_player_blocking_attack(player_target: Player) -> bool:
-	if player_target == null or not is_instance_valid(player_target):
+func _is_target_blocking_attack(target: Node2D) -> bool:
+	if target == null or not is_instance_valid(target):
+		return false
+	var player_target := target as Player
+	if player_target == null:
 		return false
 	if not player_target.is_blocking:
 		return false
@@ -565,6 +774,76 @@ func _query_player_hit(max_distance: float) -> Player:
 	return nearest_player
 
 
+func _get_basic_attack_direction() -> Vector2:
+	var attack_direction := committed_attack_facing_direction
+	if attack_direction.length_squared() <= 0.0001:
+		attack_direction = external_sprite_facing_direction
+	if attack_direction.length_squared() <= 0.0001 and is_instance_valid(player):
+		attack_direction = (player.global_position - global_position).normalized()
+	if attack_direction.length_squared() <= 0.0001:
+		attack_direction = Vector2.RIGHT
+	return attack_direction.normalized()
+
+
+func _distance_to_segment(point: Vector2, segment_start: Vector2, segment_end: Vector2) -> float:
+	var segment := segment_end - segment_start
+	var segment_len_sq := segment.length_squared()
+	if segment_len_sq <= 0.0001:
+		return point.distance_to(segment_start)
+	var segment_t := clampf((point - segment_start).dot(segment) / segment_len_sq, 0.0, 1.0)
+	var closest := segment_start + (segment * segment_t)
+	return point.distance_to(closest)
+
+
+func _query_friendly_hits_for_basic() -> Array[Node2D]:
+	var hit_targets: Array[Node2D] = []
+	var attack_direction := _get_basic_attack_direction()
+	var segment_start := global_position + (attack_direction * basic_attack_hit_start_offset)
+	var segment_end := global_position + (attack_direction * (attack_range + basic_attack_hit_end_bonus))
+	for candidate in _get_attackable_friendly_targets():
+		var distance_to_sweep := _distance_to_segment(candidate.global_position, segment_start, segment_end)
+		if distance_to_sweep <= maxf(6.0, basic_attack_hit_half_width):
+			hit_targets.append(candidate)
+			continue
+		if candidate.global_position.distance_to(segment_end) <= maxf(8.0, basic_attack_tip_radius):
+			hit_targets.append(candidate)
+	return hit_targets
+
+
+func _query_friendly_hits_for_spin() -> Array[Node2D]:
+	var hit_targets: Array[Node2D] = []
+	var center := _get_spin_attack_center()
+	var spin_radii := _get_spin_hit_radii()
+	var radius_x := maxf(10.0, spin_radii.x)
+	var radius_y := maxf(8.0, spin_radii.y)
+	for candidate in _get_attackable_friendly_targets():
+		var to_candidate := candidate.global_position - center
+		var normalized_distance := (to_candidate.x * to_candidate.x) / (radius_x * radius_x)
+		normalized_distance += (to_candidate.y * to_candidate.y) / (radius_y * radius_y)
+		if normalized_distance <= 1.0:
+			hit_targets.append(candidate)
+	return hit_targets
+
+
+func _get_attackable_friendly_targets() -> Array[Node2D]:
+	var targets: Array[Node2D] = []
+	if not is_instance_valid(player):
+		_reacquire_player()
+	var player_target := player as Node2D
+	if player_target != null and is_instance_valid(player_target) and player_target.has_method("receive_hit"):
+		targets.append(player_target)
+	for node in get_tree().get_nodes_in_group("friendly_npcs"):
+		var target := node as Node2D
+		if target == null or not is_instance_valid(target):
+			continue
+		if target == player_target:
+			continue
+		if not target.has_method("receive_hit"):
+			continue
+		targets.append(target)
+	return targets
+
+
 func _spawn_hit_effect(world_position: Vector2, effect_color: Color, effect_size: float) -> void:
 	var scene_root := get_tree().current_scene
 	if scene_root == null:
@@ -596,7 +875,11 @@ func _update_visuals(delta: float, to_player: Vector2) -> void:
 	var target_scale := Vector2.ONE
 	var movement_ratio := clampf(velocity.length() / maxf(1.0, move_speed), 0.0, 1.0)
 	_update_monster_sprite(delta, movement_ratio, to_player)
-	if pending_attack:
+	if spin_charge_left > 0.0:
+		target_scale = Vector2(1.08, 0.94)
+	elif spin_active_left > 0.0:
+		target_scale = Vector2(1.18, 0.82)
+	elif pending_attack:
 		target_scale = Vector2(1.1, 0.9)
 	elif attack_flash_left > 0.0:
 		target_scale = Vector2(1.16, 0.84)
@@ -609,6 +892,20 @@ func _update_visuals(delta: float, to_player: Vector2) -> void:
 			Color(0.78, 0.44, 0.42, 1.0),
 			Color(0.64, 0.2, 0.2, 1.0),
 			Color(0.72, 0.64, 0.6, 1.0)
+		)
+	elif spin_charge_left > 0.0:
+		_set_model_palette(
+			base_body_color.lerp(Color(0.76, 0.2, 0.18, 1.0), 0.62),
+			base_head_color.lerp(Color(0.8, 0.44, 0.4, 1.0), 0.5),
+			base_arm_color.lerp(Color(0.68, 0.18, 0.16, 1.0), 0.58),
+			base_weapon_color.lerp(Color(0.94, 0.54, 0.4, 1.0), 0.56)
+		)
+	elif spin_active_left > 0.0:
+		_set_model_palette(
+			base_body_color.lerp(Color(0.84, 0.16, 0.12, 1.0), 0.7),
+			base_head_color.lerp(Color(0.86, 0.36, 0.32, 1.0), 0.55),
+			base_arm_color.lerp(Color(0.78, 0.14, 0.12, 1.0), 0.62),
+			base_weapon_color.lerp(Color(1.0, 0.62, 0.44, 1.0), 0.64)
 		)
 	elif pending_attack:
 		_set_model_palette(
@@ -629,15 +926,17 @@ func _update_visuals(delta: float, to_player: Vector2) -> void:
 
 	scale = scale.lerp(target_scale, clampf(delta * 14.0, 0.0, 1.0))
 	_update_attack_telegraph(to_player)
+	_update_spin_warning_visual(delta)
 	_update_weapon_fx(delta)
 	_update_debug_overlay()
 
 
 func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vector2) -> void:
-	var facing := to_player
-	if (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001:
+	var lock_facing_from_hit := stun_left > 0.0 or hurt_anim_left > 0.0
+	var facing := external_sprite_facing_direction if lock_facing_from_hit else to_player
+	if not lock_facing_from_hit and (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0 or spin_active_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001:
 		facing = committed_attack_facing_direction
-	elif velocity.length_squared() > 0.001:
+	elif not lock_facing_from_hit and velocity.length_squared() > 0.001:
 		facing = velocity
 	if facing.length_squared() <= 0.0001:
 		facing = Vector2.RIGHT
@@ -649,6 +948,10 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		action_key = "death"
 	elif hurt_anim_left > 0.0:
 		action_key = "hurt"
+	elif spin_active_left > 0.0:
+		action_key = "spin"
+	elif spin_charge_left > 0.0:
+		action_key = "attack"
 	elif pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0:
 		action_key = "attack"
 	elif movement_ratio > 0.08:
@@ -684,13 +987,17 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	var holding_attack_frame := action_key == "attack" and pending_attack and attack_windup_left <= 0.0 and attack_prestrike_hold_left > 0.0
 	var preparing_attack_hold := action_key == "attack" and pending_attack and attack_windup_left > 0.0 and attack_prestrike_hold_duration > 0.0
 	var holding_recovery_frame := action_key == "attack" and not pending_attack and attack_anim_left <= 0.0 and attack_recovery_hold_left > 0.0
+	var holding_spin_charge_frame := action_key == "attack" and spin_charge_left > 0.0
 	if not holding_attack_frame and not holding_recovery_frame:
 		monster_anim_time += delta * fps
 	var frame_index: int
 	if action_key == "death" and dead:
 		frame_index = mini(int(floor(monster_anim_time)), frame_count - 1)
 	elif action_key == "attack":
-		if holding_attack_frame:
+		if holding_spin_charge_frame:
+			frame_index = clampi(maxi(0, attack_hold_frame - 1), 0, max(0, frame_count - 1))
+			monster_anim_time = float(frame_index)
+		elif holding_attack_frame:
 			frame_index = clampi(attack_hold_frame, 0, max(0, frame_count - 1))
 			monster_anim_time = float(frame_index)
 		elif preparing_attack_hold:
@@ -784,6 +1091,9 @@ func _is_debug_focus_enemy() -> bool:
 
 
 func _update_attack_telegraph(to_player: Vector2) -> void:
+	if spin_charge_left > 0.0 or spin_active_left > 0.0:
+		attack_telegraph.visible = false
+		return
 	if not pending_attack:
 		attack_telegraph.visible = false
 		return
@@ -801,13 +1111,47 @@ func _update_attack_telegraph(to_player: Vector2) -> void:
 	attack_telegraph.default_color = Color(0.96, lerpf(0.64, 0.3, progress), lerpf(0.36, 0.18, progress), 0.9)
 	attack_telegraph.points = PackedVector2Array([
 		Vector2.ZERO,
-		Vector2(lerpf(12.0, attack_range + 12.0, progress), 0.0)
+		Vector2(lerpf(12.0, attack_range + basic_attack_hit_end_bonus, progress), 0.0)
 	])
+
+
+func _show_spin_warning() -> void:
+	if spin_warning_area == null:
+		return
+	_rebuild_spin_warning_polygon()
+	_update_spin_warning_transform()
+	spin_warning_area.visible = true
+	spin_warning_area.color = spin_warning_color
+	spin_warning_area.scale = Vector2.ONE
+
+
+func _hide_spin_warning() -> void:
+	if spin_warning_area == null:
+		return
+	spin_warning_area.visible = false
+	spin_warning_area.scale = Vector2.ONE
+
+
+func _update_spin_warning_visual(delta: float) -> void:
+	if spin_warning_area == null:
+		return
+	_update_spin_warning_transform()
+	if spin_charge_left <= 0.0:
+		if spin_warning_area.visible:
+			spin_warning_area.visible = false
+			spin_warning_area.scale = Vector2.ONE
+		return
+	var charge_progress := clampf(1.0 - (spin_charge_left / maxf(0.01, spin_charge_duration)), 0.0, 1.0)
+	var pulse := 0.5 + (sin(anim_time * 9.5) * 0.5)
+	spin_warning_area.visible = true
+	spin_warning_area.color = spin_warning_color.lerp(Color(1.0, 0.1, 0.1, 0.55), charge_progress * 0.8)
+	spin_warning_area.scale = spin_warning_area.scale.lerp(Vector2.ONE * lerpf(0.96, 1.08, pulse), clampf(delta * 10.0, 0.0, 1.0))
 
 
 func _die() -> void:
 	dead = true
 	knockback_velocity = Vector2.ZERO
+	_cancel_spin_attack()
 	_teardown_debug_overlay()
 	died.emit(self)
 	queue_free()
@@ -872,6 +1216,23 @@ func _update_model_animation(delta: float, movement_ratio: float, to_player: Vec
 		if cloth_back_visual != null:
 			cloth_back_visual.rotation = lerp_angle(cloth_back_visual.rotation, -0.12, clampf(delta * 12.0, 0.0, 1.0))
 
+	if spin_charge_left > 0.0:
+		var charge_progress := clampf(1.0 - (spin_charge_left / maxf(0.01, spin_charge_duration)), 0.0, 1.0)
+		right_arm_visual.rotation = lerp_angle(right_arm_visual.rotation, 0.8, clampf(delta * 12.0, 0.0, 1.0))
+		weapon_visual.rotation = lerp_angle(weapon_visual.rotation, 1.18, clampf(delta * 12.0, 0.0, 1.0))
+		left_leg_visual.rotation = lerp_angle(left_leg_visual.rotation, -0.28, clampf(delta * 10.0, 0.0, 1.0))
+		right_leg_visual.rotation = lerp_angle(right_leg_visual.rotation, -0.2, clampf(delta * 10.0, 0.0, 1.0))
+		body_visual.rotation = lerp_angle(body_visual.rotation, body_visual.rotation + (charge_progress * 0.06), clampf(delta * 8.0, 0.0, 1.0))
+
+	if spin_active_left > 0.0:
+		body_visual.rotation += delta * 15.0
+		head_visual.rotation += delta * 7.5
+		right_arm_visual.rotation += delta * 11.0
+		weapon_visual.rotation += delta * 20.0
+		left_leg_visual.rotation += delta * 8.0
+		right_leg_visual.rotation -= delta * 8.0
+		weapon_trail_alpha = maxf(weapon_trail_alpha, 0.95)
+
 	if attack_anim_left > 0.0:
 		var attack_progress := 1.0 - (attack_anim_left / maxf(0.01, attack_anim_total))
 		var attack_swing := sin(attack_progress * PI) * attack_anim_strength
@@ -881,13 +1242,14 @@ func _update_model_animation(delta: float, movement_ratio: float, to_player: Vec
 		if cloth_front_visual != null:
 			cloth_front_visual.rotation += attack_swing * 0.04
 
-	var body_aim := to_player
-	if (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001:
-		body_aim = committed_attack_facing_direction
-	if body_aim.length_squared() > 0.0001:
-		body_visual.rotation = lerp_angle(body_visual.rotation, body_aim.angle() * 0.16, clampf(delta * 10.0, 0.0, 1.0))
-	else:
-		body_visual.rotation = lerp_angle(body_visual.rotation, 0.0, clampf(delta * 8.0, 0.0, 1.0))
+	if spin_active_left <= 0.0:
+		var body_aim := external_sprite_facing_direction if (stun_left > 0.0 or hurt_anim_left > 0.0) else to_player
+		if stun_left <= 0.0 and hurt_anim_left <= 0.0 and (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001:
+			body_aim = committed_attack_facing_direction
+		if body_aim.length_squared() > 0.0001:
+			body_visual.rotation = lerp_angle(body_visual.rotation, body_aim.angle() * 0.16, clampf(delta * 10.0, 0.0, 1.0))
+		else:
+			body_visual.rotation = lerp_angle(body_visual.rotation, 0.0, clampf(delta * 8.0, 0.0, 1.0))
 
 	var shadow_target := Vector2(1.0 + (movement_ratio * 0.06), 1.0 - (movement_ratio * 0.04))
 	if pending_attack:

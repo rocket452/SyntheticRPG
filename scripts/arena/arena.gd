@@ -36,7 +36,10 @@ var rng := RandomNumberGenerator.new()
 
 
 func _ready() -> void:
-	rng.randomize()
+	if _is_autoplay_requested():
+		rng.seed = 1337
+	else:
+		rng.randomize()
 
 
 func start_demo() -> void:
@@ -211,3 +214,14 @@ func _on_player_item_looted(item_name: String, total_owned: int) -> void:
 func _on_player_died() -> void:
 	objective_changed.emit("Objective: Defeat")
 	player_died.emit()
+
+
+func _is_autoplay_requested() -> bool:
+	var autoplay_raw := OS.get_environment("AUTOPLAY_TEST").strip_edges().to_lower()
+	if not autoplay_raw.is_empty() and autoplay_raw not in ["0", "false", "off", "no"]:
+		return true
+	for arg in OS.get_cmdline_user_args():
+		var normalized := String(arg).strip_edges().to_lower()
+		if normalized == "--autoplay_test" or normalized == "autoplay_test" or normalized == "--autoplay_test=1":
+			return true
+	return false

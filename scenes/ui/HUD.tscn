@@ -15,7 +15,7 @@ text = "Level 1 XP: 0 / 100"
 
 [node name="CooldownLabel" type="Label" parent="."]
 position = Vector2(20, 70)
-text = "Basic Ready  Cleave Ready  Lunge Ready  Roll Ready"
+text = "Basic Ready  Cleave Ready  Dash Ready  Roll Ready"
 
 [node name="ItemsLabel" type="Label" parent="."]
 position = Vector2(20, 96)
