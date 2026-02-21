@@ -1,7 +1,10 @@
 extends Node2D
 class_name FriendlyHealer
 
-@export var heal_amount: float = 20.0
+signal health_changed(current: float, maximum: float)
+signal died(healer: FriendlyHealer)
+
+@export var heal_amount: float = 12.0
 @export var heal_interval: float = 4.2
 @export var heal_interval_variance: float = 0.7
 @export var heal_threshold_ratio: float = 0.98
@@ -10,79 +13,184 @@ class_name FriendlyHealer
 @export var reacquire_retry_interval: float = 0.3
 @export var react_heal_delay: float = 0.18
 @export var emergency_cast_on_damage: bool = true
+@export var move_speed: float = 118.0
+@export var movement_acceleration: float = 860.0
+@export var movement_deceleration: float = 980.0
+@export var move_deadzone: float = 8.0
+@export var slow_down_radius: float = 36.0
+@export var cast_move_speed_multiplier: float = 0.9
+@export var input_decision_interval_min: float = 0.08
+@export var input_decision_interval_max: float = 0.18
+@export var input_noise_degrees: float = 8.0
+@export var input_release_chance: float = 0.12
+@export var strafe_input_chance: float = 0.22
+@export var stick_quantization_steps: int = 8
+@export var follow_distance: float = 84.0
+@export var min_distance_to_player: float = 26.0
+@export var max_distance_to_player: float = 120.0
+@export var target_smoothing_speed: float = 430.0
+@export var guard_side_swap_threshold: float = 40.0
+@export var follow_vertical_scale: float = 0.2
+@export var follow_vertical_bias: float = 0.0
+@export var orbit_lateral_distance: float = 4.0
+@export var orbit_depth_distance: float = 2.0
+@export var orbit_speed: float = 1.25
+@export var move_facing_threshold: float = 20.0
+@export var facing_flip_deadzone: float = 10.0
+@export var pixel_snap_movement: bool = false
+@export var arena_padding: float = 26.0
+@export var tidal_wave_enabled: bool = true
+@export var basic_heal_cooldown: float = 1.0
+@export var tidal_wave_cooldown: float = 6.0
+@export var tidal_wave_speed: float = 310.0
+@export var tidal_wave_duration: float = 1.5
+@export var tidal_wave_heal_amount: float = 9.0
+@export var tidal_wave_damage: float = 4.0
+@export var tidal_wave_knockback_scale: float = 1.85
+@export var tidal_wave_stun_duration: float = 0.14
+@export var tidal_wave_hit_length: float = 82.0
+@export var tidal_wave_hit_half_width: float = 26.0
+@export var tidal_wave_visual_height_scale: float = 1.55
+@export var tidal_wave_droplet_interval: float = 0.07
+@export var tidal_wave_sprite_scale: Vector2 = Vector2(0.72, 0.7)
+@export var max_health: float = 90.0
+@export var hit_stun_duration: float = 0.18
+@export var hit_knockback_speed: float = 170.0
+@export var hit_knockback_decay: float = 960.0
 
 const HEALER_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/fishfolk/Fishfolk Archpriest Sprite Sheet.png")
+const TIDAL_WAVE_SHEET_PATH: String = "res://assets/external/wave_fx/tidal_wave_sheet/animated_water_24x129x96.png"
+const TIDAL_WAVE_FRAME_SIZE: Vector2i = Vector2i(192, 96)
+const TIDAL_WAVE_FRAME_COUNT: int = 24
 const HEALER_HFRAMES: int = 9
 const HEALER_VFRAMES: int = 6
 const FRAME_ALPHA_THRESHOLD: float = 0.08
 const INVALID_FRAME_ANCHOR: Vector2 = Vector2(-1.0, -1.0)
 const ANIM_ROWS: Dictionary = {
 	"idle": 0,
+	"run": 1,
 	"cast": 2
 }
 const ANIM_FRAME_COLUMNS: Dictionary = {
 	"idle": [0, 1, 2, 3],
+	"run": [0, 1, 2, 3],
 	"cast": [0, 1, 2, 3, 4, 5, 6]
 }
 const ANIM_FPS: Dictionary = {
 	"idle": 6.0,
+	"run": 10.0,
 	"cast": 12.0
 }
 
 var player: Player = null
 var heal_timer_left: float = 0.0
 var idle_anim_time: float = 0.0
+var run_anim_time: float = 0.0
 var cast_anim_time: float = 0.0
 var is_casting: bool = false
 var heal_applied_this_cast: bool = false
+var basic_heal_cooldown_left: float = 0.0
+var tidal_wave_cooldown_left: float = 0.0
 var reacquire_left: float = 0.0
 var tracked_player_health: float = -1.0
 var sprite_base_position: Vector2 = Vector2.ZERO
 var frame_pixel_size: Vector2 = Vector2.ZERO
 var frame_anchor_points: Dictionary = {}
 var alignment_anchor_point: Vector2 = Vector2.ZERO
+var active_tidal_waves: Array[Dictionary] = []
+var tidal_wave_sprite_frames: SpriteFrames = null
+var tidal_wave_sheet_texture: Texture2D = null
+var move_velocity: Vector2 = Vector2.ZERO
+var orbit_phase: float = 0.0
+var smoothed_target_position: Vector2 = Vector2.ZERO
+var desired_guard_side: float = 0.0
+var coop_input_direction: Vector2 = Vector2.ZERO
+var coop_input_timer: float = 0.0
+var facing_left: bool = false
 var rng := RandomNumberGenerator.new()
+var current_health: float = 0.0
+var stun_left: float = 0.0
+var hit_flash_left: float = 0.0
+var knockback_velocity: Vector2 = Vector2.ZERO
+var dead: bool = false
 
 @onready var sprite: Sprite2D = $Sprite2D
 
 
 func _ready() -> void:
-	rng.randomize()
+	add_to_group("friendly_npcs")
+	if _is_autoplay_requested():
+		rng.seed = 2026
+	else:
+		rng.randomize()
+	orbit_phase = rng.randf_range(0.0, TAU)
 	heal_timer_left = _next_heal_interval() * 0.45
+	basic_heal_cooldown_left = 0.0
+	tidal_wave_cooldown_left = 0.0
 	reacquire_left = 0.0
 	_acquire_player()
 	_configure_sprite()
 	if is_instance_valid(sprite):
 		sprite_base_position = sprite.position
+		facing_left = sprite.flip_h
+	smoothed_target_position = position
+	desired_guard_side = -1.0 if facing_left else 1.0
+	coop_input_direction = Vector2.ZERO
+	coop_input_timer = rng.randf_range(input_decision_interval_min, input_decision_interval_max)
 	_prepare_frame_alignment()
 	_set_anim_frame("idle", 0)
+	current_health = maxf(1.0, max_health)
+	health_changed.emit(current_health, max_health)
 
 
 func _exit_tree() -> void:
 	_unbind_player_signal()
+	_clear_tidal_waves()
 
 
 func _physics_process(delta: float) -> void:
+	if dead:
+		return
+	hit_flash_left = maxf(0.0, hit_flash_left - delta)
+	stun_left = maxf(0.0, stun_left - delta)
+	knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, maxf(0.0, hit_knockback_decay) * delta)
+	if knockback_velocity.length_squared() > 0.0001:
+		position += knockback_velocity * delta
+		position = _clamp_to_bounds(position)
+		if pixel_snap_movement:
+			position = position.round()
+	if is_instance_valid(sprite):
+		sprite.modulate = Color(1.0, 0.72, 0.72, 1.0) if hit_flash_left > 0.0 else Color(1.0, 1.0, 1.0, 1.0)
 	if not is_instance_valid(player):
 		reacquire_left = maxf(0.0, reacquire_left - delta)
 		if reacquire_left <= 0.0:
 			_acquire_player()
 			reacquire_left = reacquire_retry_interval
+	_update_tactical_positioning(delta)
 	_update_facing()
+	basic_heal_cooldown_left = maxf(0.0, basic_heal_cooldown_left - delta)
+	tidal_wave_cooldown_left = maxf(0.0, tidal_wave_cooldown_left - delta)
+	_update_tidal_waves(delta)
 
 	if is_casting:
 		_tick_cast(delta)
 		return
 
-	_tick_idle(delta)
+	if _is_tactically_moving():
+		_tick_run(delta)
+	else:
+		_tick_idle(delta)
 	heal_timer_left = maxf(0.0, heal_timer_left - delta)
 	if heal_timer_left > 0.0:
 		return
 
 	if _player_needs_healing():
-		_begin_cast()
+		if _is_healing_ability_ready():
+			_begin_cast()
+		else:
+			heal_timer_left = maxf(0.05, _time_until_next_healing_ability_ready())
 	else:
-		heal_timer_left = _next_heal_interval() * 0.4
+		heal_timer_left = minf(_next_heal_interval() * 0.4, 0.6)
 
 
 func _acquire_player() -> void:
@@ -148,6 +256,14 @@ func _tick_idle(delta: float) -> void:
 	_set_anim_frame("idle", frame_index)
 
 
+func _tick_run(delta: float) -> void:
+	var fps := float(ANIM_FPS.get("run", 10.0))
+	var frame_count := _anim_frame_count("run")
+	run_anim_time += delta * fps
+	var frame_index := int(floor(run_anim_time)) % frame_count
+	_set_anim_frame("run", frame_index)
+
+
 func _begin_cast() -> void:
 	is_casting = true
 	cast_anim_time = 0.0
@@ -166,14 +282,14 @@ func _tick_cast(delta: float) -> void:
 
 	if not heal_applied_this_cast and frame_index >= cast_frame_to_heal:
 		heal_applied_this_cast = true
-		_apply_heal()
+		_trigger_healing_ability()
 
 	if cast_anim_time < float(frame_count):
 		return
 
 	is_casting = false
 	cast_anim_time = 0.0
-	heal_timer_left = _next_heal_interval()
+	heal_timer_left = minf(_next_heal_interval() * 0.2, react_heal_delay)
 	_set_anim_frame("idle", 0)
 
 
@@ -193,12 +309,275 @@ func _apply_heal() -> void:
 	_spawn_heal_burst(player_target, healed)
 
 
+func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = false, stun_duration: float = 0.0) -> bool:
+	if dead:
+		return false
+	if amount <= 0.0:
+		return false
+	if is_instance_valid(player) and player.is_point_inside_block_shield(global_position):
+		_spawn_heal_burst(global_position + Vector2(0.0, -14.0), true)
+		return false
+
+	var knockback_direction := (global_position - source_position).normalized()
+	if knockback_direction == Vector2.ZERO:
+		knockback_direction = Vector2.LEFT if facing_left else Vector2.RIGHT
+	knockback_velocity = knockback_direction * maxf(0.0, hit_knockback_speed)
+	stun_left = maxf(stun_left, maxf(hit_stun_duration, stun_duration))
+	hit_flash_left = 0.12
+	current_health = maxf(0.0, current_health - amount)
+	health_changed.emit(current_health, max_health)
+	if is_casting:
+		is_casting = false
+		cast_anim_time = 0.0
+		heal_applied_this_cast = false
+	_spawn_heal_burst(global_position + Vector2(0.0, -14.0), false)
+	if current_health <= 0.0:
+		_die()
+	return true
+
+
+func _trigger_healing_ability() -> void:
+	if tidal_wave_enabled and tidal_wave_cooldown_left <= 0.0:
+		_spawn_tidal_wave()
+		tidal_wave_cooldown_left = maxf(0.0, tidal_wave_cooldown)
+		return
+	if basic_heal_cooldown_left <= 0.0:
+		_apply_heal()
+		basic_heal_cooldown_left = maxf(0.0, basic_heal_cooldown)
+		return
+
+
+func _is_healing_ability_ready() -> bool:
+	if basic_heal_cooldown_left <= 0.0:
+		return true
+	return tidal_wave_enabled and tidal_wave_cooldown_left <= 0.0
+
+
+func _time_until_next_healing_ability_ready() -> float:
+	var next_ready := maxf(0.0, basic_heal_cooldown_left)
+	if tidal_wave_enabled:
+		next_ready = minf(next_ready, maxf(0.0, tidal_wave_cooldown_left))
+	return maxf(0.0, next_ready)
+
+
 func _update_facing() -> void:
 	if not is_instance_valid(sprite):
 		return
 	if not is_instance_valid(player):
 		return
-	sprite.flip_h = player.global_position.x < global_position.x
+	var move_threshold := maxf(0.0, move_facing_threshold)
+	if absf(move_velocity.x) >= move_threshold:
+		facing_left = move_velocity.x < 0.0
+	else:
+		var delta_x := player.position.x - position.x
+		var deadzone := maxf(0.0, facing_flip_deadzone)
+		if delta_x > deadzone:
+			facing_left = false
+		elif delta_x < -deadzone:
+			facing_left = true
+	sprite.flip_h = facing_left
+
+
+func _update_tactical_positioning(delta: float) -> void:
+	if not is_instance_valid(player):
+		coop_input_direction = Vector2.ZERO
+		coop_input_timer = 0.0
+		move_velocity = move_velocity.move_toward(Vector2.ZERO, movement_deceleration * delta)
+		return
+	if stun_left > 0.0:
+		coop_input_direction = Vector2.ZERO
+		coop_input_timer = 0.0
+		move_velocity = move_velocity.move_toward(Vector2.ZERO, movement_deceleration * delta)
+		return
+	orbit_phase = wrapf(orbit_phase + (delta * maxf(0.0, orbit_speed)), 0.0, TAU)
+
+	var desired_position := _compute_desired_position()
+	smoothed_target_position = smoothed_target_position.move_toward(desired_position, maxf(0.0, target_smoothing_speed) * delta)
+	var to_target := smoothed_target_position - position
+	var distance_to_target := to_target.length()
+
+	var effective_speed := move_speed
+	if is_casting:
+		effective_speed *= clampf(cast_move_speed_multiplier, 0.0, 1.0)
+
+	var speed_scale := 1.0
+	var slowdown := maxf(move_deadzone + 0.001, slow_down_radius)
+	if distance_to_target < slowdown:
+		speed_scale = clampf((distance_to_target - move_deadzone) / (slowdown - move_deadzone), 0.0, 1.0)
+	var enemy := _find_primary_enemy()
+	var input_direction := _update_coop_input_direction(delta, to_target, distance_to_target, enemy)
+	var desired_velocity := input_direction * (effective_speed * speed_scale)
+
+	var steer_rate := movement_acceleration if desired_velocity.length_squared() >= move_velocity.length_squared() else movement_deceleration
+	move_velocity = move_velocity.move_toward(desired_velocity, maxf(0.0, steer_rate) * delta)
+	if desired_velocity == Vector2.ZERO:
+		move_velocity = move_velocity.move_toward(Vector2.ZERO, maxf(0.0, movement_deceleration) * delta)
+		if move_velocity.length_squared() <= 1.0:
+			move_velocity = Vector2.ZERO
+
+	position += move_velocity * delta
+	position = _clamp_to_bounds(position)
+	if pixel_snap_movement:
+		position = position.round()
+
+
+func _update_coop_input_direction(delta: float, to_target: Vector2, distance_to_target: float, enemy: EnemyBase) -> Vector2:
+	coop_input_timer = maxf(0.0, coop_input_timer - delta)
+
+	var desired_direction := Vector2.ZERO
+	if distance_to_target > 0.0001:
+		desired_direction = to_target / distance_to_target
+
+	var should_pick_new := coop_input_timer <= 0.0
+	if not should_pick_new and coop_input_direction.length_squared() > 0.0001 and desired_direction.length_squared() > 0.0:
+		var emergency_distance := maxf(move_deadzone * 2.0, slow_down_radius * 1.15)
+		if distance_to_target > emergency_distance and coop_input_direction.dot(desired_direction) < 0.15:
+			should_pick_new = true
+
+	if should_pick_new:
+		coop_input_direction = _choose_coop_input_direction(desired_direction, distance_to_target, enemy)
+		var min_interval := maxf(0.03, input_decision_interval_min)
+		var max_interval := maxf(min_interval + 0.01, input_decision_interval_max)
+		coop_input_timer = rng.randf_range(min_interval, max_interval)
+
+	return coop_input_direction
+
+
+func _choose_coop_input_direction(desired_direction: Vector2, distance_to_target: float, enemy: EnemyBase) -> Vector2:
+	if desired_direction.length_squared() <= 0.0001:
+		return Vector2.ZERO
+	if distance_to_target <= move_deadzone and rng.randf() < input_release_chance:
+		return Vector2.ZERO
+
+	var candidate := desired_direction
+	var noise_degrees := maxf(0.0, input_noise_degrees)
+	if distance_to_target < slow_down_radius:
+		noise_degrees *= 0.4
+	if noise_degrees > 0.0:
+		candidate = candidate.rotated(deg_to_rad(rng.randf_range(-noise_degrees, noise_degrees)))
+
+	if enemy != null and is_instance_valid(enemy) and distance_to_target < (slow_down_radius * 1.35) and rng.randf() < strafe_input_chance:
+		var enemy_position := _get_position_in_actor_space(enemy)
+		var player_position := player.position
+		var enemy_side := signf(enemy_position.x - player_position.x)
+		if absf(enemy_side) > 0.01:
+			var away_from_enemy := Vector2(-enemy_side, 0.0)
+			candidate = (candidate * 0.72 + away_from_enemy * 0.55).normalized()
+
+	var steps := maxi(4, stick_quantization_steps)
+	var step_angle := TAU / float(steps)
+	var snapped_angle: float = round(candidate.angle() / step_angle) * step_angle
+	var quantized: Vector2 = Vector2.RIGHT.rotated(snapped_angle)
+	if distance_to_target < move_deadzone * 1.8 and rng.randf() < input_release_chance:
+		return Vector2.ZERO
+	return quantized
+
+
+func _compute_desired_position() -> Vector2:
+	if not is_instance_valid(player):
+		return position
+	var player_position := player.position
+	var orbit_lateral := sin(orbit_phase) * maxf(0.0, orbit_lateral_distance)
+	var orbit_depth := cos(orbit_phase * 0.9) * maxf(0.0, orbit_depth_distance)
+	var enemy := _find_primary_enemy()
+	var desired_side := _resolve_guard_side(player_position, enemy)
+	var desired_offset := Vector2(desired_side * follow_distance, follow_vertical_bias)
+	if enemy != null and is_instance_valid(enemy):
+		var desired_follow_distance := clampf(follow_distance + (orbit_depth * 0.4), min_distance_to_player + 4.0, max_distance_to_player - 8.0)
+		desired_offset = Vector2(
+			(desired_side * desired_follow_distance) + orbit_lateral,
+			follow_vertical_bias + (orbit_depth * follow_vertical_scale)
+		)
+	else:
+		desired_offset = Vector2(
+			(desired_side * ((follow_distance * 0.72) + (orbit_depth * 0.3))) + (orbit_lateral * 0.55),
+			follow_vertical_bias + (sin(orbit_phase * 0.65) * 4.0)
+		)
+
+	var target_position := player_position + desired_offset
+	if enemy != null and is_instance_valid(enemy):
+		var enemy_position_now := _get_position_in_actor_space(enemy)
+		var enemy_side_now := signf(enemy_position_now.x - player_position.x)
+		if absf(enemy_side_now) > 0.01:
+			var target_side := signf(target_position.x - player_position.x)
+			if absf(target_side) <= 0.01 or target_side == enemy_side_now:
+				target_position.x = player_position.x - (enemy_side_now * (min_distance_to_player + 6.0))
+	var player_to_target := target_position - player_position
+	var target_distance := player_to_target.length()
+	if target_distance < min_distance_to_player:
+		var push_direction := player_to_target.normalized() if player_to_target.length_squared() > 0.0001 else Vector2.LEFT
+		target_position = player_position + (push_direction * min_distance_to_player)
+	elif target_distance > max_distance_to_player:
+		var pull_direction := player_to_target.normalized() if player_to_target.length_squared() > 0.0001 else Vector2.LEFT
+		target_position = player_position + (pull_direction * max_distance_to_player)
+
+	return _clamp_to_bounds(target_position)
+
+
+func _resolve_guard_side(player_position: Vector2, enemy: EnemyBase) -> float:
+	var fallback_side := desired_guard_side
+	if absf(fallback_side) <= 0.01:
+		fallback_side = -signf(player.facing_direction.x)
+		if absf(fallback_side) <= 0.01:
+			fallback_side = -1.0
+
+	if enemy == null or not is_instance_valid(enemy):
+		desired_guard_side = fallback_side
+		return desired_guard_side
+
+	var enemy_position := _get_position_in_actor_space(enemy)
+	var enemy_delta_x := enemy_position.x - player_position.x
+	var enemy_side := signf(enemy_delta_x)
+	if absf(enemy_side) <= 0.01:
+		desired_guard_side = fallback_side
+		return desired_guard_side
+
+	var desired_from_enemy := -enemy_side
+	if desired_from_enemy == fallback_side or absf(enemy_delta_x) >= guard_side_swap_threshold:
+		desired_guard_side = desired_from_enemy
+	else:
+		desired_guard_side = fallback_side
+	return desired_guard_side
+
+
+func _find_primary_enemy() -> EnemyBase:
+	if not is_instance_valid(player):
+		return null
+	var nearest_enemy: EnemyBase = null
+	var nearest_distance_sq := INF
+	for enemy_node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := enemy_node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy):
+			continue
+		var distance_sq := enemy.global_position.distance_squared_to(player.global_position)
+		if distance_sq < nearest_distance_sq:
+			nearest_distance_sq = distance_sq
+			nearest_enemy = enemy
+	return nearest_enemy
+
+
+func _clamp_to_bounds(local_position: Vector2) -> Vector2:
+	if not is_instance_valid(player):
+		return local_position
+	var clamped := local_position
+	clamped.x = clampf(clamped.x, player.lane_min_x + arena_padding, player.lane_max_x - arena_padding)
+	clamped.y = clampf(clamped.y, player.lane_min_y + arena_padding, player.lane_max_y - arena_padding)
+	return clamped
+
+
+func _get_position_in_actor_space(node: Node2D) -> Vector2:
+	if node == null or not is_instance_valid(node):
+		return Vector2.ZERO
+	var shared_parent := get_parent() as Node2D
+	if shared_parent != null and node.get_parent() == shared_parent:
+		return node.position
+	if shared_parent == null:
+		return node.global_position
+	return shared_parent.to_local(node.global_position)
+
+
+func _is_tactically_moving() -> bool:
+	return move_velocity.length_squared() > 36.0
 
 
 func _set_anim_frame(anim_name: String, frame_index: int) -> void:
@@ -217,6 +596,392 @@ func _set_anim_frame(anim_name: String, frame_index: int) -> void:
 func _next_heal_interval() -> float:
 	var interval := heal_interval + rng.randf_range(-heal_interval_variance, heal_interval_variance)
 	return maxf(0.9, interval)
+
+
+func _spawn_tidal_wave() -> void:
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		_apply_heal()
+		return
+
+	var wave_direction := _get_horizontal_facing_direction()
+
+	var wave_node := Node2D.new()
+	wave_node.top_level = true
+	wave_node.global_position = global_position + Vector2(0.0, -14.0) + (wave_direction * 18.0)
+	wave_node.rotation = 0.0 if wave_direction.x >= 0.0 else PI
+	wave_node.z_index = 236
+	scene_root.add_child(wave_node)
+
+	var height_scale := maxf(1.0, tidal_wave_visual_height_scale)
+	var sprite_frames := _get_tidal_wave_sprite_frames()
+	if sprite_frames.get_animation_names().is_empty():
+		if is_instance_valid(wave_node):
+			wave_node.queue_free()
+		_apply_heal()
+		return
+	var base_scale := Vector2(
+		maxf(0.2, tidal_wave_sprite_scale.x) * (0.85 + ((height_scale - 1.0) * 0.55)),
+		maxf(0.2, tidal_wave_sprite_scale.y) * (0.88 + ((height_scale - 1.0) * 0.68))
+	)
+
+	var wave_sprite := AnimatedSprite2D.new()
+	wave_sprite.sprite_frames = sprite_frames
+	wave_sprite.animation = "wave"
+	wave_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	wave_sprite.centered = true
+	wave_sprite.position = Vector2(2.0, 2.0)
+	wave_sprite.scale = base_scale
+	wave_sprite.modulate = Color(0.9, 0.98, 1.0, 0.9)
+	wave_node.add_child(wave_sprite)
+	wave_sprite.play("wave")
+
+	var wave_overlay := AnimatedSprite2D.new()
+	wave_overlay.sprite_frames = sprite_frames
+	wave_overlay.animation = "wave"
+	wave_overlay.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	wave_overlay.centered = true
+	wave_overlay.position = Vector2(-9.0, -10.0)
+	wave_overlay.scale = base_scale * Vector2(0.8, 0.76)
+	wave_overlay.modulate = Color(0.7, 0.97, 1.0, 0.38)
+	var additive_material := CanvasItemMaterial.new()
+	additive_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	wave_overlay.material = additive_material
+	wave_node.add_child(wave_overlay)
+	wave_overlay.play("wave")
+
+	active_tidal_waves.append({
+		"node": wave_node,
+		"direction": wave_direction,
+		"time_left": maxf(0.25, tidal_wave_duration),
+		"travel_phase": 0.0,
+		"height_scale": height_scale,
+		"base_scale": base_scale,
+		"sprite": wave_sprite,
+		"overlay": wave_overlay,
+		"droplet_timer": 0.0,
+		"healed_ids": {},
+		"hit_ids": {}
+	})
+
+
+func _get_horizontal_facing_direction() -> Vector2:
+	if is_instance_valid(sprite) and sprite.flip_h:
+		return Vector2.LEFT
+	return Vector2.RIGHT
+
+
+func _update_tidal_waves(delta: float) -> void:
+	if active_tidal_waves.is_empty():
+		return
+
+	for wave_index in range(active_tidal_waves.size() - 1, -1, -1):
+		var wave_state := active_tidal_waves[wave_index]
+		var wave_node := wave_state.get("node") as Node2D
+		if not is_instance_valid(wave_node):
+			active_tidal_waves.remove_at(wave_index)
+			continue
+
+		var wave_direction := wave_state.get("direction", Vector2.RIGHT) as Vector2
+		var time_left := maxf(0.0, float(wave_state.get("time_left", 0.0)) - delta)
+		var travel_phase := float(wave_state.get("travel_phase", 0.0)) + delta
+		var height_scale := float(wave_state.get("height_scale", 1.0))
+		var base_scale: Vector2 = wave_state.get("base_scale", Vector2.ONE)
+		var droplet_timer := maxf(0.0, float(wave_state.get("droplet_timer", 0.0)) - delta)
+		var wave_sprite := wave_state.get("sprite") as AnimatedSprite2D
+		var wave_overlay := wave_state.get("overlay") as AnimatedSprite2D
+
+		wave_node.global_position += wave_direction * tidal_wave_speed * delta
+		var body_pulse := sin(travel_phase * 10.5)
+		var ripple_x := 1.0 + (sin(travel_phase * 8.8) * 0.06)
+		var ripple_y := 1.0 + (cos(travel_phase * 7.1) * 0.07)
+		if is_instance_valid(wave_sprite):
+			wave_sprite.scale = Vector2(base_scale.x * ripple_x, base_scale.y * ripple_y)
+			wave_sprite.modulate = Color(0.88 + (body_pulse * 0.04), 0.98, 1.0, 0.88)
+		if is_instance_valid(wave_overlay):
+			wave_overlay.scale = Vector2(base_scale.x * 0.8 * (1.0 + (sin(travel_phase * 11.6) * 0.08)), base_scale.y * 0.76 * (1.0 + (cos(travel_phase * 9.4) * 0.08)))
+			wave_overlay.position = Vector2(-9.0 + (sin(travel_phase * 8.0) * 2.0), -10.0 + (cos(travel_phase * 6.6) * 1.6))
+			wave_overlay.modulate = Color(0.7, 0.97, 1.0, 0.3 + ((body_pulse + 1.0) * 0.12))
+		if time_left < 0.2:
+			wave_node.modulate.a = clampf(time_left / 0.2, 0.0, 1.0)
+		else:
+			wave_node.modulate.a = 1.0
+
+		if droplet_timer <= 0.0:
+			var crest_position := wave_node.global_position + (wave_direction * 46.0)
+			_spawn_tidal_wave_droplet(crest_position + Vector2(0.0, -8.0 * height_scale), wave_direction, height_scale * 1.08)
+			_spawn_tidal_wave_droplet(crest_position + Vector2(-4.0 * wave_direction.x, 7.0 * height_scale), wave_direction, height_scale * 0.95)
+			droplet_timer = maxf(0.03, tidal_wave_droplet_interval)
+
+		_process_tidal_wave_hits(wave_state, wave_node.global_position, wave_direction)
+
+		if time_left <= 0.0:
+			if is_instance_valid(wave_node):
+				wave_node.queue_free()
+			active_tidal_waves.remove_at(wave_index)
+			continue
+
+		wave_state["time_left"] = time_left
+		wave_state["travel_phase"] = travel_phase
+		wave_state["droplet_timer"] = droplet_timer
+		active_tidal_waves[wave_index] = wave_state
+
+
+func _get_tidal_wave_sprite_frames() -> SpriteFrames:
+	if tidal_wave_sprite_frames != null:
+		return tidal_wave_sprite_frames
+	var sheet_texture := _get_tidal_wave_sheet_texture()
+	if sheet_texture == null:
+		return SpriteFrames.new()
+	var frames := SpriteFrames.new()
+	frames.add_animation("wave")
+	frames.set_animation_speed("wave", 15.0)
+	frames.set_animation_loop("wave", true)
+	var frame_width := maxi(1, TIDAL_WAVE_FRAME_SIZE.x)
+	var frame_height := maxi(1, TIDAL_WAVE_FRAME_SIZE.y)
+	var sheet_width := maxi(frame_width, sheet_texture.get_width())
+	var sheet_height := maxi(frame_height, sheet_texture.get_height())
+	var columns := maxi(1, sheet_width / frame_width)
+	var rows := maxi(1, sheet_height / frame_height)
+	var frames_added := 0
+	for row in range(rows):
+		for col in range(columns):
+			if frames_added >= TIDAL_WAVE_FRAME_COUNT:
+				break
+			var atlas := AtlasTexture.new()
+			atlas.atlas = sheet_texture
+			atlas.region = Rect2i(col * frame_width, row * frame_height, frame_width, frame_height)
+			frames.add_frame("wave", atlas)
+			frames_added += 1
+		if frames_added >= TIDAL_WAVE_FRAME_COUNT:
+			break
+	tidal_wave_sprite_frames = frames
+	return tidal_wave_sprite_frames
+
+
+func _get_tidal_wave_sheet_texture() -> Texture2D:
+	if tidal_wave_sheet_texture != null:
+		return tidal_wave_sheet_texture
+	var image := Image.new()
+	var err := image.load(TIDAL_WAVE_SHEET_PATH)
+	if err != OK:
+		push_warning("Failed to load tidal wave sprite sheet at %s (error %s)." % [TIDAL_WAVE_SHEET_PATH, err])
+		return null
+	tidal_wave_sheet_texture = ImageTexture.create_from_image(image)
+	return tidal_wave_sheet_texture
+
+
+func _process_tidal_wave_hits(wave_state: Dictionary, wave_center: Vector2, wave_direction: Vector2) -> void:
+	var sweep_start := wave_center - (wave_direction * (tidal_wave_hit_length * 0.3))
+	var sweep_end := wave_center + (wave_direction * (tidal_wave_hit_length * 0.7))
+	var healed_ids: Dictionary = wave_state.get("healed_ids", {}) as Dictionary
+	var hit_ids: Dictionary = wave_state.get("hit_ids", {}) as Dictionary
+
+	for friendly in get_tree().get_nodes_in_group("player"):
+		var friendly_player := friendly as Player
+		if friendly_player == null or not is_instance_valid(friendly_player):
+			continue
+		var friendly_id := friendly_player.get_instance_id()
+		if healed_ids.has(friendly_id):
+			continue
+		var friendly_distance := _distance_to_segment(friendly_player.global_position, sweep_start, sweep_end)
+		if friendly_distance > tidal_wave_hit_half_width:
+			continue
+		var healed := friendly_player.receive_heal(tidal_wave_heal_amount)
+		healed_ids[friendly_id] = true
+		var burst_position := friendly_player.global_position + Vector2(0.0, -16.0)
+		_spawn_heal_burst(burst_position, healed)
+		_spawn_heal_beam(wave_center, burst_position, healed)
+
+	for enemy_node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := enemy_node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy):
+			continue
+		var enemy_id := enemy.get_instance_id()
+		if hit_ids.has(enemy_id):
+			continue
+		var enemy_distance := _distance_to_segment(enemy.global_position, sweep_start, sweep_end)
+		if enemy_distance > tidal_wave_hit_half_width:
+			continue
+		hit_ids[enemy_id] = true
+		enemy.receive_hit(tidal_wave_damage, wave_center, tidal_wave_stun_duration, true, tidal_wave_knockback_scale)
+		if enemy.has_method("apply_hitstop"):
+			enemy.apply_hitstop(0.03)
+		_spawn_heal_burst(enemy.global_position + Vector2(0.0, -12.0), false)
+
+	wave_state["healed_ids"] = healed_ids
+	wave_state["hit_ids"] = hit_ids
+
+
+func _distance_to_segment(point: Vector2, segment_start: Vector2, segment_end: Vector2) -> float:
+	var segment := segment_end - segment_start
+	var segment_length_sq := segment.length_squared()
+	if segment_length_sq <= 0.0001:
+		return point.distance_to(segment_start)
+	var segment_t := clampf((point - segment_start).dot(segment) / segment_length_sq, 0.0, 1.0)
+	var closest_point := segment_start + (segment * segment_t)
+	return point.distance_to(closest_point)
+
+
+func _build_tidal_wave_body_points(height_scale: float, stretch: float) -> PackedVector2Array:
+	var safe_height := maxf(1.0, height_scale)
+	var safe_stretch := maxf(0.8, stretch)
+	return PackedVector2Array([
+		Vector2(-34.0 * safe_stretch, -22.0 * safe_height),
+		Vector2(-6.0 * safe_stretch, -30.0 * safe_height),
+		Vector2(24.0 * safe_stretch, -36.0 * safe_height),
+		Vector2(50.0 * safe_stretch, -16.0 * safe_height),
+		Vector2(62.0 * safe_stretch, 0.0),
+		Vector2(50.0 * safe_stretch, 16.0 * safe_height),
+		Vector2(24.0 * safe_stretch, 34.0 * safe_height),
+		Vector2(-8.0 * safe_stretch, 28.0 * safe_height),
+		Vector2(-34.0 * safe_stretch, 20.0 * safe_height),
+		Vector2(-56.0 * safe_stretch, 0.0)
+	])
+
+
+func _build_tidal_wave_inner_points(height_scale: float, stretch: float) -> PackedVector2Array:
+	var safe_height := maxf(1.0, height_scale)
+	var safe_stretch := maxf(0.8, stretch)
+	return PackedVector2Array([
+		Vector2(-24.0 * safe_stretch, -14.0 * safe_height),
+		Vector2(-2.0 * safe_stretch, -22.0 * safe_height),
+		Vector2(20.0 * safe_stretch, -26.0 * safe_height),
+		Vector2(36.0 * safe_stretch, -10.0 * safe_height),
+		Vector2(42.0 * safe_stretch, 0.0),
+		Vector2(34.0 * safe_stretch, 10.0 * safe_height),
+		Vector2(18.0 * safe_stretch, 20.0 * safe_height),
+		Vector2(-2.0 * safe_stretch, 16.0 * safe_height),
+		Vector2(-22.0 * safe_stretch, 8.0 * safe_height),
+		Vector2(-32.0 * safe_stretch, 0.0)
+	])
+
+
+func _build_tidal_wave_foam_points(height_scale: float, crest_shift: float) -> PackedVector2Array:
+	var safe_height := maxf(1.0, height_scale)
+	return PackedVector2Array([
+		Vector2(-26.0, -12.0 * safe_height),
+		Vector2(-6.0, -20.0 * safe_height + (crest_shift * 0.2)),
+		Vector2(16.0, -27.0 * safe_height + (crest_shift * 0.45)),
+		Vector2(36.0, -20.0 * safe_height + (crest_shift * 0.3)),
+		Vector2(50.0, -8.0 * safe_height),
+		Vector2(56.0, 0.0),
+		Vector2(50.0, 8.0 * safe_height),
+		Vector2(36.0, 20.0 * safe_height + (crest_shift * 0.15)),
+		Vector2(16.0, 25.0 * safe_height),
+		Vector2(-4.0, 18.0 * safe_height),
+		Vector2(-24.0, 10.0 * safe_height)
+	])
+
+
+func _build_tidal_wave_rim_points(height_scale: float, crest_shift: float) -> PackedVector2Array:
+	var safe_height := maxf(1.0, height_scale)
+	return PackedVector2Array([
+		Vector2(-10.0, -17.0 * safe_height),
+		Vector2(10.0, -25.0 * safe_height + (crest_shift * 0.28)),
+		Vector2(30.0, -28.0 * safe_height + (crest_shift * 0.48)),
+		Vector2(48.0, -16.0 * safe_height + (crest_shift * 0.2)),
+		Vector2(56.0, 0.0),
+		Vector2(46.0, 14.0 * safe_height),
+		Vector2(26.0, 22.0 * safe_height),
+		Vector2(8.0, 18.0 * safe_height)
+	])
+
+
+func _build_tidal_wave_trail_points(height_scale: float, y_sign: float, shift: float) -> PackedVector2Array:
+	var safe_height := maxf(1.0, height_scale)
+	var safe_sign := -1.0 if y_sign < 0.0 else 1.0
+	return PackedVector2Array([
+		Vector2(-82.0, safe_sign * (15.0 * safe_height)),
+		Vector2(-62.0, safe_sign * ((12.0 * safe_height) + (shift * 0.4))),
+		Vector2(-42.0, safe_sign * ((10.0 * safe_height) + (shift * 0.28))),
+		Vector2(-24.0, safe_sign * ((8.0 * safe_height) + (shift * 0.2))),
+		Vector2(-10.0, safe_sign * ((6.0 * safe_height) + (shift * 0.12)))
+	])
+
+
+func _build_tidal_wave_mist_points(height_scale: float, shift: float) -> PackedVector2Array:
+	var safe_height := maxf(1.0, height_scale)
+	return PackedVector2Array([
+		Vector2(-94.0, -10.0 * safe_height + (shift * 0.3)),
+		Vector2(-74.0, -18.0 * safe_height + (shift * 0.45)),
+		Vector2(-50.0, -16.0 * safe_height + (shift * 0.35)),
+		Vector2(-22.0, -10.0 * safe_height + (shift * 0.2)),
+		Vector2(-12.0, 0.0),
+		Vector2(-24.0, 10.0 * safe_height - (shift * 0.2)),
+		Vector2(-52.0, 16.0 * safe_height - (shift * 0.35)),
+		Vector2(-78.0, 14.0 * safe_height - (shift * 0.45)),
+		Vector2(-98.0, 6.0 * safe_height - (shift * 0.3))
+	])
+
+
+func _build_tidal_wave_glint_points(height_scale: float, crest_shift: float) -> PackedVector2Array:
+	var safe_height := maxf(1.0, height_scale)
+	return PackedVector2Array([
+		Vector2(-4.0, -6.0 * safe_height),
+		Vector2(14.0, -11.0 * safe_height + (crest_shift * 0.15)),
+		Vector2(30.0, -13.0 * safe_height + (crest_shift * 0.24)),
+		Vector2(40.0, -8.0 * safe_height + (crest_shift * 0.12))
+	])
+
+
+func _spawn_tidal_wave_droplet(world_position: Vector2, wave_direction: Vector2, height_scale: float) -> void:
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		return
+	var droplet := Polygon2D.new()
+	droplet.top_level = true
+	droplet.global_position = world_position + Vector2(
+		rng.randf_range(-3.0, 3.0),
+		rng.randf_range(-12.0, 12.0) * maxf(1.0, height_scale * 0.72)
+	)
+	droplet.z_index = 237
+	var droplet_size := rng.randf_range(1.6, 3.3) * clampf(height_scale * 0.75, 0.75, 1.65)
+	droplet.color = Color(0.74 + rng.randf_range(-0.04, 0.06), 0.96 + rng.randf_range(-0.02, 0.03), 1.0, 0.72 + rng.randf_range(-0.08, 0.08))
+	droplet.polygon = PackedVector2Array([
+		Vector2(0.0, -droplet_size),
+		Vector2(droplet_size * 0.72, 0.0),
+		Vector2(0.0, droplet_size),
+		Vector2(-droplet_size * 0.72, 0.0)
+	])
+	scene_root.add_child(droplet)
+
+	var drift := Vector2(
+		wave_direction.x * rng.randf_range(18.0, 34.0),
+		rng.randf_range(-18.0, 18.0) - (4.0 * signf(wave_direction.x))
+	)
+	var tween := create_tween()
+	tween.tween_property(droplet, "global_position", droplet.global_position + drift, 0.22).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(droplet, "scale", Vector2(0.35, 0.35), 0.22)
+	tween.parallel().tween_property(droplet, "modulate:a", 0.0, 0.22)
+	tween.finished.connect(func() -> void:
+		if is_instance_valid(droplet):
+			droplet.queue_free()
+	)
+
+
+func _clear_tidal_waves() -> void:
+	for wave_state_variant in active_tidal_waves:
+		var wave_state := wave_state_variant as Dictionary
+		var wave_node := wave_state.get("node") as Node2D
+		if is_instance_valid(wave_node):
+			wave_node.queue_free()
+	active_tidal_waves.clear()
+
+
+func _die() -> void:
+	if dead:
+		return
+	dead = true
+	is_casting = false
+	_clear_tidal_waves()
+	died.emit(self)
+	var fade := create_tween()
+	fade.tween_property(self, "modulate:a", 0.0, 0.18)
+	fade.finished.connect(func() -> void:
+		if is_instance_valid(self):
+			queue_free()
+	)
 
 
 func _anim_columns(anim_name: String) -> Array:
@@ -309,7 +1074,7 @@ func _apply_frame_alignment(row: int, col: int) -> void:
 		aligned_foot_x = (frame_pixel_size.x - 1.0) - aligned_foot_x
 	var delta_pixels := Vector2(alignment_anchor_point.x - aligned_foot_x, alignment_anchor_point.y - frame_anchor.y)
 	var sprite_scale := Vector2(absf(sprite.scale.x), absf(sprite.scale.y))
-	sprite.position = sprite_base_position + Vector2(delta_pixels.x * sprite_scale.x, delta_pixels.y * sprite_scale.y)
+	sprite.position = (sprite_base_position + Vector2(delta_pixels.x * sprite_scale.x, delta_pixels.y * sprite_scale.y)).round()
 
 
 func _spawn_cast_flash(world_position: Vector2) -> void:
@@ -415,3 +1180,14 @@ func _build_ring_points(radius: float, segments: int) -> PackedVector2Array:
 		var angle := (TAU * float(i)) / float(maxi(3, segments))
 		points.append(Vector2.RIGHT.rotated(angle) * radius)
 	return points
+
+
+func _is_autoplay_requested() -> bool:
+	var autoplay_raw := OS.get_environment("AUTOPLAY_TEST").strip_edges().to_lower()
+	if not autoplay_raw.is_empty() and autoplay_raw not in ["0", "false", "off", "no"]:
+		return true
+	for arg in OS.get_cmdline_user_args():
+		var normalized := String(arg).strip_edges().to_lower()
+		if normalized == "--autoplay_test" or normalized == "autoplay_test" or normalized == "--autoplay_test=1":
+			return true
+	return false
