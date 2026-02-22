@@ -30,6 +30,7 @@ signal item_looted(item_name: String, total_owned: int)
 @export var basic_attack_cooldown: float = 0.58
 @export var basic_attack_windup: float = 0.12
 @export var basic_combo_chain_window: float = 0.42
+@export var basic_combo_end_cooldown: float = 0.38
 
 @export var ability_1_damage: float = 30.0
 @export var ability_1_range: float = 84.0
@@ -212,6 +213,7 @@ var queued_melee_hit_arc_degrees: float = 0.0
 var basic_combo_step: int = 0
 var basic_combo_window_left: float = 0.0
 var basic_combo_buffered: bool = false
+var basic_combo_auto_hits_remaining: int = 0
 var queued_basic_combo_hit_index: int = 1
 var queued_basic_combo_damage: float = 0.0
 var queued_basic_combo_range: float = 0.0
@@ -640,7 +642,7 @@ func _tick_timers(delta: float) -> void:
 	_tick_charge_attack_state(delta)
 	if stun_left <= 0.0 and combat_state == CombatState.HITSTUN and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0:
 		_set_combat_state(CombatState.IDLE_MOVE)
-	if basic_combo_window_left <= 0.0 and attack_windup_left <= 0.0 and attack_anim_left <= 0.0:
+	if basic_combo_window_left <= 0.0 and attack_windup_left <= 0.0 and attack_anim_left <= 0.0 and basic_combo_auto_hits_remaining <= 0:
 		basic_combo_step = 0
 	if queued_melee_hit_pending and attack_windup_left <= 0.0 and attack_anim_left <= 0.0:
 		_apply_queued_melee_hit()
@@ -672,7 +674,10 @@ func _tick_timers(delta: float) -> void:
 			_apply_lunge_strike()
 
 	if basic_combo_buffered and basic_attack_cooldown_left <= 0.0 and attack_windup_left <= 0.0 and attack_anim_left <= 0.0 and light_attack_recovery_left <= 0.0 and queued_attack == QueuedAttack.NONE and not is_rolling and lunge_time_left <= 0.0 and stun_left <= 0.0 and not is_blocking and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0:
-		_start_basic_combo_attack()
+		if basic_combo_auto_hits_remaining > 0:
+			_start_basic_combo_attack()
+		else:
+			_start_basic_single_attack()
 
 
 func _configure_autoplay_logging() -> void:
@@ -777,7 +782,7 @@ func _release_charge_attack() -> void:
 	attack_telegraph.visible = false
 	if release_time < min_charge_time:
 		_autoplay_log("CHARGE_RELEASE time=%.3f ratio=%.3f type=tap" % [release_time, charge_ratio])
-		_start_basic_combo_attack()
+		_begin_basic_combo_sequence()
 		return
 
 	charge_release_direction = _resolve_charge_release_direction()
@@ -805,7 +810,7 @@ func _release_charge_attack() -> void:
 
 func _tick_charge_attack_state(delta: float) -> void:
 	if is_charging_attack:
-		if Input.is_action_pressed("basic_attack"):
+		if Input.is_action_pressed("ability_1"):
 			charge_time = minf(max_charge_time, charge_time + delta)
 			if charge_time >= max_charge_time - 0.0001:
 				_release_charge_attack()
@@ -986,7 +991,7 @@ func _handle_actions() -> void:
 			_cancel_charge_attack()
 			_start_roll()
 			return
-		if not Input.is_action_pressed("basic_attack"):
+		if not Input.is_action_pressed("ability_1"):
 			_release_charge_attack()
 		return
 
@@ -1013,16 +1018,16 @@ func _handle_actions() -> void:
 		return
 
 	if Input.is_action_just_pressed("basic_attack"):
-		if _can_start_charge_attack():
-			_start_charge_attack()
+		if basic_attack_cooldown_left <= 0.0 and attack_anim_left <= 0.0 and light_attack_recovery_left <= 0.0 and attack_windup_left <= 0.0 and queued_attack == QueuedAttack.NONE and not is_rolling and lunge_time_left <= 0.0 and stun_left <= 0.0 and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0:
+			_start_basic_single_attack()
 		else:
+			basic_combo_auto_hits_remaining = 0
 			basic_combo_buffered = true
 		return
 
-	if Input.is_action_just_pressed("ability_1") and ability_1_cooldown_left <= 0.0:
-		_reset_basic_combo_state()
-		ability_1_cooldown_left = ability_1_cooldown
-		_queue_attack(QueuedAttack.ABILITY_1, ability_1_windup, ability_1_range, ability_1_arc_degrees, Color(0.68, 0.8, 0.92, 0.36))
+	if Input.is_action_just_pressed("ability_1"):
+		if _can_start_charge_attack():
+			_start_charge_attack()
 		return
 
 	if Input.is_action_just_pressed("ability_2") and ability_2_cooldown_left <= 0.0:
@@ -1042,7 +1047,9 @@ func _queue_attack(kind: QueuedAttack, windup: float, attack_range: float, arc_d
 
 func _start_basic_combo_attack() -> void:
 	var combo_hit := 1
-	if basic_combo_window_left > 0.0 and basic_combo_step > 0:
+	if basic_combo_auto_hits_remaining > 0:
+		combo_hit = clampi((BASIC_COMBO_MAX_HITS - basic_combo_auto_hits_remaining) + 1, 1, BASIC_COMBO_MAX_HITS)
+	elif basic_combo_window_left > 0.0 and basic_combo_step > 0:
 		combo_hit = mini(BASIC_COMBO_MAX_HITS, basic_combo_step + 1)
 
 	var combo_index := combo_hit - 1
@@ -1065,14 +1072,51 @@ func _start_basic_combo_attack() -> void:
 		queued_basic_combo_arc_degrees,
 		Color(0.94, 0.66, 0.34, 0.34)
 	)
-	basic_combo_buffered = false
+	if basic_combo_auto_hits_remaining > 0:
+		basic_combo_auto_hits_remaining -= 1
+		if basic_combo_auto_hits_remaining > 0:
+			basic_combo_step = combo_hit
+			basic_combo_window_left = basic_combo_chain_window
+			basic_combo_buffered = true
+		else:
+			basic_combo_step = 0
+			basic_combo_window_left = 0.0
+			basic_combo_buffered = false
+			basic_attack_cooldown_left = maxf(basic_attack_cooldown_left, basic_combo_end_cooldown)
+		return
 
+	basic_combo_buffered = false
 	if combo_hit >= BASIC_COMBO_MAX_HITS:
 		basic_combo_step = 0
 		basic_combo_window_left = 0.0
+		basic_attack_cooldown_left = maxf(basic_attack_cooldown_left, basic_combo_end_cooldown)
 	else:
 		basic_combo_step = combo_hit
 		basic_combo_window_left = basic_combo_chain_window
+
+
+func _start_basic_single_attack() -> void:
+	_reset_basic_combo_state()
+	var combo_index := 0
+	queued_basic_combo_hit_index = 1
+	queued_basic_combo_damage = basic_attack_damage * float(BASIC_COMBO_DAMAGE_MULTIPLIERS[combo_index])
+	queued_basic_combo_range = basic_attack_range * float(BASIC_COMBO_RANGE_MULTIPLIERS[combo_index])
+	queued_basic_combo_arc_degrees = basic_attack_arc_degrees * float(BASIC_COMBO_ARC_MULTIPLIERS[combo_index])
+	basic_attack_cooldown_left = maxf(0.01, basic_attack_cooldown)
+	_queue_attack(
+		QueuedAttack.BASIC,
+		maxf(0.01, basic_attack_windup * float(BASIC_COMBO_WINDUP_MULTIPLIERS[combo_index])),
+		queued_basic_combo_range,
+		queued_basic_combo_arc_degrees,
+		Color(0.94, 0.66, 0.34, 0.34)
+	)
+	basic_combo_buffered = false
+
+
+func _begin_basic_combo_sequence() -> void:
+	_reset_basic_combo_state()
+	basic_combo_auto_hits_remaining = BASIC_COMBO_MAX_HITS
+	basic_combo_buffered = true
 
 
 func _resolve_queued_attack() -> void:
@@ -1169,6 +1213,7 @@ func _reset_basic_combo_state() -> void:
 	basic_combo_step = 0
 	basic_combo_window_left = 0.0
 	basic_combo_buffered = false
+	basic_combo_auto_hits_remaining = 0
 	_clear_queued_basic_combo_attack()
 
 
@@ -1715,7 +1760,7 @@ func _update_block_indicator_visual() -> void:
 func _emit_cooldown_state() -> void:
 	cooldowns_changed.emit({
 		"basic": basic_attack_cooldown_left,
-		"ability_1": ability_1_cooldown_left,
+		"ability_1": basic_attack_cooldown_left,
 		"ability_2": ability_2_cooldown_left,
 		"roll": roll_cooldown_left,
 		"block_active": is_blocking,

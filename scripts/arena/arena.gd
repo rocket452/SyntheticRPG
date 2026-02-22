@@ -11,6 +11,7 @@ signal demo_won
 
 const PLAYER_SCENE: PackedScene = preload("res://scenes/player/Player.tscn")
 const FRIENDLY_HEALER_SCENE: PackedScene = preload("res://scenes/npcs/FriendlyHealer.tscn")
+const FRIENDLY_RATFOLK_SCENE: PackedScene = preload("res://scenes/npcs/FriendlyRatfolk.tscn")
 const MELEE_ENEMY_SCENE: PackedScene = preload("res://scenes/enemies/MeleeEnemy.tscn")
 const ITEM_SCENE: PackedScene = preload("res://scenes/items/ItemPickup.tscn")
 
@@ -27,11 +28,14 @@ const ITEM_SCENE: PackedScene = preload("res://scenes/items/ItemPickup.tscn")
 @onready var spawn_points: Array[Node] = $SpawnPoints.get_children()
 @onready var player_spawn: Marker2D = $PlayerSpawn
 @onready var healer_spawn: Marker2D = get_node_or_null("HealerSpawn") as Marker2D
+@onready var ratfolk_spawn: Marker2D = get_node_or_null("RatfolkSpawn") as Marker2D
 
 var player: Player = null
 var healer: Node2D = null
+var ratfolk: Node2D = null
 var alive_regular_enemies: int = 0
 var demo_started: bool = false
+var spawn_next_debug_enemy_on_left: bool = true
 var rng := RandomNumberGenerator.new()
 
 
@@ -48,6 +52,7 @@ func start_demo() -> void:
 	demo_started = true
 	_spawn_player()
 	_spawn_friendly_healer()
+	_spawn_friendly_ratfolk()
 	_spawn_regular_enemies()
 	_update_objective()
 	broadcast_current_state()
@@ -88,6 +93,21 @@ func _spawn_friendly_healer() -> void:
 		healer.set_player(player)
 
 
+func _spawn_friendly_ratfolk() -> void:
+	if not is_instance_valid(ratfolk_spawn):
+		return
+	ratfolk = FRIENDLY_RATFOLK_SCENE.instantiate() as Node2D
+	if ratfolk == null:
+		push_error("Failed to instantiate friendly ratfolk scene.")
+		return
+	actors.add_child(ratfolk)
+	ratfolk.global_position = ratfolk_spawn.global_position
+	if ratfolk.has_method("set_player") and is_instance_valid(player):
+		ratfolk.set_player(player)
+	if ratfolk.has_method("set_arena_bounds"):
+		ratfolk.call("set_arena_bounds", arena_min_x, arena_max_x, arena_min_y, arena_max_y)
+
+
 func _spawn_regular_enemies() -> void:
 	alive_regular_enemies = 0
 	if spawn_points.is_empty():
@@ -106,6 +126,28 @@ func _spawn_regular_enemies() -> void:
 			continue
 		enemy.is_miniboss = false
 		alive_regular_enemies += 1
+
+
+func spawn_debug_minotaur_alternating() -> void:
+	if not demo_started:
+		return
+	var min_x := minf(arena_min_x, arena_max_x)
+	var max_x := maxf(arena_min_x, arena_max_x)
+	var min_y := minf(arena_min_y, arena_max_y)
+	var max_y := maxf(arena_min_y, arena_max_y)
+	var edge_inset := 26.0
+	var spawn_x := min_x + edge_inset if spawn_next_debug_enemy_on_left else max_x - edge_inset
+	spawn_next_debug_enemy_on_left = not spawn_next_debug_enemy_on_left
+	var spawn_y := lerpf(min_y, max_y, 0.5)
+	if is_instance_valid(player):
+		spawn_y = clampf(player.position.y, min_y + 8.0, max_y - 8.0)
+	var spawn_position := to_global(Vector2(spawn_x, spawn_y))
+	var enemy := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position)
+	if enemy == null:
+		return
+	enemy.is_miniboss = false
+	alive_regular_enemies += 1
+	_update_objective()
 
 
 func _spawn_enemy(scene: PackedScene, spawn_position: Vector2) -> EnemyBase:

@@ -23,6 +23,7 @@ signal died(enemy: EnemyBase)
 @export var spin_attack_edge_padding: float = 22.0
 @export var spin_attack_depth_scale: float = 0.62
 @export var spin_attack_center_offset: float = 0.0
+@export var basic_attacks_required_for_spin: int = 3
 @export var spin_attack_damage_multiplier: float = 1.8
 @export var spin_attack_cooldown: float = 5.5
 @export var spin_trigger_range: float = 140.0
@@ -47,6 +48,10 @@ signal died(enemy: EnemyBase)
 @export var lane_max_x: float = 760.0
 @export var lane_min_y: float = -165.0
 @export var lane_max_y: float = 165.0
+@export var soft_collision_enabled: bool = true
+@export var soft_collision_radius: float = 36.0
+@export var soft_collision_push_speed: float = 180.0
+@export var soft_collision_max_push_per_frame: float = 3.5
 @export var health_bar_width: float = 58.0
 @export var health_bar_thickness: float = 5.0
 @export var health_bar_y_offset: float = -62.0
@@ -151,6 +156,7 @@ var spin_charge_left: float = 0.0
 var spin_active_left: float = 0.0
 var spin_hit_tick_left: float = 0.0
 var spin_warning_area: Polygon2D = null
+var basic_attacks_since_last_spin: int = 0
 
 @onready var shadow_visual: Polygon2D = $Shadow
 @onready var body_visual: Polygon2D = $Body
@@ -257,6 +263,7 @@ func _physics_process(delta: float) -> void:
 			freeze_to_player = player.global_position - global_position
 		velocity = Vector2.ZERO
 		move_and_slide()
+		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(0.0, freeze_to_player)
 		_update_health_bar()
@@ -310,6 +317,7 @@ func _physics_process(delta: float) -> void:
 		knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
 		attack_telegraph.visible = false
 		move_and_slide()
+		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
 		_update_health_bar()
@@ -321,6 +329,7 @@ func _physics_process(delta: float) -> void:
 		if spin_charge_left <= 0.0:
 			_begin_spin_attack()
 		move_and_slide()
+		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
 		_update_health_bar()
@@ -336,6 +345,7 @@ func _physics_process(delta: float) -> void:
 		if spin_active_left <= 0.0:
 			_finish_spin_attack()
 		move_and_slide()
+		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
 		_update_health_bar()
@@ -358,6 +368,7 @@ func _physics_process(delta: float) -> void:
 			attack_cooldown_left = attack_cooldown
 			_perform_attack()
 		move_and_slide()
+		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
 		_update_health_bar()
@@ -366,6 +377,7 @@ func _physics_process(delta: float) -> void:
 	if attack_recovery_hold_left > 0.0:
 		velocity = Vector2.ZERO
 		move_and_slide()
+		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
 		_update_health_bar()
@@ -379,7 +391,11 @@ func _physics_process(delta: float) -> void:
 	else:
 		velocity = Vector2.ZERO
 		if attack_cooldown_left <= 0.0:
-			if spin_attack_enabled and spin_attack_cooldown_left <= 0.0 and distance_to_player <= spin_trigger_range:
+			var spin_ready := spin_attack_enabled \
+				and spin_attack_cooldown_left <= 0.0 \
+				and distance_to_player <= spin_trigger_range \
+				and basic_attacks_since_last_spin >= maxi(0, basic_attacks_required_for_spin)
+			if spin_ready:
 				_begin_spin_charge(to_player)
 			else:
 				pending_attack = true
@@ -394,6 +410,7 @@ func _physics_process(delta: float) -> void:
 				committed_attack_facing_direction = initial_attack_facing.normalized()
 
 	move_and_slide()
+	_apply_soft_enemy_separation(delta)
 	_clamp_to_arena()
 	knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
 	_update_visuals(delta, to_player)
@@ -410,6 +427,40 @@ func set_arena_bounds(min_x: float, max_x: float, min_y: float, max_y: float) ->
 func _clamp_to_arena() -> void:
 	position.x = clampf(position.x, lane_min_x, lane_max_x)
 	position.y = clampf(position.y, lane_min_y, lane_max_y)
+
+
+func _apply_soft_enemy_separation(delta: float) -> void:
+	if not soft_collision_enabled:
+		return
+	if dead or delta <= 0.0:
+		return
+	var desired_spacing := maxf(1.0, soft_collision_radius)
+	var desired_spacing_sq := desired_spacing * desired_spacing
+	var separation := Vector2.ZERO
+	for enemy_node in get_tree().get_nodes_in_group("enemies"):
+		var other := enemy_node as EnemyBase
+		if other == null or other == self:
+			continue
+		if not is_instance_valid(other) or other.dead:
+			continue
+		var to_self := global_position - other.global_position
+		var distance_sq := to_self.length_squared()
+		if distance_sq <= 0.0001:
+			var fallback_sign := 1.0 if get_instance_id() > other.get_instance_id() else -1.0
+			to_self = Vector2(fallback_sign, 0.0)
+			distance_sq = 1.0
+		if distance_sq >= desired_spacing_sq:
+			continue
+		var distance := sqrt(distance_sq)
+		var penetration_ratio := (desired_spacing - distance) / desired_spacing
+		separation += (to_self / distance) * penetration_ratio
+	if separation.length_squared() <= 0.0001:
+		return
+	var push_step := separation * (soft_collision_push_speed * delta)
+	var max_push_step := maxf(0.1, soft_collision_max_push_per_frame)
+	if push_step.length() > max_push_step:
+		push_step = push_step.normalized() * max_push_step
+	global_position += push_step
 
 
 func _setup_health_bar() -> void:
@@ -565,6 +616,7 @@ func _teardown_debug_overlay() -> void:
 func _perform_attack() -> void:
 	attack_flash_left = 0.10
 	_start_attack_animation(0.2, 1.3)
+	basic_attacks_since_last_spin += 1
 	var basic_hit_reach := attack_range + basic_attack_hit_end_bonus
 	_trigger_slash_effect(basic_hit_reach, 95.0, Color(0.94, 0.46, 0.26, 0.88), 0.18, 4.2)
 
@@ -580,6 +632,7 @@ func _begin_spin_charge(to_player: Vector2) -> void:
 	attack_windup_left = 0.0
 	attack_prestrike_hold_left = 0.0
 	attack_recovery_hold_left = 0.0
+	basic_attacks_since_last_spin = 0
 	spin_charge_left = maxf(0.1, spin_charge_duration)
 	spin_active_left = 0.0
 	spin_hit_tick_left = 0.0
