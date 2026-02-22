@@ -30,6 +30,9 @@ position = Vector2(-500, 78)
 [node name="HealerSpawn" type="Marker2D" parent="."]
 position = Vector2(-370, -78)
 
+[node name="RatfolkSpawn" type="Marker2D" parent="."]
+position = Vector2(-392, 16)
+
 [node name="SpawnPoints" type="Node2D" parent="."]
 
 [node name="SpawnA" type="Marker2D" parent="SpawnPoints"]

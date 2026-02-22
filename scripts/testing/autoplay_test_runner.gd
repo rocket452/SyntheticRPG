@@ -95,7 +95,7 @@ func _step_approach_enemy() -> void:
 	_set_move_inputs(input_vector)
 	if input_vector == Vector2.ZERO:
 		_set_move_inputs(Vector2.ZERO)
-		Input.action_press("basic_attack")
+		Input.action_press("ability_1")
 		phase = 2
 		phase_time = 0.0
 
@@ -103,7 +103,7 @@ func _step_approach_enemy() -> void:
 func _step_charge_hold() -> void:
 	if phase_time < charge_hold_duration:
 		return
-	Input.action_release("basic_attack")
+	Input.action_release("ability_1")
 	phase = 3
 	phase_time = 0.0
 

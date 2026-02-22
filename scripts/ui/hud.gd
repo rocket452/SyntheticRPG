@@ -32,7 +32,7 @@ func update_cooldowns(values: Dictionary) -> void:
 	var ability_2_text := _format_cooldown(float(values.get("ability_2", 0.0)))
 	var roll_text := _format_cooldown(float(values.get("roll", 0.0)))
 	var blocking_text := " | Blocking" if bool(values.get("block_active", false)) else ""
-	cooldown_label.text = "Basic %s  Cleave %s  Dash %s  Roll %s%s" % [basic_text, ability_1_text, ability_2_text, roll_text, blocking_text]
+	cooldown_label.text = "Swing %s  Charge %s  Dash %s  Roll %s%s" % [basic_text, ability_1_text, ability_2_text, roll_text, blocking_text]
 
 
 func update_objective(text: String) -> void:

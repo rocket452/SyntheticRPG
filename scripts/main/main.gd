@@ -13,6 +13,19 @@ func _ready() -> void:
 	_maybe_start_autoplay_test()
 
 
+func _unhandled_input(event: InputEvent) -> void:
+	var key_event := event as InputEventKey
+	if key_event == null:
+		return
+	if not key_event.pressed or key_event.echo:
+		return
+	if key_event.keycode != KEY_8 and key_event.keycode != KEY_KP_8:
+		return
+	if is_instance_valid(arena):
+		arena.spawn_debug_minotaur_alternating()
+		get_viewport().set_input_as_handled()
+
+
 func _connect_signals() -> void:
 	arena.player_health_changed.connect(hud.update_health)
 	arena.player_xp_changed.connect(hud.update_xp)
