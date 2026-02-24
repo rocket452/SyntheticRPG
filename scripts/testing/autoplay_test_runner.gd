@@ -1,9 +1,9 @@
 extends Node
 class_name AutoplayTestRunner
 
-@export var approach_distance_x: float = 78.0
-@export var approach_distance_y: float = 24.0
-@export var charge_hold_duration: float = 0.72
+@export var approach_distance_x: float = 12.0
+@export var approach_distance_y: float = 10.0
+@export var charge_hold_duration: float = 0.32
 @export var max_attempts: int = 3
 @export var timeout_seconds: float = 24.0
 @export var settle_time_after_release: float = 1.2
