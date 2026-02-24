@@ -8,6 +8,7 @@ signal objective_changed(text: String)
 signal item_collected(item_name: String, total_owned: int)
 signal player_died
 signal demo_won
+signal combat_debug_changed(values: Dictionary)
 
 const PLAYER_SCENE: PackedScene = preload("res://scenes/player/Player.tscn")
 const FRIENDLY_HEALER_SCENE: PackedScene = preload("res://scenes/npcs/FriendlyHealer.tscn")
@@ -16,12 +17,20 @@ const MELEE_ENEMY_SCENE: PackedScene = preload("res://scenes/enemies/MeleeEnemy.
 const ITEM_SCENE: PackedScene = preload("res://scenes/items/ItemPickup.tscn")
 
 @export var regular_enemy_count: int = 1
+@export var allow_multiple_minotaurs: bool = false
 @export var spawn_jitter: float = 18.0
 @export var arena_min_x: float = -760.0
 @export var arena_max_x: float = 760.0
 @export var arena_min_y: float = -165.0
 @export var arena_max_y: float = 165.0
 @export var camera_limit_padding: Vector2 = Vector2(84.0, 60.0)
+@export var summoned_minion_edge_inset: float = 28.0
+@export var summoned_minion_y_spacing: float = 34.0
+@export var summoned_minion_health_scale: float = 0.68
+@export var summoned_minion_speed_scale: float = 0.9
+@export var summoned_minion_damage_scale: float = 0.82
+@export var summoned_minion_xp_scale: float = 0.35
+@export var miniboss_health_scale: float = 4.0
 
 @onready var actors: Node2D = $Actors
 @onready var drops: Node2D = $Drops
@@ -44,6 +53,12 @@ func _ready() -> void:
 		rng.seed = 1337
 	else:
 		rng.randomize()
+
+
+func _process(_delta: float) -> void:
+	if not demo_started:
+		return
+	_emit_combat_debug()
 
 
 func start_demo() -> void:
@@ -113,7 +128,10 @@ func _spawn_regular_enemies() -> void:
 	if spawn_points.is_empty():
 		push_error("No spawn points configured in Arena scene.")
 		return
-	for i in regular_enemy_count:
+	var spawn_count := regular_enemy_count
+	if not allow_multiple_minotaurs:
+		spawn_count = mini(1, regular_enemy_count)
+	for i in spawn_count:
 		var spawn_marker := spawn_points[rng.randi_range(0, spawn_points.size() - 1)] as Marker2D
 		if spawn_marker == null:
 			continue
@@ -124,12 +142,16 @@ func _spawn_regular_enemies() -> void:
 		var enemy := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position)
 		if enemy == null:
 			continue
-		enemy.is_miniboss = false
+		enemy.is_miniboss = true
+		enemy.max_health = maxf(10.0, enemy.max_health * miniboss_health_scale)
+		enemy.current_health = enemy.max_health
 		alive_regular_enemies += 1
 
 
 func spawn_debug_minotaur_alternating() -> void:
 	if not demo_started:
+		return
+	if not allow_multiple_minotaurs and _has_any_alive_enemy():
 		return
 	var min_x := minf(arena_min_x, arena_max_x)
 	var max_x := maxf(arena_min_x, arena_max_x)
@@ -145,7 +167,9 @@ func spawn_debug_minotaur_alternating() -> void:
 	var enemy := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position)
 	if enemy == null:
 		return
-	enemy.is_miniboss = false
+	enemy.is_miniboss = true
+	enemy.max_health = maxf(10.0, enemy.max_health * miniboss_health_scale)
+	enemy.current_health = enemy.max_health
 	alive_regular_enemies += 1
 	_update_objective()
 
@@ -159,7 +183,55 @@ func _spawn_enemy(scene: PackedScene, spawn_position: Vector2) -> EnemyBase:
 	enemy.global_position = spawn_position
 	_apply_bounds_to_enemy(enemy)
 	enemy.died.connect(_on_enemy_died)
+	if not enemy.summon_minions_requested.is_connected(_on_enemy_summon_minions_requested):
+		enemy.summon_minions_requested.connect(_on_enemy_summon_minions_requested)
 	return enemy
+
+
+func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> void:
+	if not demo_started:
+		return
+	if not allow_multiple_minotaurs:
+		return
+	var total_to_spawn := maxi(1, count)
+	var min_x := minf(arena_min_x, arena_max_x)
+	var max_x := maxf(arena_min_x, arena_max_x)
+	var min_y := minf(arena_min_y, arena_max_y)
+	var max_y := maxf(arena_min_y, arena_max_y)
+	var source_local := to_local(source_enemy.global_position) if is_instance_valid(source_enemy) else Vector2.ZERO
+	for i in range(total_to_spawn):
+		var spawn_on_left := spawn_next_debug_enemy_on_left
+		var spawn_x := (min_x + summoned_minion_edge_inset) if spawn_on_left else (max_x - summoned_minion_edge_inset)
+		var y_offset := (float(i) - (float(total_to_spawn - 1) * 0.5)) * summoned_minion_y_spacing
+		var spawn_y := clampf(source_local.y + y_offset, min_y + 10.0, max_y - 10.0)
+		var spawn_position := to_global(Vector2(spawn_x, spawn_y))
+		var minion := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position)
+		if minion == null:
+			continue
+		minion.is_miniboss = false
+		minion.use_single_phase_loop = false
+		minion.boss_can_summon_minions = false
+		minion.spin_attack_enabled = false
+		minion.prioritize_companion_targets = true
+		minion.max_health = maxf(10.0, minion.max_health * summoned_minion_health_scale)
+		minion.current_health = minion.max_health
+		minion.move_speed = maxf(40.0, minion.move_speed * summoned_minion_speed_scale)
+		minion.attack_damage = maxf(1.0, minion.attack_damage * summoned_minion_damage_scale)
+		minion.xp_reward = maxi(1, int(round(float(minion.xp_reward) * summoned_minion_xp_scale)))
+		alive_regular_enemies += 1
+		spawn_next_debug_enemy_on_left = not spawn_next_debug_enemy_on_left
+	_update_objective()
+
+
+func _has_any_alive_enemy() -> bool:
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy):
+			continue
+		if enemy.dead:
+			continue
+		return true
+	return false
 
 
 func _apply_bounds_to_player(target_player: Player) -> void:
@@ -235,6 +307,64 @@ func _update_objective() -> void:
 		objective_changed.emit("Objective: Victory")
 		return
 	objective_changed.emit("Objective: Defeat enemies (%d remaining)" % alive_regular_enemies)
+
+
+func _emit_combat_debug() -> void:
+	var healer_state := "-"
+	var healer_target := "-"
+	if is_instance_valid(healer):
+		if healer.has_method("get_ai_debug_state"):
+			healer_state = String(healer.call("get_ai_debug_state"))
+		if healer.has_method("get_ai_debug_target"):
+			healer_target = String(healer.call("get_ai_debug_target"))
+	var dps_state := "-"
+	var dps_target := "-"
+	if is_instance_valid(ratfolk):
+		if ratfolk.has_method("get_ai_debug_state"):
+			dps_state = String(ratfolk.call("get_ai_debug_state"))
+		if ratfolk.has_method("get_ai_debug_target"):
+			dps_target = String(ratfolk.call("get_ai_debug_target"))
+
+	var marked_ally := "-"
+	var boss_state := "Idle"
+	var vulnerable_left := 0.0
+	var debug_boss := _get_debug_boss()
+	if debug_boss != null:
+		if debug_boss.has_method("get_boss_marked_ally_name"):
+			marked_ally = String(debug_boss.call("get_boss_marked_ally_name"))
+		if debug_boss.has_method("get_boss_debug_state"):
+			boss_state = String(debug_boss.call("get_boss_debug_state"))
+		if debug_boss.has_method("get_boss_vulnerable_time_left"):
+			var vulnerable_variant: Variant = debug_boss.call("get_boss_vulnerable_time_left")
+			if vulnerable_variant is float:
+				vulnerable_left = vulnerable_variant
+			elif vulnerable_variant is int:
+				vulnerable_left = float(vulnerable_variant)
+
+	combat_debug_changed.emit({
+		"healer_state": healer_state,
+		"healer_target": healer_target,
+		"dps_state": dps_state,
+		"dps_target": dps_target,
+		"marked_ally": marked_ally,
+		"boss_state": boss_state,
+		"boss_vulnerable_left": vulnerable_left
+	})
+
+
+func _get_debug_boss() -> EnemyBase:
+	var nearest_enemy: EnemyBase = null
+	var nearest_dist_sq := INF
+	var player_position := player.global_position if is_instance_valid(player) else global_position
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		var dist_sq := enemy.global_position.distance_squared_to(player_position)
+		if nearest_enemy == null or dist_sq < nearest_dist_sq:
+			nearest_enemy = enemy
+			nearest_dist_sq = dist_sq
+	return nearest_enemy
 
 
 func _on_player_health_changed(current: float, maximum: float) -> void:

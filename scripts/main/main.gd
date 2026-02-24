@@ -34,6 +34,7 @@ func _connect_signals() -> void:
 	arena.item_collected.connect(hud.show_item_pickup)
 	arena.player_died.connect(hud.show_defeat)
 	arena.demo_won.connect(hud.show_victory)
+	arena.combat_debug_changed.connect(hud.update_combat_debug)
 
 
 func _maybe_start_autoplay_test() -> void:

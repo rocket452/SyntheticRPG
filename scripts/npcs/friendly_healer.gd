@@ -4,6 +4,29 @@ class_name FriendlyHealer
 signal health_changed(current: float, maximum: float)
 signal died(healer: FriendlyHealer)
 
+enum HealerAIState {
+	IDLE_SUPPORT,
+	REPOSITIONING,
+	HEALING,
+	SHIELDING,
+	ATTACKING
+}
+
+const HEALER_AI_STATE_NAMES: Dictionary = {
+	HealerAIState.IDLE_SUPPORT: "IDLE_SUPPORT",
+	HealerAIState.REPOSITIONING: "REPOSITIONING",
+	HealerAIState.HEALING: "HEALING",
+	HealerAIState.SHIELDING: "SHIELDING",
+	HealerAIState.ATTACKING: "ATTACKING"
+}
+
+enum CastAction {
+	NONE,
+	QUICK_HEAL,
+	PROTECTIVE_SHIELD,
+	LIGHT_BOLT
+}
+
 @export var heal_amount: float = 12.0
 @export var heal_interval: float = 4.2
 @export var heal_interval_variance: float = 0.7
@@ -13,9 +36,14 @@ signal died(healer: FriendlyHealer)
 @export var reacquire_retry_interval: float = 0.3
 @export var react_heal_delay: float = 0.18
 @export var emergency_cast_on_damage: bool = true
+@export var shield_cooldown: float = 5.0
+@export var shield_duration: float = 2.1
+@export var shield_damage_multiplier: float = 0.35
+@export var shield_cast_range: float = 164.0
 @export var move_speed: float = 118.0
 @export var movement_acceleration: float = 860.0
 @export var movement_deceleration: float = 980.0
+@export var ai_decision_interval: float = 0.1
 @export var move_deadzone: float = 8.0
 @export var slow_down_radius: float = 36.0
 @export var cast_move_speed_multiplier: float = 0.9
@@ -28,6 +56,8 @@ signal died(healer: FriendlyHealer)
 @export var follow_distance: float = 84.0
 @export var min_distance_to_player: float = 26.0
 @export var max_distance_to_player: float = 120.0
+@export var healer_follow_min_band: float = 110.0
+@export var healer_follow_max_band: float = 165.0
 @export var target_smoothing_speed: float = 430.0
 @export var guard_side_swap_threshold: float = 40.0
 @export var follow_vertical_scale: float = 0.2
@@ -41,6 +71,13 @@ signal died(healer: FriendlyHealer)
 @export var arena_padding: float = 26.0
 @export var tidal_wave_enabled: bool = true
 @export var basic_heal_cooldown: float = 1.0
+@export var basic_heal_range: float = 132.0
+@export var basic_heal_range_buffer: float = 10.0
+@export var light_bolt_enabled: bool = true
+@export var light_bolt_damage: float = 7.5
+@export var light_bolt_cooldown: float = 1.25
+@export var light_bolt_range: float = 208.0
+@export var light_bolt_stun_duration: float = 0.1
 @export var tidal_wave_cooldown: float = 6.0
 @export var tidal_wave_speed: float = 310.0
 @export var tidal_wave_duration: float = 1.5
@@ -57,6 +94,10 @@ signal died(healer: FriendlyHealer)
 @export var hit_stun_duration: float = 0.18
 @export var hit_knockback_speed: float = 170.0
 @export var hit_knockback_decay: float = 960.0
+@export var miniboss_soft_collision_enabled: bool = true
+@export var miniboss_soft_collision_radius: float = 40.0
+@export var miniboss_soft_collision_push_speed: float = 190.0
+@export var miniboss_soft_collision_max_push_per_frame: float = 3.8
 
 const HEALER_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/fishfolk/Fishfolk Archpriest Sprite Sheet.png")
 const TIDAL_WAVE_SHEET_PATH: String = "res://assets/external/wave_fx/tidal_wave_sheet/animated_water_24x129x96.png"
@@ -91,6 +132,10 @@ var is_casting: bool = false
 var heal_applied_this_cast: bool = false
 var basic_heal_cooldown_left: float = 0.0
 var tidal_wave_cooldown_left: float = 0.0
+var shield_cooldown_left: float = 0.0
+var light_bolt_cooldown_left: float = 0.0
+var active_shield_target_id: int = -1
+var active_shield_left: float = 0.0
 var reacquire_left: float = 0.0
 var tracked_player_health: float = -1.0
 var sprite_base_position: Vector2 = Vector2.ZERO
@@ -104,8 +149,13 @@ var move_velocity: Vector2 = Vector2.ZERO
 var orbit_phase: float = 0.0
 var smoothed_target_position: Vector2 = Vector2.ZERO
 var desired_guard_side: float = 0.0
-var coop_input_direction: Vector2 = Vector2.ZERO
-var coop_input_timer: float = 0.0
+var healer_ai_state: HealerAIState = HealerAIState.IDLE_SUPPORT
+var healer_ai_state_name: String = "IDLE_SUPPORT"
+var healer_ai_target: Node2D = null
+var healer_ai_decision_left: float = 0.0
+var healer_ai_desired_position: Vector2 = Vector2.ZERO
+var pending_cast_action: CastAction = CastAction.NONE
+var pending_cast_target: Node2D = null
 var facing_left: bool = false
 var rng := RandomNumberGenerator.new()
 var current_health: float = 0.0
@@ -123,10 +173,14 @@ func _ready() -> void:
 		rng.seed = 2026
 	else:
 		rng.randomize()
-	orbit_phase = rng.randf_range(0.0, TAU)
+	orbit_phase = 0.0
 	heal_timer_left = _next_heal_interval() * 0.45
 	basic_heal_cooldown_left = 0.0
 	tidal_wave_cooldown_left = 0.0
+	shield_cooldown_left = 0.0
+	light_bolt_cooldown_left = 0.0
+	active_shield_target_id = -1
+	active_shield_left = 0.0
 	reacquire_left = 0.0
 	_acquire_player()
 	_configure_sprite()
@@ -135,8 +189,13 @@ func _ready() -> void:
 		facing_left = sprite.flip_h
 	smoothed_target_position = position
 	desired_guard_side = -1.0 if facing_left else 1.0
-	coop_input_direction = Vector2.ZERO
-	coop_input_timer = rng.randf_range(input_decision_interval_min, input_decision_interval_max)
+	healer_ai_state = HealerAIState.IDLE_SUPPORT
+	healer_ai_state_name = String(HEALER_AI_STATE_NAMES.get(healer_ai_state, "IDLE_SUPPORT"))
+	healer_ai_target = player
+	healer_ai_decision_left = 0.0
+	healer_ai_desired_position = position
+	pending_cast_action = CastAction.NONE
+	pending_cast_target = null
 	_prepare_frame_alignment()
 	_set_anim_frame("idle", 0)
 	current_health = maxf(1.0, max_health)
@@ -166,10 +225,18 @@ func _physics_process(delta: float) -> void:
 		if reacquire_left <= 0.0:
 			_acquire_player()
 			reacquire_left = reacquire_retry_interval
+	var primary_enemy := _find_primary_enemy()
+	_update_healer_ai_state(delta, primary_enemy)
 	_update_tactical_positioning(delta)
+	_apply_miniboss_soft_separation(delta)
 	_update_facing()
 	basic_heal_cooldown_left = maxf(0.0, basic_heal_cooldown_left - delta)
 	tidal_wave_cooldown_left = maxf(0.0, tidal_wave_cooldown_left - delta)
+	shield_cooldown_left = maxf(0.0, shield_cooldown_left - delta)
+	light_bolt_cooldown_left = maxf(0.0, light_bolt_cooldown_left - delta)
+	active_shield_left = maxf(0.0, active_shield_left - delta)
+	if active_shield_left <= 0.0:
+		active_shield_target_id = -1
 	_update_tidal_waves(delta)
 
 	if is_casting:
@@ -180,17 +247,12 @@ func _physics_process(delta: float) -> void:
 		_tick_run(delta)
 	else:
 		_tick_idle(delta)
+	if _find_best_heal_target() != null:
+		heal_timer_left = minf(heal_timer_left, react_heal_delay)
 	heal_timer_left = maxf(0.0, heal_timer_left - delta)
 	if heal_timer_left > 0.0:
 		return
-
-	if _player_needs_healing():
-		if _is_healing_ability_ready():
-			_begin_cast()
-		else:
-			heal_timer_left = maxf(0.05, _time_until_next_healing_ability_ready())
-	else:
-		heal_timer_left = minf(_next_heal_interval() * 0.4, 0.6)
+	_try_begin_ai_cast()
 
 
 func _acquire_player() -> void:
@@ -238,6 +300,181 @@ func _on_player_health_changed(current: float, maximum: float) -> void:
 		return
 	if heal_timer_left > react_heal_delay or was_higher:
 		heal_timer_left = minf(heal_timer_left, react_heal_delay)
+
+
+func _update_healer_ai_state(delta: float, primary_enemy: EnemyBase) -> void:
+	healer_ai_decision_left = maxf(0.0, healer_ai_decision_left - delta)
+	if healer_ai_decision_left > 0.0:
+		return
+	healer_ai_decision_left = maxf(0.05, ai_decision_interval)
+	var marked_target := _find_marked_ally_under_threat()
+	if marked_target != null:
+		_set_healer_ai_state(HealerAIState.SHIELDING, marked_target)
+		return
+
+	var heal_target := _find_best_heal_target()
+	if heal_target != null:
+		_set_healer_ai_state(HealerAIState.HEALING, heal_target)
+		return
+
+	var attack_target := _find_healer_attack_target()
+	if attack_target != null:
+		if _needs_reposition(primary_enemy):
+			_set_healer_ai_state(HealerAIState.REPOSITIONING, player)
+		else:
+			_set_healer_ai_state(HealerAIState.ATTACKING, attack_target)
+		return
+
+	if _needs_reposition(primary_enemy):
+		_set_healer_ai_state(HealerAIState.REPOSITIONING, player)
+		return
+	_set_healer_ai_state(HealerAIState.IDLE_SUPPORT, player)
+
+
+func _set_healer_ai_state(next_state: HealerAIState, next_target: Node2D) -> void:
+	healer_ai_state = next_state
+	healer_ai_state_name = String(HEALER_AI_STATE_NAMES.get(next_state, "IDLE_SUPPORT"))
+	healer_ai_target = next_target
+
+
+func _find_marked_ally_under_threat() -> Node2D:
+	var best_target: Node2D = null
+	var best_distance_sq := INF
+	var best_enemy_id := INF
+	for enemy_node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := enemy_node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if not enemy.has_method("is_lunge_threatening_marked_ally"):
+			continue
+		if not bool(enemy.call("is_lunge_threatening_marked_ally")):
+			continue
+		if not enemy.has_method("get_marked_ally_node"):
+			continue
+		var marked_target := enemy.call("get_marked_ally_node") as Node2D
+		if not _is_valid_support_target(marked_target):
+			continue
+		var distance_sq := global_position.distance_squared_to(marked_target.global_position)
+		var enemy_id := enemy.get_instance_id()
+		if best_target == null or distance_sq < best_distance_sq or (is_equal_approx(distance_sq, best_distance_sq) and enemy_id < best_enemy_id):
+			best_target = marked_target
+			best_distance_sq = distance_sq
+			best_enemy_id = enemy_id
+	return best_target
+
+
+func _is_valid_support_target(target: Node2D) -> bool:
+	if target == null or not is_instance_valid(target):
+		return false
+	if not target.has_method("receive_hit"):
+		return false
+	var target_player := target as Player
+	if target_player != null:
+		return not target_player.is_dead
+	var target_healer := target as FriendlyHealer
+	if target_healer != null:
+		return not target_healer.dead
+	var target_ratfolk := target as FriendlyRatfolk
+	if target_ratfolk != null:
+		if target_ratfolk.is_shadow_clone_actor():
+			return false
+		return not target_ratfolk.dead
+	return false
+
+
+func _find_healer_attack_target() -> EnemyBase:
+	var best_minion: EnemyBase = null
+	var best_minion_distance_sq := INF
+	var best_minion_id := INF
+	var best_boss: EnemyBase = null
+	var best_boss_distance_sq := INF
+	var best_boss_id := INF
+	for enemy_node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := enemy_node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		var distance_sq := global_position.distance_squared_to(enemy.global_position)
+		var enemy_id := enemy.get_instance_id()
+		if enemy.is_miniboss:
+			if best_boss == null or distance_sq < best_boss_distance_sq or (is_equal_approx(distance_sq, best_boss_distance_sq) and enemy_id < best_boss_id):
+				best_boss = enemy
+				best_boss_distance_sq = distance_sq
+				best_boss_id = enemy_id
+			continue
+		if best_minion == null or distance_sq < best_minion_distance_sq or (is_equal_approx(distance_sq, best_minion_distance_sq) and enemy_id < best_minion_id):
+			best_minion = enemy
+			best_minion_distance_sq = distance_sq
+			best_minion_id = enemy_id
+	if best_minion != null:
+		return best_minion
+	return best_boss
+
+
+func _needs_reposition(primary_enemy: EnemyBase) -> bool:
+	if not is_instance_valid(player):
+		return false
+	var to_player := player.global_position - global_position
+	var distance_to_player := to_player.length()
+	var min_band := maxf(min_distance_to_player, healer_follow_min_band)
+	var max_band := maxf(min_band + 8.0, healer_follow_max_band)
+	if distance_to_player < min_band or distance_to_player > max_band:
+		return true
+	if primary_enemy == null or not is_instance_valid(primary_enemy):
+		return false
+	var player_to_enemy := primary_enemy.global_position - player.global_position
+	var player_to_healer := global_position - player.global_position
+	if absf(player_to_enemy.x) <= 8.0:
+		return false
+	return signf(player_to_enemy.x) == signf(player_to_healer.x)
+
+
+func _try_begin_ai_cast() -> void:
+	if is_casting:
+		return
+	pending_cast_action = CastAction.NONE
+	pending_cast_target = null
+	match healer_ai_state:
+		HealerAIState.HEALING:
+			var heal_target := _resolve_heal_target(healer_ai_target)
+			if basic_heal_cooldown_left <= 0.0:
+				if _can_cast_basic_heal_on_target(heal_target):
+					_queue_cast_action(CastAction.QUICK_HEAL, heal_target, 0.08)
+				else:
+					heal_timer_left = 0.08
+				return
+			heal_timer_left = maxf(0.08, basic_heal_cooldown_left)
+			return
+		HealerAIState.SHIELDING:
+			var shield_target := _resolve_support_target(healer_ai_target)
+			if shield_cooldown_left <= 0.0 and _can_cast_shield_on_target(shield_target):
+				_queue_cast_action(CastAction.PROTECTIVE_SHIELD, shield_target, 0.08)
+				return
+			heal_timer_left = maxf(0.08, shield_cooldown_left)
+			return
+		HealerAIState.ATTACKING:
+			var attack_target := _resolve_attack_target(healer_ai_target)
+			if light_bolt_enabled and light_bolt_cooldown_left <= 0.0 and _can_cast_light_bolt_on_target(attack_target):
+				_queue_cast_action(CastAction.LIGHT_BOLT, attack_target, 0.1)
+				return
+			heal_timer_left = maxf(0.1, light_bolt_cooldown_left)
+			return
+		_:
+			pass
+	var fallback_heal_target := _find_best_heal_target()
+	if basic_heal_cooldown_left <= 0.0 and _can_cast_basic_heal_on_target(fallback_heal_target):
+		_queue_cast_action(CastAction.QUICK_HEAL, fallback_heal_target, 0.14)
+		return
+	if _is_healing_ability_ready():
+		heal_timer_left = 0.22
+	else:
+		heal_timer_left = maxf(0.1, _time_until_next_healing_ability_ready())
+
+
+func _queue_cast_action(action: CastAction, target: Node2D, next_timer: float) -> void:
+	pending_cast_action = action
+	pending_cast_target = target
+	_begin_cast()
+	heal_timer_left = maxf(0.05, next_timer)
 
 
 func _configure_sprite() -> void:
@@ -299,14 +536,108 @@ func _player_needs_healing() -> bool:
 	return player.needs_healing(heal_threshold_ratio)
 
 
-func _apply_heal() -> void:
-	if not is_instance_valid(player):
-		return
+func _is_valid_heal_target(target: Node2D) -> bool:
+	if target == null or not is_instance_valid(target):
+		return false
+	if target == self:
+		return false
+	if not target.has_method("needs_healing"):
+		return false
+	if not target.has_method("receive_heal"):
+		return false
+	return bool(target.call("needs_healing", heal_threshold_ratio))
 
-	var player_target := player.global_position + Vector2(0.0, -16.0)
-	var healed := player.receive_heal(heal_amount)
-	_spawn_heal_beam(global_position + Vector2(0.0, -18.0), player_target, healed)
-	_spawn_heal_burst(player_target, healed)
+
+func _find_best_heal_target() -> Node2D:
+	var best_target: Node2D = null
+	var best_health_ratio := INF
+	var best_id := INF
+	var candidates: Array[Node2D] = []
+	if player != null:
+		candidates.append(player)
+	for node in get_tree().get_nodes_in_group("friendly_npcs"):
+		var candidate := node as Node2D
+		if not _is_valid_heal_target(candidate):
+			continue
+		candidates.append(candidate)
+	for candidate in candidates:
+		if not _is_valid_heal_target(candidate):
+			continue
+		var candidate_max_health := maxf(1.0, float(candidate.get("max_health")))
+		var candidate_health := clampf(float(candidate.get("current_health")), 0.0, candidate_max_health)
+		var ratio := candidate_health / candidate_max_health
+		var candidate_id := candidate.get_instance_id()
+		if best_target == null or ratio < best_health_ratio - 0.0001 or (is_equal_approx(ratio, best_health_ratio) and candidate_id < best_id):
+			best_target = candidate
+			best_health_ratio = ratio
+			best_id = candidate_id
+	return best_target
+
+
+func _resolve_heal_target(preferred_target: Node2D = null) -> Node2D:
+	if _is_valid_heal_target(preferred_target):
+		return preferred_target
+	var state_target := healer_ai_target
+	if _is_valid_heal_target(state_target):
+		return state_target
+	var fallback_target := _find_best_heal_target()
+	if _is_valid_heal_target(fallback_target):
+		return fallback_target
+	return null
+
+
+func _is_in_basic_heal_range(target: Node2D) -> bool:
+	if target == null or not is_instance_valid(target):
+		return false
+	return global_position.distance_to(target.global_position) <= maxf(16.0, basic_heal_range)
+
+
+func _can_cast_basic_heal_on_target(target: Node2D) -> bool:
+	var resolved_target := _resolve_heal_target(target)
+	if resolved_target == null:
+		return false
+	return _is_in_basic_heal_range(resolved_target)
+
+
+func _resolve_support_target(preferred_target: Node2D = null) -> Node2D:
+	if _is_valid_support_target(preferred_target):
+		return preferred_target
+	return _find_marked_ally_under_threat()
+
+
+func _resolve_attack_target(preferred_target: Node2D = null) -> EnemyBase:
+	var preferred_enemy := preferred_target as EnemyBase
+	if preferred_enemy != null and is_instance_valid(preferred_enemy) and not preferred_enemy.dead:
+		return preferred_enemy
+	return _find_healer_attack_target()
+
+
+func _can_cast_shield_on_target(target: Node2D) -> bool:
+	var resolved_target := _resolve_support_target(target)
+	if resolved_target == null:
+		return false
+	return global_position.distance_squared_to(resolved_target.global_position) <= shield_cast_range * shield_cast_range
+
+
+func _can_cast_light_bolt_on_target(target: Node2D) -> bool:
+	var resolved_target := _resolve_attack_target(target)
+	if resolved_target == null:
+		return false
+	return global_position.distance_squared_to(resolved_target.global_position) <= light_bolt_range * light_bolt_range
+
+
+func _apply_heal(target: Node2D = null) -> bool:
+	var heal_target := _resolve_heal_target(target)
+	if heal_target == null:
+		return false
+	if not _is_in_basic_heal_range(heal_target):
+		return false
+
+	var target_world := heal_target.global_position + Vector2(0.0, -16.0)
+	var healed := bool(heal_target.call("receive_heal", heal_amount))
+	_spawn_heal_beam(global_position + Vector2(0.0, -18.0), target_world, healed)
+	_spawn_heal_burst(target_world, healed)
+	return healed
 
 
 func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = false, stun_duration: float = 0.0) -> bool:
@@ -336,27 +667,81 @@ func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = f
 	return true
 
 
+func get_shield_damage_multiplier_for(target: Node2D) -> float:
+	if active_shield_left <= 0.0:
+		return 1.0
+	if target == null or not is_instance_valid(target):
+		return 1.0
+	if target.get_instance_id() != active_shield_target_id:
+		return 1.0
+	return clampf(shield_damage_multiplier, 0.05, 1.0)
+
+
+func _apply_protective_shield(target: Node2D) -> bool:
+	var shield_target := _resolve_support_target(target)
+	if shield_target == null:
+		return false
+	if not _can_cast_shield_on_target(shield_target):
+		return false
+	active_shield_target_id = shield_target.get_instance_id()
+	active_shield_left = maxf(0.1, shield_duration)
+	shield_cooldown_left = maxf(0.0, shield_cooldown)
+	var burst_position := shield_target.global_position + Vector2(0.0, -14.0)
+	_spawn_heal_burst(burst_position, true)
+	_spawn_heal_beam(global_position + Vector2(0.0, -16.0), burst_position, true)
+	return true
+
+
+func _apply_light_bolt(target: Node2D) -> bool:
+	var bolt_target := _resolve_attack_target(target)
+	if bolt_target == null:
+		return false
+	if not _can_cast_light_bolt_on_target(bolt_target):
+		return false
+	var hit_origin := global_position + Vector2(0.0, -16.0)
+	var hit_position := bolt_target.global_position + Vector2(0.0, -12.0)
+	_spawn_heal_beam(hit_origin, hit_position, false)
+	_spawn_heal_burst(hit_position, false)
+	var landed := bolt_target.receive_hit(light_bolt_damage, global_position, light_bolt_stun_duration, true, 0.88)
+	if landed and bolt_target.has_method("apply_hitstop"):
+		bolt_target.apply_hitstop(0.02)
+	light_bolt_cooldown_left = maxf(0.0, light_bolt_cooldown)
+	return landed
+
+
 func _trigger_healing_ability() -> void:
-	if tidal_wave_enabled and tidal_wave_cooldown_left <= 0.0:
-		_spawn_tidal_wave()
-		tidal_wave_cooldown_left = maxf(0.0, tidal_wave_cooldown)
-		return
-	if basic_heal_cooldown_left <= 0.0:
-		_apply_heal()
-		basic_heal_cooldown_left = maxf(0.0, basic_heal_cooldown)
-		return
+	var cast_target := pending_cast_target
+	match pending_cast_action:
+		CastAction.QUICK_HEAL:
+			if basic_heal_cooldown_left <= 0.0 and _apply_heal(cast_target):
+				basic_heal_cooldown_left = maxf(0.0, basic_heal_cooldown)
+		CastAction.PROTECTIVE_SHIELD:
+			if shield_cooldown_left <= 0.0:
+				_apply_protective_shield(cast_target)
+		CastAction.LIGHT_BOLT:
+			if light_bolt_enabled and light_bolt_cooldown_left <= 0.0:
+				_apply_light_bolt(cast_target)
+		_:
+			pass
+	pending_cast_action = CastAction.NONE
+	pending_cast_target = null
 
 
 func _is_healing_ability_ready() -> bool:
 	if basic_heal_cooldown_left <= 0.0:
 		return true
-	return tidal_wave_enabled and tidal_wave_cooldown_left <= 0.0
+	if shield_cooldown_left <= 0.0:
+		return true
+	if light_bolt_enabled and light_bolt_cooldown_left <= 0.0:
+		return true
+	return false
 
 
 func _time_until_next_healing_ability_ready() -> float:
 	var next_ready := maxf(0.0, basic_heal_cooldown_left)
-	if tidal_wave_enabled:
-		next_ready = minf(next_ready, maxf(0.0, tidal_wave_cooldown_left))
+	next_ready = minf(next_ready, maxf(0.0, shield_cooldown_left))
+	if light_bolt_enabled:
+		next_ready = minf(next_ready, maxf(0.0, light_bolt_cooldown_left))
 	return maxf(0.0, next_ready)
 
 
@@ -380,19 +765,37 @@ func _update_facing() -> void:
 
 func _update_tactical_positioning(delta: float) -> void:
 	if not is_instance_valid(player):
-		coop_input_direction = Vector2.ZERO
-		coop_input_timer = 0.0
 		move_velocity = move_velocity.move_toward(Vector2.ZERO, movement_deceleration * delta)
 		return
 	if stun_left > 0.0:
-		coop_input_direction = Vector2.ZERO
-		coop_input_timer = 0.0
 		move_velocity = move_velocity.move_toward(Vector2.ZERO, movement_deceleration * delta)
 		return
 	orbit_phase = wrapf(orbit_phase + (delta * maxf(0.0, orbit_speed)), 0.0, TAU)
 
+	var enemy := _find_primary_enemy()
 	var desired_position := _compute_desired_position()
-	smoothed_target_position = smoothed_target_position.move_toward(desired_position, maxf(0.0, target_smoothing_speed) * delta)
+	if healer_ai_state == HealerAIState.SHIELDING:
+		var shield_target := _resolve_support_target(healer_ai_target)
+		if shield_target != null and is_instance_valid(shield_target):
+			var shield_target_position := _get_position_in_actor_space(shield_target)
+			var to_target := shield_target_position - position
+			var desired_cast_distance := clampf(maxf(18.0, shield_cast_range - 20.0), 18.0, maxf(28.0, shield_cast_range))
+			if to_target.length() > desired_cast_distance:
+				desired_position = _clamp_to_bounds(shield_target_position - (to_target.normalized() * desired_cast_distance))
+			else:
+				desired_position = _clamp_to_bounds(shield_target_position + Vector2(-14.0, 10.0))
+	elif healer_ai_state == HealerAIState.HEALING:
+		desired_position = _compute_heal_approach_position(_resolve_heal_target(healer_ai_target))
+	elif healer_ai_state == HealerAIState.ATTACKING:
+		var attack_target := _resolve_attack_target(healer_ai_target)
+		if attack_target != null and is_instance_valid(attack_target):
+			var attack_target_position := _get_position_in_actor_space(attack_target)
+			var to_attack_target := attack_target_position - position
+			var desired_attack_distance := clampf(maxf(40.0, light_bolt_range * 0.72), 40.0, maxf(56.0, light_bolt_range - 24.0))
+			if to_attack_target.length() > desired_attack_distance:
+				desired_position = _clamp_to_bounds(attack_target_position - (to_attack_target.normalized() * desired_attack_distance))
+	healer_ai_desired_position = desired_position
+	smoothed_target_position = smoothed_target_position.move_toward(healer_ai_desired_position, maxf(0.0, target_smoothing_speed) * delta)
 	var to_target := smoothed_target_position - position
 	var distance_to_target := to_target.length()
 
@@ -404,9 +807,12 @@ func _update_tactical_positioning(delta: float) -> void:
 	var slowdown := maxf(move_deadzone + 0.001, slow_down_radius)
 	if distance_to_target < slowdown:
 		speed_scale = clampf((distance_to_target - move_deadzone) / (slowdown - move_deadzone), 0.0, 1.0)
-	var enemy := _find_primary_enemy()
-	var input_direction := _update_coop_input_direction(delta, to_target, distance_to_target, enemy)
+	var input_direction := Vector2.ZERO
+	if distance_to_target > move_deadzone:
+		input_direction = to_target / maxf(0.0001, distance_to_target)
 	var desired_velocity := input_direction * (effective_speed * speed_scale)
+	if healer_ai_state == HealerAIState.IDLE_SUPPORT and enemy != null and is_instance_valid(enemy):
+		desired_velocity *= 0.9
 
 	var steer_rate := movement_acceleration if desired_velocity.length_squared() >= move_velocity.length_squared() else movement_deceleration
 	move_velocity = move_velocity.move_toward(desired_velocity, maxf(0.0, steer_rate) * delta)
@@ -419,58 +825,6 @@ func _update_tactical_positioning(delta: float) -> void:
 	position = _clamp_to_bounds(position)
 	if pixel_snap_movement:
 		position = position.round()
-
-
-func _update_coop_input_direction(delta: float, to_target: Vector2, distance_to_target: float, enemy: EnemyBase) -> Vector2:
-	coop_input_timer = maxf(0.0, coop_input_timer - delta)
-
-	var desired_direction := Vector2.ZERO
-	if distance_to_target > 0.0001:
-		desired_direction = to_target / distance_to_target
-
-	var should_pick_new := coop_input_timer <= 0.0
-	if not should_pick_new and coop_input_direction.length_squared() > 0.0001 and desired_direction.length_squared() > 0.0:
-		var emergency_distance := maxf(move_deadzone * 2.0, slow_down_radius * 1.15)
-		if distance_to_target > emergency_distance and coop_input_direction.dot(desired_direction) < 0.15:
-			should_pick_new = true
-
-	if should_pick_new:
-		coop_input_direction = _choose_coop_input_direction(desired_direction, distance_to_target, enemy)
-		var min_interval := maxf(0.03, input_decision_interval_min)
-		var max_interval := maxf(min_interval + 0.01, input_decision_interval_max)
-		coop_input_timer = rng.randf_range(min_interval, max_interval)
-
-	return coop_input_direction
-
-
-func _choose_coop_input_direction(desired_direction: Vector2, distance_to_target: float, enemy: EnemyBase) -> Vector2:
-	if desired_direction.length_squared() <= 0.0001:
-		return Vector2.ZERO
-	if distance_to_target <= move_deadzone and rng.randf() < input_release_chance:
-		return Vector2.ZERO
-
-	var candidate := desired_direction
-	var noise_degrees := maxf(0.0, input_noise_degrees)
-	if distance_to_target < slow_down_radius:
-		noise_degrees *= 0.4
-	if noise_degrees > 0.0:
-		candidate = candidate.rotated(deg_to_rad(rng.randf_range(-noise_degrees, noise_degrees)))
-
-	if enemy != null and is_instance_valid(enemy) and distance_to_target < (slow_down_radius * 1.35) and rng.randf() < strafe_input_chance:
-		var enemy_position := _get_position_in_actor_space(enemy)
-		var player_position := player.position
-		var enemy_side := signf(enemy_position.x - player_position.x)
-		if absf(enemy_side) > 0.01:
-			var away_from_enemy := Vector2(-enemy_side, 0.0)
-			candidate = (candidate * 0.72 + away_from_enemy * 0.55).normalized()
-
-	var steps := maxi(4, stick_quantization_steps)
-	var step_angle := TAU / float(steps)
-	var snapped_angle: float = round(candidate.angle() / step_angle) * step_angle
-	var quantized: Vector2 = Vector2.RIGHT.rotated(snapped_angle)
-	if distance_to_target < move_deadzone * 1.8 and rng.randf() < input_release_chance:
-		return Vector2.ZERO
-	return quantized
 
 
 func _compute_desired_position() -> Vector2:
@@ -514,6 +868,31 @@ func _compute_desired_position() -> Vector2:
 	return _clamp_to_bounds(target_position)
 
 
+func _compute_heal_approach_position(heal_target: Node2D) -> Vector2:
+	if heal_target == null or not is_instance_valid(heal_target):
+		return _compute_desired_position()
+	var target_position := _get_position_in_actor_space(heal_target)
+	var desired_cast_distance := maxf(16.0, basic_heal_range - maxf(0.0, basic_heal_range_buffer))
+	desired_cast_distance = minf(desired_cast_distance, maxf(20.0, basic_heal_range * 0.88))
+	var to_target := target_position - position
+	var distance_to_target := to_target.length()
+	if distance_to_target > desired_cast_distance:
+		var approach_direction := to_target / maxf(0.0001, distance_to_target)
+		return _clamp_to_bounds(target_position - (approach_direction * desired_cast_distance))
+
+	var enemy := _find_primary_enemy()
+	var heal_side := -1.0
+	if enemy != null and is_instance_valid(enemy):
+		var enemy_position := _get_position_in_actor_space(enemy)
+		heal_side = -signf(enemy_position.x - target_position.x)
+	if absf(heal_side) <= 0.01 and is_instance_valid(player):
+		heal_side = -signf(player.facing_direction.x)
+	if absf(heal_side) <= 0.01:
+		heal_side = -1.0
+	var lateral_offset := maxf(14.0, minf(28.0, basic_heal_range * 0.2))
+	return _clamp_to_bounds(target_position + Vector2(heal_side * lateral_offset, follow_vertical_bias + 8.0))
+
+
 func _resolve_guard_side(player_position: Vector2, enemy: EnemyBase) -> float:
 	var fallback_side := desired_guard_side
 	if absf(fallback_side) <= 0.01:
@@ -543,17 +922,31 @@ func _resolve_guard_side(player_position: Vector2, enemy: EnemyBase) -> float:
 func _find_primary_enemy() -> EnemyBase:
 	if not is_instance_valid(player):
 		return null
-	var nearest_enemy: EnemyBase = null
-	var nearest_distance_sq := INF
+	var nearest_minion: EnemyBase = null
+	var nearest_minion_dist_sq := INF
+	var nearest_minion_id := INF
+	var nearest_boss: EnemyBase = null
+	var nearest_boss_dist_sq := INF
+	var nearest_boss_id := INF
 	for enemy_node in get_tree().get_nodes_in_group("enemies"):
 		var enemy := enemy_node as EnemyBase
-		if enemy == null or not is_instance_valid(enemy):
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
 			continue
 		var distance_sq := enemy.global_position.distance_squared_to(player.global_position)
-		if distance_sq < nearest_distance_sq:
-			nearest_distance_sq = distance_sq
-			nearest_enemy = enemy
-	return nearest_enemy
+		var enemy_id := enemy.get_instance_id()
+		if enemy.is_miniboss:
+			if nearest_boss == null or distance_sq < nearest_boss_dist_sq or (is_equal_approx(distance_sq, nearest_boss_dist_sq) and enemy_id < nearest_boss_id):
+				nearest_boss = enemy
+				nearest_boss_dist_sq = distance_sq
+				nearest_boss_id = enemy_id
+			continue
+		if nearest_minion == null or distance_sq < nearest_minion_dist_sq or (is_equal_approx(distance_sq, nearest_minion_dist_sq) and enemy_id < nearest_minion_id):
+			nearest_minion = enemy
+			nearest_minion_dist_sq = distance_sq
+			nearest_minion_id = enemy_id
+	if nearest_minion != null:
+		return nearest_minion
+	return nearest_boss
 
 
 func _clamp_to_bounds(local_position: Vector2) -> Vector2:
@@ -563,6 +956,43 @@ func _clamp_to_bounds(local_position: Vector2) -> Vector2:
 	clamped.x = clampf(clamped.x, player.lane_min_x + arena_padding, player.lane_max_x - arena_padding)
 	clamped.y = clampf(clamped.y, player.lane_min_y + arena_padding, player.lane_max_y - arena_padding)
 	return clamped
+
+
+func _apply_miniboss_soft_separation(delta: float) -> void:
+	if not miniboss_soft_collision_enabled:
+		return
+	if dead or delta <= 0.0:
+		return
+	var desired_spacing := maxf(1.0, miniboss_soft_collision_radius)
+	var desired_spacing_sq := desired_spacing * desired_spacing
+	var separation := Vector2.ZERO
+	for enemy_node in get_tree().get_nodes_in_group("enemies"):
+		var miniboss := enemy_node as EnemyBase
+		if miniboss == null:
+			continue
+		if not is_instance_valid(miniboss) or miniboss.dead or not miniboss.is_miniboss:
+			continue
+		var miniboss_position := _get_position_in_actor_space(miniboss)
+		var to_self := position - miniboss_position
+		var distance_sq := to_self.length_squared()
+		if distance_sq <= 0.0001:
+			var fallback_sign := 1.0 if get_instance_id() > miniboss.get_instance_id() else -1.0
+			to_self = Vector2(fallback_sign, 0.0)
+			distance_sq = 1.0
+		if distance_sq >= desired_spacing_sq:
+			continue
+		var distance := sqrt(distance_sq)
+		var penetration_ratio := (desired_spacing - distance) / desired_spacing
+		separation += (to_self / distance) * penetration_ratio
+	if separation.length_squared() <= 0.0001:
+		return
+	var push_step := separation * (miniboss_soft_collision_push_speed * delta)
+	var max_push_step := maxf(0.1, miniboss_soft_collision_max_push_per_frame)
+	if push_step.length() > max_push_step:
+		push_step = push_step.normalized() * max_push_step
+	position = _clamp_to_bounds(position + push_step)
+	if pixel_snap_movement:
+		position = position.round()
 
 
 func _get_position_in_actor_space(node: Node2D) -> Vector2:
@@ -580,6 +1010,16 @@ func _is_tactically_moving() -> bool:
 	return move_velocity.length_squared() > 36.0
 
 
+func get_ai_debug_state() -> String:
+	return healer_ai_state_name
+
+
+func get_ai_debug_target() -> String:
+	if healer_ai_target == null or not is_instance_valid(healer_ai_target):
+		return "-"
+	return healer_ai_target.name
+
+
 func _set_anim_frame(anim_name: String, frame_index: int) -> void:
 	if not is_instance_valid(sprite):
 		return
@@ -594,8 +1034,7 @@ func _set_anim_frame(anim_name: String, frame_index: int) -> void:
 
 
 func _next_heal_interval() -> float:
-	var interval := heal_interval + rng.randf_range(-heal_interval_variance, heal_interval_variance)
-	return maxf(0.9, interval)
+	return maxf(0.9, heal_interval)
 
 
 func _spawn_tidal_wave() -> void:

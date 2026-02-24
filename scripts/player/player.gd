@@ -49,6 +49,8 @@ signal item_looted(item_name: String, total_owned: int)
 @export var ability_2_min_duration: float = 0.08
 @export_range(-1.0, 1.0, 0.05) var ability_2_facing_dot_threshold: float = 0.2
 @export var ability_2_instant_block_grace: float = 0.26
+@export var guardian_dash_mark_priority_scale: float = 0.78
+@export var guardian_dash_lunge_priority_scale: float = 0.68
 
 @export var roll_speed: float = 210.0
 @export var roll_duration: float = 0.24
@@ -62,6 +64,10 @@ signal item_looted(item_name: String, total_owned: int)
 @export var lane_max_x: float = 760.0
 @export var lane_min_y: float = -165.0
 @export var lane_max_y: float = 165.0
+@export var miniboss_soft_collision_enabled: bool = true
+@export var miniboss_soft_collision_radius: float = 44.0
+@export var miniboss_soft_collision_push_speed: float = 210.0
+@export var miniboss_soft_collision_max_push_per_frame: float = 4.2
 @export var attack_depth_tolerance: float = 44.0
 @export var hit_stun_duration: float = 0.24
 @export var outgoing_hit_stun_duration: float = 0.2
@@ -431,6 +437,7 @@ func _physics_process(delta: float) -> void:
 		_apply_movement()
 		knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
 	move_and_slide()
+	_apply_miniboss_soft_separation(delta)
 	_clamp_to_lane()
 	_update_health_bar()
 	_collect_nearby_pickups()
@@ -1296,17 +1303,29 @@ func _start_roll() -> void:
 
 
 func _start_ally_dash() -> bool:
-	var ally_target := _find_nearest_facing_ally()
-	if ally_target == null:
+	var dash_selection := _find_guardian_dash_selection()
+	var dash_destination := global_position
+	if not dash_selection.is_empty():
+		var selected_point: Variant = dash_selection.get("point", global_position)
+		if selected_point is Vector2:
+			dash_destination = selected_point
+	else:
+		var ally_target := _find_nearest_facing_ally()
+		if ally_target == null:
+			return false
+		dash_destination = ally_target.global_position
+	return _begin_ally_dash_to_point(dash_destination)
+
+
+func _begin_ally_dash_to_point(destination: Vector2) -> bool:
+	var to_destination := destination - global_position
+	var destination_distance := to_destination.length()
+	if destination_distance <= 0.0001:
 		return false
-	var to_ally := ally_target.global_position - global_position
-	var ally_distance := to_ally.length()
-	if ally_distance <= 0.0001:
-		return false
-	var dash_distance := maxf(0.0, ally_distance - maxf(0.0, ability_2_arrive_distance))
+	var dash_distance := maxf(0.0, destination_distance - maxf(0.0, ability_2_arrive_distance))
 	if dash_distance <= maxf(0.0, ability_2_min_dash_distance):
 		return false
-	lunge_direction = to_ally / ally_distance
+	lunge_direction = to_destination / destination_distance
 	if absf(lunge_direction.x) > 0.01:
 		facing_direction = Vector2.RIGHT if lunge_direction.x > 0.0 else Vector2.LEFT
 	lunge_total_duration = maxf(maxf(0.01, ability_2_min_duration), dash_distance / maxf(1.0, ability_2_lunge_speed))
@@ -1326,6 +1345,49 @@ func _start_ally_dash() -> bool:
 	weapon_trail_alpha = maxf(weapon_trail_alpha, 0.72)
 	_set_combat_state(CombatState.ATTACK_ACTIVE)
 	return true
+
+
+func _find_guardian_dash_selection() -> Dictionary:
+	var best_selection: Dictionary = {}
+	var facing := facing_direction.normalized()
+	if facing.length_squared() <= 0.0001:
+		facing = Vector2.RIGHT
+	var dot_threshold := clampf(ability_2_facing_dot_threshold, -1.0, 1.0)
+	var best_score := INF
+	for enemy_node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := enemy_node as Node2D
+		if enemy == null or not is_instance_valid(enemy):
+			continue
+		if not enemy.has_method("get_marked_ally_node"):
+			continue
+		var marked_ally := enemy.call("get_marked_ally_node") as Node2D
+		if not _is_valid_ally_dash_target(marked_ally):
+			continue
+		var to_marked := marked_ally.global_position - global_position
+		var distance_sq := to_marked.length_squared()
+		if distance_sq <= 0.0001:
+			continue
+		var direction_to_marked := to_marked / sqrt(distance_sq)
+		if facing.dot(direction_to_marked) < dot_threshold:
+			continue
+		# Guardian dash should only move to ally positions, never to enemy intercept points.
+		var to_intercept := marked_ally.global_position - global_position
+		var intercept_distance_sq := to_intercept.length_squared()
+		if intercept_distance_sq <= 0.0001:
+			continue
+		var score := intercept_distance_sq
+		if enemy.has_method("is_lunge_threatening_marked_ally") and bool(enemy.call("is_lunge_threatening_marked_ally")):
+			score *= maxf(0.1, guardian_dash_lunge_priority_scale)
+		else:
+			score *= maxf(0.1, guardian_dash_mark_priority_scale)
+		if score < best_score:
+			best_score = score
+			best_selection = {
+				"point": marked_ally.global_position,
+				"ally": marked_ally,
+				"enemy": enemy
+			}
+	return best_selection
 
 
 func _find_nearest_facing_ally() -> Node2D:
@@ -1380,13 +1442,20 @@ func _is_valid_ally_dash_target(candidate: Node2D) -> bool:
 		return false
 	if candidate == self:
 		return false
+	var valid_ally_type := candidate is Player or candidate is FriendlyHealer or candidate is FriendlyRatfolk
+	if not valid_ally_type:
+		return false
 	if candidate is Player:
 		var ally_player := candidate as Player
 		if ally_player == null or ally_player.is_dead:
 			return false
-	if candidate is FriendlyHealer:
+	elif candidate is FriendlyHealer:
 		var ally_healer := candidate as FriendlyHealer
 		if ally_healer == null or ally_healer.dead:
+			return false
+	elif candidate is FriendlyRatfolk:
+		var ally_ratfolk := candidate as FriendlyRatfolk
+		if ally_ratfolk == null or ally_ratfolk.dead:
 			return false
 	return true
 
@@ -1479,6 +1548,40 @@ func _apply_movement() -> void:
 func _clamp_to_lane() -> void:
 	position.x = clampf(position.x, lane_min_x, lane_max_x)
 	position.y = clampf(position.y, lane_min_y, lane_max_y)
+
+
+func _apply_miniboss_soft_separation(delta: float) -> void:
+	if not miniboss_soft_collision_enabled:
+		return
+	if is_dead or delta <= 0.0:
+		return
+	var desired_spacing := maxf(1.0, miniboss_soft_collision_radius)
+	var desired_spacing_sq := desired_spacing * desired_spacing
+	var separation := Vector2.ZERO
+	for enemy_node in get_tree().get_nodes_in_group("enemies"):
+		var miniboss := enemy_node as EnemyBase
+		if miniboss == null:
+			continue
+		if not is_instance_valid(miniboss) or miniboss.dead or not miniboss.is_miniboss:
+			continue
+		var to_self := global_position - miniboss.global_position
+		var distance_sq := to_self.length_squared()
+		if distance_sq <= 0.0001:
+			var fallback_sign := 1.0 if get_instance_id() > miniboss.get_instance_id() else -1.0
+			to_self = Vector2(fallback_sign, 0.0)
+			distance_sq = 1.0
+		if distance_sq >= desired_spacing_sq:
+			continue
+		var distance := sqrt(distance_sq)
+		var penetration_ratio := (desired_spacing - distance) / desired_spacing
+		separation += (to_self / distance) * penetration_ratio
+	if separation.length_squared() <= 0.0001:
+		return
+	var push_step := separation * (miniboss_soft_collision_push_speed * delta)
+	var max_push_step := maxf(0.1, miniboss_soft_collision_max_push_per_frame)
+	if push_step.length() > max_push_step:
+		push_step = push_step.normalized() * max_push_step
+	global_position += push_step
 
 
 func _get_movement_vector() -> Vector2:

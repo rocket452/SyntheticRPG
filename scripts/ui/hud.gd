@@ -10,12 +10,23 @@ class_name HUD
 @onready var victory_panel: Panel = $VictoryPanel
 @onready var victory_label: Label = $VictoryPanel/Message
 @onready var status_timer: Timer = $StatusTimer
+var combat_debug_label: Label = null
 
 
 func _ready() -> void:
 	victory_panel.visible = false
 	status_timer.timeout.connect(_on_status_timeout)
 	status_label.text = ""
+	combat_debug_label = Label.new()
+	combat_debug_label.name = "CombatDebugLabel"
+	combat_debug_label.position = Vector2(990.0, 20.0)
+	combat_debug_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	combat_debug_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	combat_debug_label.size = Vector2(590.0, 140.0)
+	combat_debug_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	combat_debug_label.modulate = Color(0.88, 0.97, 1.0, 0.94)
+	combat_debug_label.text = ""
+	add_child(combat_debug_label)
 
 
 func update_health(current: float, maximum: float) -> void:
@@ -37,6 +48,27 @@ func update_cooldowns(values: Dictionary) -> void:
 
 func update_objective(text: String) -> void:
 	objective_label.text = text
+
+
+func update_combat_debug(values: Dictionary) -> void:
+	if combat_debug_label == null or not is_instance_valid(combat_debug_label):
+		return
+	var healer_state := String(values.get("healer_state", "-"))
+	var healer_target := String(values.get("healer_target", "-"))
+	var dps_state := String(values.get("dps_state", "-"))
+	var dps_target := String(values.get("dps_target", "-"))
+	var marked_ally := String(values.get("marked_ally", "-"))
+	var boss_state := String(values.get("boss_state", "Idle"))
+	var vulnerable_left := float(values.get("boss_vulnerable_left", 0.0))
+	combat_debug_label.text = "HealerAI: %s -> %s\nDPSAI: %s -> %s\nMarked Ally: %s\nBoss: %s  VulnerableTimer: %.2fs" % [
+		healer_state,
+		healer_target,
+		dps_state,
+		dps_target,
+		marked_ally,
+		boss_state,
+		vulnerable_left
+	]
 
 
 func show_item_pickup(item_name: String, total_owned: int) -> void:
