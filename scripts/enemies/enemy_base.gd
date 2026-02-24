@@ -22,25 +22,26 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 	BossLoopState.SUMMON: "Summon"
 }
 
+# Pacing experiment knobs (slow-RPG cadence).
 @export var max_health: float = 240.0
-@export var move_speed: float = 105.0
+@export var move_speed: float = 89.25
 @export var attack_damage: float = 12.0
 @export var attack_range: float = 46.0
 @export var basic_attack_hit_start_offset: float = 6.0
 @export var basic_attack_hit_end_bonus: float = 24.0
 @export var basic_attack_hit_half_width: float = 24.0
 @export var basic_attack_tip_radius: float = 20.0
-@export var attack_cooldown: float = 1.2
-@export var attack_windup: float = 0.2
+@export var attack_cooldown: float = 1.8
+@export var attack_windup: float = 0.28
 @export var attack_prestrike_hold_duration: float = 0.0
 @export var attack_hold_frame: int = 2
 @export var attack_recovery_hold_duration: float = 0.0
 @export var use_single_phase_loop: bool = true
 @export var boss_can_summon_minions: bool = true
 @export var boss_mark_start_range: float = 210.0
-@export var boss_mark_duration: float = 0.35
-@export var boss_windup_duration: float = 1.5
-@export var boss_lunge_duration: float = 0.32
+@export var boss_mark_duration: float = 0.5
+@export var boss_windup_duration: float = 2.1
+@export var boss_lunge_duration: float = 0.44
 @export var boss_lunge_speed: float = 420.0
 @export var boss_lunge_damage_multiplier: float = 1.35
 @export var boss_lunge_stun_bonus: float = 0.08
@@ -49,13 +50,13 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var boss_lunge_hit_half_width: float = 26.0
 @export var boss_lunge_tip_radius: float = 22.0
 @export var boss_vulnerable_duration: float = 3.0
-@export var boss_mark_cycle_interval: float = 10.0
-@export var boss_summon_interval: float = 20.0
+@export var boss_mark_cycle_interval: float = 12.5
+@export var boss_summon_interval: float = 25.0
 @export var boss_vulnerable_speed_multiplier: float = 0.32
 @export var boss_vulnerable_damage_taken_multiplier: float = 1.55
 @export var boss_dps_mark_damage_taken_multiplier: float = 1.16
-@export var boss_short_recovery_duration: float = 0.7
-@export var boss_summon_duration: float = 0.55
+@export var boss_short_recovery_duration: float = 0.95
+@export var boss_summon_duration: float = 0.75
 @export var boss_summon_every_cycles: int = 3
 @export var boss_summon_count: int = 2
 @export var boss_mark_warning_radius_x: float = 72.0
@@ -88,6 +89,10 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var outgoing_hit_stun_duration: float = 0.2
 @export var hit_effect_duration: float = 0.14
 @export var hurt_anim_duration: float = 0.4
+@export var periodic_hurt_anim_enabled: bool = true
+@export var periodic_hurt_anim_duration: float = 0.16
+@export var periodic_hurt_anim_interval_min: float = 2.4
+@export var periodic_hurt_anim_interval_max: float = 4.8
 @export var hit_knockback_speed: float = 190.0
 @export var hit_knockback_decay: float = 980.0
 @export var lane_min_x: float = -760.0
@@ -118,9 +123,9 @@ const MONSTER_TEXTURES: Dictionary = {
 }
 const MONSTER_FPS: Dictionary = {
 	"idle": 9.0,
-	"run": 12.0,
-	"attack": 13.0,
-	"spin": 16.0,
+	"run": 10.4,
+	"attack": 10.8,
+	"spin": 14.0,
 	"hurt": 11.0,
 	"death": 8.0
 }
@@ -168,6 +173,8 @@ var knockback_velocity: Vector2 = Vector2.ZERO
 
 var hit_flash_left: float = 0.0
 var hurt_anim_left: float = 0.0
+var cosmetic_hurt_anim_left: float = 0.0
+var periodic_hurt_anim_cooldown_left: float = 0.0
 var stun_left: float = 0.0
 var hitstop_left: float = 0.0
 var attack_flash_left: float = 0.0
@@ -305,6 +312,7 @@ func _ready() -> void:
 	boss_mark_cycle_left = 0.0
 	boss_summon_cycle_left = maxf(1.0, boss_summon_interval)
 	companion_target_refresh_left = 0.0
+	_reset_periodic_hurt_anim_cooldown()
 	_set_boss_loop_state(BossLoopState.IDLE, 0.0)
 
 
@@ -560,6 +568,8 @@ func _physics_process_single_phase(delta: float) -> void:
 		return
 
 	_tick_single_phase_boss_loop(delta, to_player)
+	_apply_idle_cooldown_melee_hold(to_player)
+	_tick_periodic_hurt_animation()
 
 	move_and_slide()
 	_apply_soft_enemy_separation(delta)
@@ -569,10 +579,30 @@ func _physics_process_single_phase(delta: float) -> void:
 	_update_health_bar()
 
 
+func _apply_idle_cooldown_melee_hold(to_player: Vector2) -> void:
+	if boss_loop_state != BossLoopState.IDLE:
+		return
+	if pending_attack or attack_recovery_hold_left > 0.0:
+		return
+	if attack_cooldown_left <= 0.0:
+		return
+	if to_player.length_squared() <= 0.0001:
+		return
+	var distance_to_player := to_player.length()
+	var melee_trigger_range := maxf(
+		attack_range + 20.0,
+		attack_range + (basic_attack_hit_end_bonus * 0.75)
+	)
+	var melee_hold_range := maxf(melee_trigger_range + 18.0, attack_range + basic_attack_hit_end_bonus + 16.0)
+	if distance_to_player <= melee_hold_range:
+		velocity = Vector2.ZERO
+
+
 func _tick_enemy_runtime_timers(delta: float) -> void:
 	var previous_attack_anim_left := attack_anim_left
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
 	hurt_anim_left = maxf(0.0, hurt_anim_left - delta)
+	cosmetic_hurt_anim_left = maxf(0.0, cosmetic_hurt_anim_left - delta)
 	stun_left = maxf(0.0, stun_left - delta)
 	attack_flash_left = maxf(0.0, attack_flash_left - delta)
 	attack_cooldown_left = maxf(0.0, attack_cooldown_left - delta)
@@ -584,9 +614,46 @@ func _tick_enemy_runtime_timers(delta: float) -> void:
 	boss_summon_cycle_left = maxf(0.0, boss_summon_cycle_left - delta)
 	boss_dps_mark_left = maxf(0.0, boss_dps_mark_left - delta)
 	companion_target_refresh_left = maxf(0.0, companion_target_refresh_left - delta)
+	periodic_hurt_anim_cooldown_left = maxf(0.0, periodic_hurt_anim_cooldown_left - delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.45))
 	if previous_attack_anim_left > 0.0 and attack_anim_left <= 0.0:
 		attack_recovery_hold_left = maxf(attack_recovery_hold_left, attack_recovery_hold_duration)
+
+
+func _tick_periodic_hurt_animation() -> void:
+	if not periodic_hurt_anim_enabled or not is_miniboss or not use_single_phase_loop:
+		cosmetic_hurt_anim_left = 0.0
+		return
+	if hurt_anim_left > 0.0:
+		cosmetic_hurt_anim_left = 0.0
+		return
+	if _is_combat_action_active_for_periodic_hurt():
+		cosmetic_hurt_anim_left = 0.0
+		return
+	if periodic_hurt_anim_cooldown_left > 0.0:
+		return
+	cosmetic_hurt_anim_left = maxf(cosmetic_hurt_anim_left, maxf(0.06, periodic_hurt_anim_duration))
+	_reset_periodic_hurt_anim_cooldown()
+
+
+func _is_combat_action_active_for_periodic_hurt() -> bool:
+	if stun_left > 0.0 or hitstop_left > 0.0:
+		return true
+	if pending_attack \
+		or attack_windup_left > 0.0 \
+		or attack_prestrike_hold_left > 0.0 \
+		or attack_anim_left > 0.0 \
+		or attack_recovery_hold_left > 0.0 \
+		or spin_charge_left > 0.0 \
+		or spin_active_left > 0.0:
+		return true
+	return boss_loop_state != BossLoopState.IDLE
+
+
+func _reset_periodic_hurt_anim_cooldown() -> void:
+	var min_interval := maxf(0.1, periodic_hurt_anim_interval_min)
+	var max_interval := maxf(min_interval, periodic_hurt_anim_interval_max)
+	periodic_hurt_anim_cooldown_left = randf_range(min_interval, max_interval)
 
 
 func _update_boss_facing(delta: float, to_player: Vector2) -> void:
@@ -639,31 +706,11 @@ func _tick_boss_idle_state(to_player: Vector2) -> void:
 		boss_summon_cycle_left = maxf(1.0, boss_summon_interval)
 		return
 	if boss_mark_cycle_left > 0.0:
-		if to_player.length_squared() > 0.0001:
-			var distance_to_player := to_player.length()
-			if attack_cooldown_left <= 0.0 and distance_to_player <= attack_range * 0.95:
-				pending_attack = true
-				attack_windup_left = attack_windup
-				attack_prestrike_hold_left = 0.0
-				attack_recovery_hold_left = 0.0
-				var initial_attack_facing := to_player.normalized()
-				if initial_attack_facing.length_squared() <= 0.0001:
-					initial_attack_facing = external_sprite_facing_direction
-				if initial_attack_facing.length_squared() <= 0.0001:
-					initial_attack_facing = Vector2.RIGHT
-				committed_attack_facing_direction = initial_attack_facing.normalized()
-				velocity = Vector2.ZERO
-			else:
-				var approach_speed := move_speed * 0.55
-				if distance_to_player > attack_range * 0.85:
-					velocity = to_player.normalized() * approach_speed
-				else:
-					velocity = Vector2.ZERO
+		_tick_boss_idle_basic_pressure(to_player)
 		return
 	var mark_target := _select_mark_target()
 	if mark_target == null:
-		if to_player.length_squared() > 0.0001:
-			velocity = to_player.normalized() * move_speed
+		_tick_boss_idle_basic_pressure(to_player)
 		return
 	boss_marked_ally = mark_target
 	var to_marked := mark_target.global_position - global_position
@@ -677,12 +724,43 @@ func _tick_boss_idle_state(to_player: Vector2) -> void:
 		else:
 			to_marked = Vector2.RIGHT
 	committed_attack_facing_direction = to_marked.normalized()
-	var start_range := maxf(24.0, boss_mark_start_range)
-	if to_marked.length() > start_range:
-		velocity = to_marked.normalized() * move_speed
-		return
 	boss_mark_cycle_left = maxf(0.4, boss_mark_cycle_interval)
 	_set_boss_loop_state(BossLoopState.MARK, boss_mark_duration)
+
+
+func _tick_boss_idle_basic_pressure(to_player: Vector2) -> void:
+	if to_player.length_squared() <= 0.0001:
+		return
+	var distance_to_player := to_player.length()
+	# Start basic swings from farther out and hold earlier to avoid body-pushing.
+	var melee_trigger_range := maxf(
+		attack_range + 20.0,
+		attack_range + (basic_attack_hit_end_bonus * 0.75)
+	)
+	var melee_hold_range := maxf(melee_trigger_range + 18.0, attack_range + basic_attack_hit_end_bonus + 16.0)
+	if attack_cooldown_left <= 0.0:
+		if distance_to_player <= melee_trigger_range:
+			pending_attack = true
+			attack_windup_left = attack_windup
+			attack_prestrike_hold_left = 0.0
+			attack_recovery_hold_left = 0.0
+			var initial_attack_facing := to_player.normalized()
+			if initial_attack_facing.length_squared() <= 0.0001:
+				initial_attack_facing = external_sprite_facing_direction
+			if initial_attack_facing.length_squared() <= 0.0001:
+				initial_attack_facing = Vector2.RIGHT
+			committed_attack_facing_direction = initial_attack_facing.normalized()
+			velocity = Vector2.ZERO
+		else:
+			velocity = to_player.normalized() * (move_speed * 0.55)
+	elif distance_to_player <= attack_range:
+		# Once in core melee range, hold position and wait for cooldown.
+		# This prevents body-pushing the tank while the next swing is charging.
+		velocity = Vector2.ZERO
+	elif distance_to_player > melee_hold_range:
+		velocity = to_player.normalized() * (move_speed * 0.42)
+	else:
+		velocity = Vector2.ZERO
 
 
 func _tick_boss_mark_state(delta: float) -> void:
@@ -1346,7 +1424,8 @@ func receive_hit(amount: float, source_position: Vector2, stun_duration: float =
 		or spin_active_left > 0.0
 	var loop_interrupt_lock := use_single_phase_loop and boss_loop_state in [BossLoopState.MARK, BossLoopState.WINDUP, BossLoopState.LUNGE, BossLoopState.SUMMON]
 	var ignore_interrupts := attack_commit_active or loop_interrupt_lock
-	if ignore_interrupts:
+	var suppress_knockback := is_miniboss
+	if ignore_interrupts or suppress_knockback:
 		knockback_velocity = Vector2.ZERO
 	else:
 		var knockback_direction := (global_position - source_position).normalized()
@@ -1359,6 +1438,7 @@ func receive_hit(amount: float, source_position: Vector2, stun_duration: float =
 	var applied_stun := 0.0
 	if not ignore_interrupts:
 		hurt_anim_left = maxf(hurt_anim_left, hurt_anim_duration)
+		cosmetic_hurt_anim_left = 0.0
 		applied_stun = maxf(hit_stun_duration, stun_duration) if apply_hit_stun else maxf(0.0, stun_duration)
 		stun_left = maxf(stun_left, applied_stun)
 	if applied_stun > 0.0:
@@ -1680,11 +1760,15 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		facing = Vector2.RIGHT
 	external_sprite_facing_direction = facing.normalized()
 	debug_last_row = _pick_debug_facing_row(external_sprite_facing_direction, 6)
+	var has_true_hurt_anim := hurt_anim_left > 0.0
+	var has_cosmetic_hurt_anim := cosmetic_hurt_anim_left > 0.0 and not _is_combat_action_active_for_periodic_hurt()
+	var displayed_hurt_left := hurt_anim_left if has_true_hurt_anim else cosmetic_hurt_anim_left
+	var displayed_hurt_duration := hurt_anim_duration if has_true_hurt_anim else periodic_hurt_anim_duration
 
 	var action_key := "idle"
 	if dead:
 		action_key = "death"
-	elif hurt_anim_left > 0.0:
+	elif has_true_hurt_anim:
 		action_key = "hurt"
 	elif spin_active_left > 0.0:
 		action_key = "spin"
@@ -1692,6 +1776,8 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		action_key = "attack"
 	elif pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0:
 		action_key = "attack"
+	elif has_cosmetic_hurt_anim:
+		action_key = "hurt"
 	elif movement_ratio > 0.08:
 		action_key = "run"
 	var row := int(MONSTER_ACTION_ROWS.get(action_key, 0))
@@ -1749,7 +1835,7 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		else:
 			frame_index = mini(int(floor(monster_anim_time)), frame_count - 1)
 	elif action_key == "hurt":
-		var hurt_progress := 1.0 - (hurt_anim_left / maxf(0.01, hurt_anim_duration))
+		var hurt_progress := 1.0 - (displayed_hurt_left / maxf(0.01, displayed_hurt_duration))
 		frame_index = mini(int(floor(clampf(hurt_progress, 0.0, 1.0) * float(frame_count))), frame_count - 1)
 	else:
 		frame_index = int(floor(monster_anim_time)) % frame_count

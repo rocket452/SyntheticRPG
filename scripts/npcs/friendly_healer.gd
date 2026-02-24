@@ -27,6 +27,7 @@ enum CastAction {
 	LIGHT_BOLT
 }
 
+# Pacing experiment knobs (slow-RPG cadence).
 @export var heal_amount: float = 12.0
 @export var heal_interval: float = 4.2
 @export var heal_interval_variance: float = 0.7
@@ -36,11 +37,11 @@ enum CastAction {
 @export var reacquire_retry_interval: float = 0.3
 @export var react_heal_delay: float = 0.18
 @export var emergency_cast_on_damage: bool = true
-@export var shield_cooldown: float = 5.0
+@export var shield_cooldown: float = 7.5
 @export var shield_duration: float = 2.1
 @export var shield_damage_multiplier: float = 0.35
 @export var shield_cast_range: float = 164.0
-@export var move_speed: float = 118.0
+@export var move_speed: float = 100.3
 @export var movement_acceleration: float = 860.0
 @export var movement_deceleration: float = 980.0
 @export var ai_decision_interval: float = 0.1
@@ -53,32 +54,32 @@ enum CastAction {
 @export var input_release_chance: float = 0.12
 @export var strafe_input_chance: float = 0.22
 @export var stick_quantization_steps: int = 8
-@export var follow_distance: float = 84.0
-@export var min_distance_to_player: float = 26.0
-@export var max_distance_to_player: float = 120.0
-@export var healer_follow_min_band: float = 110.0
-@export var healer_follow_max_band: float = 165.0
+@export var follow_distance: float = 108.0
+@export var min_distance_to_player: float = 40.0
+@export var max_distance_to_player: float = 160.0
+@export var healer_follow_min_band: float = 140.0
+@export var healer_follow_max_band: float = 210.0
 @export var target_smoothing_speed: float = 430.0
 @export var guard_side_swap_threshold: float = 40.0
 @export var follow_vertical_scale: float = 0.2
 @export var follow_vertical_bias: float = 0.0
-@export var orbit_lateral_distance: float = 4.0
-@export var orbit_depth_distance: float = 2.0
+@export var orbit_lateral_distance: float = 14.0
+@export var orbit_depth_distance: float = 8.0
 @export var orbit_speed: float = 1.25
 @export var move_facing_threshold: float = 20.0
 @export var facing_flip_deadzone: float = 10.0
 @export var pixel_snap_movement: bool = false
 @export var arena_padding: float = 26.0
 @export var tidal_wave_enabled: bool = true
-@export var basic_heal_cooldown: float = 1.0
+@export var basic_heal_cooldown: float = 1.5
 @export var basic_heal_range: float = 132.0
 @export var basic_heal_range_buffer: float = 10.0
 @export var light_bolt_enabled: bool = true
 @export var light_bolt_damage: float = 7.5
-@export var light_bolt_cooldown: float = 1.25
+@export var light_bolt_cooldown: float = 1.9
 @export var light_bolt_range: float = 208.0
 @export var light_bolt_stun_duration: float = 0.1
-@export var tidal_wave_cooldown: float = 6.0
+@export var tidal_wave_cooldown: float = 9.0
 @export var tidal_wave_speed: float = 310.0
 @export var tidal_wave_duration: float = 1.5
 @export var tidal_wave_heal_amount: float = 9.0
@@ -94,10 +95,10 @@ enum CastAction {
 @export var hit_stun_duration: float = 0.18
 @export var hit_knockback_speed: float = 170.0
 @export var hit_knockback_decay: float = 960.0
-@export var miniboss_soft_collision_enabled: bool = true
-@export var miniboss_soft_collision_radius: float = 40.0
-@export var miniboss_soft_collision_push_speed: float = 190.0
-@export var miniboss_soft_collision_max_push_per_frame: float = 3.8
+@export var miniboss_soft_collision_enabled: bool = false
+@export var miniboss_soft_collision_radius: float = 52.0
+@export var miniboss_soft_collision_push_speed: float = 245.0
+@export var miniboss_soft_collision_max_push_per_frame: float = 5.6
 
 const HEALER_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/fishfolk/Fishfolk Archpriest Sprite Sheet.png")
 const TIDAL_WAVE_SHEET_PATH: String = "res://assets/external/wave_fx/tidal_wave_sheet/animated_water_24x129x96.png"
@@ -119,8 +120,8 @@ const ANIM_FRAME_COLUMNS: Dictionary = {
 }
 const ANIM_FPS: Dictionary = {
 	"idle": 6.0,
-	"run": 10.0,
-	"cast": 12.0
+	"run": 8.8,
+	"cast": 10.0
 }
 
 var player: Player = null

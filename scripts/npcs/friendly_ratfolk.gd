@@ -22,8 +22,9 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 	DPSAIState.ASSAULT_CAST: "ASSAULT_CAST"
 }
 
+# Pacing experiment knobs (slow-RPG cadence).
 @export var max_health: float = 86.0
-@export var move_speed: float = 150.0
+@export var move_speed: float = 127.5
 @export var ai_decision_interval: float = 0.1
 @export var attack_damage: float = 8.5
 @export var attack_range: float = 68.0
@@ -32,16 +33,16 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var run_anim_start_speed: float = 28.0
 @export var run_anim_stop_speed: float = 16.0
 @export var run_anim_displacement_deadzone: float = 0.42
-@export var attack_windup: float = 0.14
-@export var attack_recovery: float = 0.2
-@export var attack_cooldown: float = 0.72
+@export var attack_windup: float = 0.19
+@export var attack_recovery: float = 0.3
+@export var attack_cooldown: float = 1.1
 @export var attack_knockback_scale: float = 0.82
 @export var outgoing_hit_stun_duration: float = 0.16
 @export var hit_stun_duration: float = 0.2
 @export var hit_knockback_speed: float = 170.0
 @export var hit_knockback_decay: float = 980.0
-@export var follow_player_distance: float = 126.0
-@export var follow_player_min_distance: float = 50.0
+@export var follow_player_distance: float = 138.0
+@export var follow_player_min_distance: float = 62.0
 @export var max_chase_distance_from_player: float = 460.0
 @export var facing_flip_deadzone: float = 8.0
 @export var arena_padding: float = 24.0
@@ -49,10 +50,10 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var lane_max_x: float = 760.0
 @export var lane_min_y: float = -165.0
 @export var lane_max_y: float = 165.0
-@export var miniboss_soft_collision_enabled: bool = true
-@export var miniboss_soft_collision_radius: float = 42.0
-@export var miniboss_soft_collision_push_speed: float = 200.0
-@export var miniboss_soft_collision_max_push_per_frame: float = 4.0
+@export var miniboss_soft_collision_enabled: bool = false
+@export var miniboss_soft_collision_radius: float = 54.0
+@export var miniboss_soft_collision_push_speed: float = 255.0
+@export var miniboss_soft_collision_max_push_per_frame: float = 5.8
 @export var health_bar_width: float = 56.0
 @export var health_bar_thickness: float = 5.0
 @export var health_bar_y_offset: float = -62.0
@@ -60,9 +61,9 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var shadow_clone_enabled: bool = true
 @export var shadow_clone_count: int = 2
 @export var shadow_clone_cast_duration: float = 0.5
-@export var shadow_clone_cooldown: float = 7.5
+@export var shadow_clone_cooldown: float = 11.25
 @export var boss_mark_duration: float = 6.0
-@export var boss_mark_cooldown: float = 2.8
+@export var boss_mark_cooldown: float = 4.2
 @export var boss_mark_range: float = 232.0
 @export var shadow_clone_spawn_radius: float = 30.0
 @export var shadow_clone_lifetime: float = 5.5
@@ -75,15 +76,15 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var shadow_clone_attack_cooldown_scale: float = 0.78
 @export var shadow_clone_tint: Color = Color(0.62, 0.56, 0.98, 0.82)
 @export var backstab_dash_enabled: bool = true
-@export var backstab_dash_cooldown: float = 1.35
+@export var backstab_dash_cooldown: float = 2.05
 @export var backstab_dash_speed: float = 285.0
 @export var backstab_dash_duration: float = 0.24
 @export var backstab_dash_trigger_range: float = 190.0
-@export var backstab_dash_behind_distance: float = 44.0
-@export var backstab_dash_stop_distance: float = 9.0
+@export var backstab_dash_behind_distance: float = 52.0
+@export var backstab_dash_stop_distance: float = 12.0
 @export var backstab_dash_depth_offset: float = 18.0
 @export_range(0.0, 0.95, 0.01) var backstab_required_behind_dot: float = 0.12
-@export var avoid_tank_frontline_distance: float = 20.0
+@export var avoid_tank_frontline_distance: float = 34.0
 
 const RATFOLK_SHEET_PATH: String = "res://assets/external/ElthenAssets/ratfolk/Ratfolk Rogue Sprite Sheet.png"
 const RATFOLK_SCENE_PATH: String = "res://scenes/npcs/FriendlyRatfolk.tscn"
@@ -105,8 +106,8 @@ const ANIM_FRAME_COLUMNS: Dictionary = {
 }
 const ANIM_FPS: Dictionary = {
 	"idle": 7.0,
-	"run": 11.0,
-	"attack": 13.0,
+	"run": 9.4,
+	"attack": 10.8,
 	"hurt": 12.0,
 	"death": 8.0
 }
