@@ -22,26 +22,27 @@ signal cooldowns_changed(values: Dictionary)
 signal died
 signal item_looted(item_name: String, total_owned: int)
 
-@export var move_speed: float = 97.5
+# Pacing experiment knobs (slow-RPG cadence).
+@export var move_speed: float = 82.9
 @export var max_health: float = 120.0
 @export var basic_attack_damage: float = 15.0
 @export var basic_attack_range: float = 62.0
 @export var basic_attack_arc_degrees: float = 90.0
-@export var basic_attack_cooldown: float = 0.58
-@export var basic_attack_windup: float = 0.12
+@export var basic_attack_cooldown: float = 1.35
+@export var basic_attack_windup: float = 0.2
 @export var basic_combo_chain_window: float = 0.42
-@export var basic_combo_end_cooldown: float = 0.38
+@export var basic_combo_end_cooldown: float = 0.8
 
 @export var ability_1_damage: float = 30.0
 @export var ability_1_range: float = 84.0
 @export var ability_1_arc_degrees: float = 140.0
-@export var ability_1_cooldown: float = 3.0
+@export var ability_1_cooldown: float = 4.5
 @export var ability_1_windup: float = 0.14
 
 @export var ability_2_damage: float = 40.0
 @export var ability_2_range: float = 88.0
 @export var ability_2_arc_degrees: float = 60.0
-@export var ability_2_cooldown: float = 4.5
+@export var ability_2_cooldown: float = 6.75
 @export var ability_2_lunge_speed: float = 460.0
 @export var ability_2_lunge_duration: float = 0.22
 @export var ability_2_arrive_distance: float = 16.0
@@ -64,10 +65,10 @@ signal item_looted(item_name: String, total_owned: int)
 @export var lane_max_x: float = 760.0
 @export var lane_min_y: float = -165.0
 @export var lane_max_y: float = 165.0
-@export var miniboss_soft_collision_enabled: bool = true
-@export var miniboss_soft_collision_radius: float = 44.0
-@export var miniboss_soft_collision_push_speed: float = 210.0
-@export var miniboss_soft_collision_max_push_per_frame: float = 4.2
+@export var miniboss_soft_collision_enabled: bool = false
+@export var miniboss_soft_collision_radius: float = 64.0
+@export var miniboss_soft_collision_push_speed: float = 285.0
+@export var miniboss_soft_collision_max_push_per_frame: float = 6.0
 @export var attack_depth_tolerance: float = 44.0
 @export var hit_stun_duration: float = 0.24
 @export var outgoing_hit_stun_duration: float = 0.2
@@ -131,9 +132,9 @@ const PLAYER_HD_TEXTURES: Dictionary = {
 }
 const PLAYER_HD_FPS: Dictionary = {
 	"idle": 8.0,
-	"run": 12.0,
-	"attack": 13.0,
-	"lunge": 13.0,
+	"run": 10.2,
+	"attack": 10.6,
+	"lunge": 10.6,
 	"roll": 9.0,
 	"hurt": 11.0,
 	"block": 9.0,
@@ -175,10 +176,10 @@ const BASIC_COMBO_DAMAGE_MULTIPLIERS: Array = [1.0, 1.14, 1.34]
 const BASIC_COMBO_RANGE_MULTIPLIERS: Array = [1.0, 1.08, 1.18]
 const BASIC_COMBO_ARC_MULTIPLIERS: Array = [1.0, 1.1, 1.24]
 const BASIC_COMBO_WINDUP_MULTIPLIERS: Array = [1.0, 0.9, 0.8]
-const BASIC_COMBO_COOLDOWN_MULTIPLIERS: Array = [0.42, 0.5, 1.0]
+const BASIC_COMBO_COOLDOWN_MULTIPLIERS: Array = [0.8, 0.9, 1.0]
 const BASIC_COMBO_ANIM_DURATION_MULTIPLIERS: Array = [1.0, 1.06, 1.2]
 const BASIC_COMBO_ANIM_STRENGTH_MULTIPLIERS: Array = [1.0, 1.18, 1.36]
-const BASIC_ATTACK_BASE_ANIM_DURATION: float = 0.18
+const BASIC_ATTACK_BASE_ANIM_DURATION: float = 0.24
 const BASIC_ATTACK_BASE_ANIM_STRENGTH: float = 1.05
 const COMBAT_STATE_NAMES: Dictionary = {
 	CombatState.IDLE_MOVE: "IDLE_MOVE",

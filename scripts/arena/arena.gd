@@ -310,6 +310,10 @@ func _update_objective() -> void:
 
 
 func _emit_combat_debug() -> void:
+	var tank_basic_cd_left := 0.0
+	if is_instance_valid(player):
+		tank_basic_cd_left = player.basic_attack_cooldown_left
+
 	var healer_state := "-"
 	var healer_target := "-"
 	if is_instance_valid(healer):
@@ -328,6 +332,8 @@ func _emit_combat_debug() -> void:
 	var marked_ally := "-"
 	var boss_state := "Idle"
 	var vulnerable_left := 0.0
+	var boss_windup_duration := 0.0
+	var boss_lunge_cycle_left := 0.0
 	var debug_boss := _get_debug_boss()
 	if debug_boss != null:
 		if debug_boss.has_method("get_boss_marked_ally_name"):
@@ -340,6 +346,8 @@ func _emit_combat_debug() -> void:
 				vulnerable_left = vulnerable_variant
 			elif vulnerable_variant is int:
 				vulnerable_left = float(vulnerable_variant)
+		boss_windup_duration = debug_boss.boss_windup_duration
+		boss_lunge_cycle_left = debug_boss.boss_mark_cycle_left
 
 	combat_debug_changed.emit({
 		"healer_state": healer_state,
@@ -348,7 +356,10 @@ func _emit_combat_debug() -> void:
 		"dps_target": dps_target,
 		"marked_ally": marked_ally,
 		"boss_state": boss_state,
-		"boss_vulnerable_left": vulnerable_left
+		"boss_vulnerable_left": vulnerable_left,
+		"tank_basic_cd_left": tank_basic_cd_left,
+		"boss_windup_duration": boss_windup_duration,
+		"boss_lunge_cycle_left": boss_lunge_cycle_left
 	})
 
 
