@@ -312,7 +312,10 @@ func _update_objective() -> void:
 func _emit_combat_debug() -> void:
 	var tank_basic_cd_left := 0.0
 	if is_instance_valid(player):
-		tank_basic_cd_left = player.basic_attack_cooldown_left
+		if player.has_method("RemainingGCDTime"):
+			tank_basic_cd_left = float(player.call("RemainingGCDTime"))
+		else:
+			tank_basic_cd_left = player.basic_attack_cooldown_left
 
 	var healer_state := "-"
 	var healer_target := "-"

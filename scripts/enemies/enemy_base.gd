@@ -40,7 +40,7 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var boss_can_summon_minions: bool = true
 @export var boss_mark_start_range: float = 210.0
 @export var boss_mark_duration: float = 0.5
-@export var boss_windup_duration: float = 2.1
+@export var boss_windup_duration: float = 1.7
 @export var boss_lunge_duration: float = 0.44
 @export var boss_lunge_speed: float = 420.0
 @export var boss_lunge_damage_multiplier: float = 1.35
@@ -49,11 +49,12 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var boss_lunge_hit_length: float = 112.0
 @export var boss_lunge_hit_half_width: float = 26.0
 @export var boss_lunge_tip_radius: float = 22.0
-@export var boss_vulnerable_duration: float = 3.0
+@export var boss_vulnerable_duration: float = 4.8
 @export var boss_mark_cycle_interval: float = 12.5
 @export var boss_summon_interval: float = 25.0
 @export var boss_vulnerable_speed_multiplier: float = 0.32
-@export var boss_vulnerable_damage_taken_multiplier: float = 1.55
+@export var boss_non_vulnerable_damage_taken_multiplier: float = 0.5
+@export var boss_vulnerable_damage_taken_multiplier: float = 1.5
 @export var boss_dps_mark_damage_taken_multiplier: float = 1.16
 @export var boss_short_recovery_duration: float = 0.95
 @export var boss_summon_duration: float = 0.75
@@ -1410,10 +1411,11 @@ func receive_hit(amount: float, source_position: Vector2, stun_duration: float =
 	if dead:
 		return false
 	var damage_to_apply := maxf(0.0, amount)
+	if use_single_phase_loop and is_miniboss:
+		var phase_damage_multiplier := boss_vulnerable_damage_taken_multiplier if boss_loop_state == BossLoopState.VULNERABLE else boss_non_vulnerable_damage_taken_multiplier
+		damage_to_apply *= maxf(0.0, phase_damage_multiplier)
 	if boss_dps_mark_left > 0.0:
 		damage_to_apply *= maxf(1.0, boss_dps_mark_damage_taken_multiplier)
-	if use_single_phase_loop and boss_loop_state == BossLoopState.VULNERABLE:
-		damage_to_apply *= maxf(1.0, boss_vulnerable_damage_taken_multiplier)
 
 	var attack_commit_active := pending_attack \
 		or attack_windup_left > 0.0 \

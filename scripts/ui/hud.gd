@@ -38,12 +38,13 @@ func update_xp(current: int, needed: int, level: int) -> void:
 
 
 func update_cooldowns(values: Dictionary) -> void:
+	var gcd_text := _format_cooldown(float(values.get("gcd", 0.0)))
 	var basic_text := _format_cooldown(float(values.get("basic", 0.0)))
 	var ability_1_text := _format_cooldown(float(values.get("ability_1", 0.0)))
 	var ability_2_text := _format_cooldown(float(values.get("ability_2", 0.0)))
 	var roll_text := _format_cooldown(float(values.get("roll", 0.0)))
 	var blocking_text := " | Blocking" if bool(values.get("block_active", false)) else ""
-	cooldown_label.text = "Swing %s  Charge %s  Dash %s  Roll %s%s" % [basic_text, ability_1_text, ability_2_text, roll_text, blocking_text]
+	cooldown_label.text = "GCD %s  Swing %s  Charge %s  Dash %s  Roll %s%s" % [gcd_text, basic_text, ability_1_text, ability_2_text, roll_text, blocking_text]
 
 
 func update_objective(text: String) -> void:
@@ -63,7 +64,7 @@ func update_combat_debug(values: Dictionary) -> void:
 	var tank_basic_cd_left := float(values.get("tank_basic_cd_left", 0.0))
 	var boss_windup_duration := float(values.get("boss_windup_duration", 0.0))
 	var boss_lunge_cycle_left := float(values.get("boss_lunge_cycle_left", 0.0))
-	combat_debug_label.text = "HealerAI: %s -> %s\nDPSAI: %s -> %s\nMarked Ally: %s\nBoss: %s  VulnerableTimer: %.2fs\nPACING_DEBUG: TankSwingCD %.2fs | BossWindup %.2fs | BossLungeCD %.2fs" % [
+	combat_debug_label.text = "HealerAI: %s -> %s\nDPSAI: %s -> %s\nMarked Ally: %s\nBoss: %s  VulnerableTimer: %.2fs\nPACING_DEBUG: TankGCD %.2fs | BossWindup %.2fs | BossLungeCD %.2fs" % [
 		healer_state,
 		healer_target,
 		dps_state,
