@@ -30,7 +30,6 @@ signal item_looted(item_name: String, total_owned: int)
 @export var basic_attack_arc_degrees: float = 90.0
 @export var basic_attack_cooldown: float = 1.35
 @export var basic_attack_windup: float = 0.2
-@export var global_cooldown_duration: float = 1.5
 @export var basic_combo_chain_window: float = 0.42
 @export var basic_combo_end_cooldown: float = 0.8
 
@@ -177,11 +176,11 @@ const BASIC_COMBO_DAMAGE_MULTIPLIERS: Array = [1.0, 1.14, 1.34]
 const BASIC_COMBO_RANGE_MULTIPLIERS: Array = [1.0, 1.08, 1.18]
 const BASIC_COMBO_ARC_MULTIPLIERS: Array = [1.0, 1.1, 1.24]
 const BASIC_COMBO_WINDUP_MULTIPLIERS: Array = [1.0, 0.9, 0.8]
+const BASIC_COMBO_COOLDOWN_MULTIPLIERS: Array = [0.8, 0.9, 1.0]
 const BASIC_COMBO_ANIM_DURATION_MULTIPLIERS: Array = [1.0, 1.06, 1.2]
 const BASIC_COMBO_ANIM_STRENGTH_MULTIPLIERS: Array = [1.0, 1.18, 1.36]
 const BASIC_ATTACK_BASE_ANIM_DURATION: float = 0.24
 const BASIC_ATTACK_BASE_ANIM_STRENGTH: float = 1.05
-const DEBUG_COMBAT_PACING: bool = true
 const COMBAT_STATE_NAMES: Dictionary = {
 	CombatState.IDLE_MOVE: "IDLE_MOVE",
 	CombatState.CHARGING_ATTACK: "CHARGING_ATTACK",
@@ -207,14 +206,6 @@ var basic_attack_cooldown_left: float = 0.0
 var ability_1_cooldown_left: float = 0.0
 var ability_2_cooldown_left: float = 0.0
 var roll_cooldown_left: float = 0.0
-var gcd_left: float = 0.0
-var gcd_block_feedback_cooldown_left: float = 0.0
-var pacing_elapsed_time: float = 0.0
-var pacing_report_cooldown_left: float = 0.0
-var pacing_action_timestamps: Array[float] = []
-var pacing_last_basic_attack_time: float = -1.0
-var pacing_basic_interval_sum: float = 0.0
-var pacing_basic_interval_count: int = 0
 
 var roll_time_left: float = 0.0
 var roll_vector: Vector2 = Vector2.ZERO
@@ -641,13 +632,10 @@ func _get_hurt_animation_duration() -> float:
 
 
 func _tick_timers(delta: float) -> void:
-	var gcd_was_active := gcd_left > 0.0
 	basic_attack_cooldown_left = maxf(0.0, basic_attack_cooldown_left - delta)
 	ability_1_cooldown_left = maxf(0.0, ability_1_cooldown_left - delta)
 	ability_2_cooldown_left = maxf(0.0, ability_2_cooldown_left - delta)
 	roll_cooldown_left = maxf(0.0, roll_cooldown_left - delta)
-	gcd_left = maxf(0.0, gcd_left - delta)
-	gcd_block_feedback_cooldown_left = maxf(0.0, gcd_block_feedback_cooldown_left - delta)
 	basic_combo_window_left = maxf(0.0, basic_combo_window_left - delta)
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
 	hurt_anim_left = maxf(0.0, hurt_anim_left - delta)
@@ -659,9 +647,6 @@ func _tick_timers(delta: float) -> void:
 	slash_effect_left = maxf(0.0, slash_effect_left - delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.35))
 	charge_lunge_velocity = charge_lunge_velocity.move_toward(Vector2.ZERO, heavy_lunge_decay * delta)
-	pacing_elapsed_time += delta
-	if gcd_was_active and gcd_left <= 0.0 and DEBUG_COMBAT_PACING:
-		_pacing_log("GCD_END")
 	_tick_charge_attack_state(delta)
 	if stun_left <= 0.0 and combat_state == CombatState.HITSTUN and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0:
 		_set_combat_state(CombatState.IDLE_MOVE)
@@ -696,104 +681,11 @@ func _tick_timers(delta: float) -> void:
 			lunge_total_duration = 0.0
 			_apply_lunge_strike()
 
-	if basic_combo_buffered and CanStartAction() and attack_windup_left <= 0.0 and attack_anim_left <= 0.0 and light_attack_recovery_left <= 0.0 and queued_attack == QueuedAttack.NONE and not is_rolling and lunge_time_left <= 0.0 and stun_left <= 0.0 and not is_blocking and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0:
+	if basic_combo_buffered and basic_attack_cooldown_left <= 0.0 and attack_windup_left <= 0.0 and attack_anim_left <= 0.0 and light_attack_recovery_left <= 0.0 and queued_attack == QueuedAttack.NONE and not is_rolling and lunge_time_left <= 0.0 and stun_left <= 0.0 and not is_blocking and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0:
 		if basic_combo_auto_hits_remaining > 0:
 			_start_basic_combo_attack()
 		else:
 			_start_basic_single_attack()
-	_tick_combat_pacing_debug(delta)
-
-
-func CanStartAction() -> bool:
-	return RemainingGCDTime() <= 0.0
-
-
-func StartGCD(duration: float = global_cooldown_duration) -> void:
-	var applied_duration := maxf(0.0, duration)
-	if applied_duration <= 0.0:
-		return
-	var was_active := gcd_left > 0.0
-	gcd_left = maxf(gcd_left, applied_duration)
-	if DEBUG_COMBAT_PACING and not was_active:
-		_pacing_log("GCD_START duration=%.2fs" % gcd_left)
-
-
-func RemainingGCDTime() -> float:
-	return maxf(0.0, gcd_left)
-
-
-func _notify_gcd_action_block(action_name: String) -> void:
-	if not DEBUG_COMBAT_PACING:
-		return
-	if gcd_block_feedback_cooldown_left > 0.0:
-		return
-	gcd_block_feedback_cooldown_left = 0.25
-	_pacing_log("GCD_BLOCK action=%s remaining=%.2fs" % [action_name, RemainingGCDTime()])
-
-
-func _register_combat_action(action_name: String, is_basic_attack: bool = false) -> void:
-	if not DEBUG_COMBAT_PACING:
-		return
-	if not _is_in_combat_for_pacing():
-		return
-	var now := pacing_elapsed_time
-	_prune_pacing_action_window(now)
-	pacing_action_timestamps.append(now)
-	if is_basic_attack:
-		if pacing_last_basic_attack_time >= 0.0:
-			var interval := now - pacing_last_basic_attack_time
-			if interval > 0.0:
-				pacing_basic_interval_sum += interval
-				pacing_basic_interval_count += 1
-		pacing_last_basic_attack_time = now
-	_pacing_log_snapshot("ACTION %s" % action_name)
-
-
-func _tick_combat_pacing_debug(delta: float) -> void:
-	if not DEBUG_COMBAT_PACING:
-		return
-	if not _is_in_combat_for_pacing():
-		pacing_report_cooldown_left = 0.0
-		pacing_last_basic_attack_time = -1.0
-		return
-	_prune_pacing_action_window(pacing_elapsed_time)
-	pacing_report_cooldown_left = maxf(0.0, pacing_report_cooldown_left - delta)
-	if pacing_report_cooldown_left <= 0.0:
-		_pacing_log_snapshot("TICK")
-		pacing_report_cooldown_left = 5.0
-
-
-func _prune_pacing_action_window(now: float) -> void:
-	var cutoff := now - 30.0
-	while not pacing_action_timestamps.is_empty() and float(pacing_action_timestamps[0]) < cutoff:
-		pacing_action_timestamps.remove_at(0)
-
-
-func _is_in_combat_for_pacing() -> bool:
-	for node in get_tree().get_nodes_in_group("enemies"):
-		var enemy := node as EnemyBase
-		if enemy == null or not is_instance_valid(enemy):
-			continue
-		if enemy.dead:
-			continue
-		return true
-	return false
-
-
-func _pacing_log_snapshot(context: String) -> void:
-	var apm_30s := float(pacing_action_timestamps.size()) * 2.0
-	var avg_basic_interval_text := "n/a"
-	if pacing_basic_interval_count > 0:
-		avg_basic_interval_text = "%.2fs" % (pacing_basic_interval_sum / float(pacing_basic_interval_count))
-	_pacing_log("%s apm_30s=%.1f target=40-60 avg_basic_interval=%s" % [context, apm_30s, avg_basic_interval_text])
-
-
-func _pacing_log(message: String) -> void:
-	var output := "[PACING] %s" % message
-	if autoplay_test_enabled:
-		_autoplay_log(output)
-	else:
-		print(output)
 
 
 func _configure_autoplay_logging() -> void:
@@ -855,14 +747,12 @@ func _set_combat_state(next_state: CombatState) -> void:
 
 
 func _can_start_charge_attack() -> bool:
-	return CanStartAction() and attack_anim_left <= 0.0 and light_attack_recovery_left <= 0.0 and attack_windup_left <= 0.0 and queued_attack == QueuedAttack.NONE and not is_rolling and lunge_time_left <= 0.0 and stun_left <= 0.0 and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0
+	return basic_attack_cooldown_left <= 0.0 and attack_anim_left <= 0.0 and light_attack_recovery_left <= 0.0 and attack_windup_left <= 0.0 and queued_attack == QueuedAttack.NONE and not is_rolling and lunge_time_left <= 0.0 and stun_left <= 0.0 and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0
 
 
 func _start_charge_attack() -> void:
 	if not _can_start_charge_attack():
 		return
-	StartGCD()
-	_register_combat_action("ability_1")
 	is_charging_attack = true
 	charge_time = 0.0
 	charge_release_direction = _resolve_charge_release_direction()
@@ -919,6 +809,7 @@ func _release_charge_attack() -> void:
 	charge_attack_recovery_left = 0.0
 	charge_attack_hit_pending = true
 	charge_attack_hit_confirmed = false
+	basic_attack_cooldown_left = maxf(basic_attack_cooldown_left, basic_attack_cooldown)
 	_set_combat_state(CombatState.ATTACK_WINDUP)
 	_autoplay_log("CHARGE_RELEASE time=%.3f ratio=%.3f type=heavy" % [release_time, charge_ratio])
 	_show_attack_telegraph(charge_attack_range, charge_attack_arc, Color(1.0, 0.58, 0.3, 0.42))
@@ -1135,9 +1026,7 @@ func _handle_actions() -> void:
 		return
 
 	if Input.is_action_just_pressed("basic_attack"):
-		if not CanStartAction():
-			_notify_gcd_action_block("basic_attack")
-		elif attack_anim_left <= 0.0 and light_attack_recovery_left <= 0.0 and attack_windup_left <= 0.0 and queued_attack == QueuedAttack.NONE and not is_rolling and lunge_time_left <= 0.0 and stun_left <= 0.0 and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0:
+		if basic_attack_cooldown_left <= 0.0 and attack_anim_left <= 0.0 and light_attack_recovery_left <= 0.0 and attack_windup_left <= 0.0 and queued_attack == QueuedAttack.NONE and not is_rolling and lunge_time_left <= 0.0 and stun_left <= 0.0 and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0:
 			_start_basic_single_attack()
 		else:
 			basic_combo_auto_hits_remaining = 0
@@ -1145,22 +1034,14 @@ func _handle_actions() -> void:
 		return
 
 	if Input.is_action_just_pressed("ability_1"):
-		if not CanStartAction():
-			_notify_gcd_action_block("ability_1")
-		elif _can_start_charge_attack():
+		if _can_start_charge_attack():
 			_start_charge_attack()
 		return
 
-	if Input.is_action_just_pressed("ability_2"):
-		if not CanStartAction():
-			_notify_gcd_action_block("ability_2")
-			return
-		if ability_2_cooldown_left <= 0.0:
-			_reset_basic_combo_state()
-			if _start_ally_dash():
-				ability_2_cooldown_left = ability_2_cooldown
-				StartGCD()
-				_register_combat_action("ability_2")
+	if Input.is_action_just_pressed("ability_2") and ability_2_cooldown_left <= 0.0:
+		_reset_basic_combo_state()
+		if _start_ally_dash():
+			ability_2_cooldown_left = ability_2_cooldown
 
 
 func _queue_attack(kind: QueuedAttack, windup: float, attack_range: float, arc_degrees: float, telegraph_color: Color) -> void:
@@ -1173,8 +1054,6 @@ func _queue_attack(kind: QueuedAttack, windup: float, attack_range: float, arc_d
 
 
 func _start_basic_combo_attack() -> void:
-	StartGCD()
-	_register_combat_action("basic_attack", true)
 	var combo_hit := 1
 	if basic_combo_auto_hits_remaining > 0:
 		combo_hit = clampi((BASIC_COMBO_MAX_HITS - basic_combo_auto_hits_remaining) + 1, 1, BASIC_COMBO_MAX_HITS)
@@ -1186,12 +1065,14 @@ func _start_basic_combo_attack() -> void:
 	var range_multiplier := float(BASIC_COMBO_RANGE_MULTIPLIERS[combo_index])
 	var arc_multiplier := float(BASIC_COMBO_ARC_MULTIPLIERS[combo_index])
 	var windup_multiplier := float(BASIC_COMBO_WINDUP_MULTIPLIERS[combo_index])
+	var cooldown_multiplier := float(BASIC_COMBO_COOLDOWN_MULTIPLIERS[combo_index])
 
 	queued_basic_combo_hit_index = combo_hit
 	queued_basic_combo_damage = basic_attack_damage * damage_multiplier
 	queued_basic_combo_range = basic_attack_range * range_multiplier
 	queued_basic_combo_arc_degrees = basic_attack_arc_degrees * arc_multiplier
 
+	basic_attack_cooldown_left = maxf(0.01, basic_attack_cooldown * cooldown_multiplier)
 	_queue_attack(
 		QueuedAttack.BASIC,
 		maxf(0.01, basic_attack_windup * windup_multiplier),
@@ -1209,26 +1090,27 @@ func _start_basic_combo_attack() -> void:
 			basic_combo_step = 0
 			basic_combo_window_left = 0.0
 			basic_combo_buffered = false
+			basic_attack_cooldown_left = maxf(basic_attack_cooldown_left, basic_combo_end_cooldown)
 		return
 
 	basic_combo_buffered = false
 	if combo_hit >= BASIC_COMBO_MAX_HITS:
 		basic_combo_step = 0
 		basic_combo_window_left = 0.0
+		basic_attack_cooldown_left = maxf(basic_attack_cooldown_left, basic_combo_end_cooldown)
 	else:
 		basic_combo_step = combo_hit
 		basic_combo_window_left = basic_combo_chain_window
 
 
 func _start_basic_single_attack() -> void:
-	StartGCD()
-	_register_combat_action("basic_attack", true)
 	_reset_basic_combo_state()
 	var combo_index := 0
 	queued_basic_combo_hit_index = 1
 	queued_basic_combo_damage = basic_attack_damage * float(BASIC_COMBO_DAMAGE_MULTIPLIERS[combo_index])
 	queued_basic_combo_range = basic_attack_range * float(BASIC_COMBO_RANGE_MULTIPLIERS[combo_index])
 	queued_basic_combo_arc_degrees = basic_attack_arc_degrees * float(BASIC_COMBO_ARC_MULTIPLIERS[combo_index])
+	basic_attack_cooldown_left = maxf(0.01, basic_attack_cooldown)
 	_queue_attack(
 		QueuedAttack.BASIC,
 		maxf(0.01, basic_attack_windup * float(BASIC_COMBO_WINDUP_MULTIPLIERS[combo_index])),
@@ -1980,13 +1862,11 @@ func _update_block_indicator_visual() -> void:
 
 
 func _emit_cooldown_state() -> void:
-	var gcd_remaining := RemainingGCDTime()
 	cooldowns_changed.emit({
-		"basic": gcd_remaining,
-		"ability_1": maxf(ability_1_cooldown_left, gcd_remaining),
-		"ability_2": maxf(ability_2_cooldown_left, gcd_remaining),
+		"basic": basic_attack_cooldown_left,
+		"ability_1": basic_attack_cooldown_left,
+		"ability_2": ability_2_cooldown_left,
 		"roll": roll_cooldown_left,
-		"gcd": gcd_remaining,
 		"block_active": is_blocking,
 		"charge_ratio": _get_charge_ratio(),
 		"combat_state": combat_state_name
