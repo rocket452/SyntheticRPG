@@ -63,7 +63,9 @@ func update_combat_debug(values: Dictionary) -> void:
 	var tank_basic_cd_left := float(values.get("tank_basic_cd_left", 0.0))
 	var boss_windup_duration := float(values.get("boss_windup_duration", 0.0))
 	var boss_lunge_cycle_left := float(values.get("boss_lunge_cycle_left", 0.0))
-	combat_debug_label.text = "HealerAI: %s -> %s\nDPSAI: %s -> %s\nMarked Ally: %s\nBoss: %s  VulnerableTimer: %.2fs\nPACING_DEBUG: TankSwingCD %.2fs | BossWindup %.2fs | BossLungeCD %.2fs" % [
+	var minion_count := int(values.get("minion_count", 0))
+	var clone_count := int(values.get("clone_count", 0))
+	combat_debug_label.text = "HealerAI: %s -> %s\nDPSAI: %s -> %s\nMarked Ally: %s\nBoss: %s  VulnerableTimer: %.2fs\nMinions: %d  Clones: %d\nPACING_DEBUG: TankSwingCD %.2fs | BossWindup %.2fs | BossLungeCD %.2fs" % [
 		healer_state,
 		healer_target,
 		dps_state,
@@ -71,6 +73,8 @@ func update_combat_debug(values: Dictionary) -> void:
 		marked_ally,
 		boss_state,
 		vulnerable_left,
+		minion_count,
+		clone_count,
 		tank_basic_cd_left,
 		boss_windup_duration,
 		boss_lunge_cycle_left

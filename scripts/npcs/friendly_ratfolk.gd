@@ -25,6 +25,9 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 # Pacing experiment knobs (slow-RPG cadence).
 @export var max_health: float = 86.0
 @export var move_speed: float = 127.5
+@export var use_player_like_movement: bool = true
+@export_range(4, 16, 1) var player_like_direction_steps: int = 8
+@export_range(0.0, 1.0, 0.01) var player_like_move_deadzone_ratio: float = 0.24
 @export var ai_decision_interval: float = 0.1
 @export var attack_damage: float = 8.5
 @export var attack_range: float = 68.0
@@ -37,6 +40,8 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var attack_recovery: float = 0.3
 @export var attack_cooldown: float = 1.1
 @export var attack_knockback_scale: float = 0.82
+@export var attack_hitstop_duration: float = 0.045
+@export var attack_impact_vfx_scale: float = 1.15
 @export var outgoing_hit_stun_duration: float = 0.16
 @export var hit_stun_duration: float = 0.2
 @export var hit_knockback_speed: float = 170.0
@@ -257,6 +262,7 @@ func _physics_process(delta: float) -> void:
 		velocity = knockback_velocity
 	else:
 		_tick_combat_logic(delta)
+		velocity = _apply_player_like_movement_velocity(velocity)
 		velocity += knockback_velocity
 
 	move_and_slide()
@@ -269,6 +275,36 @@ func _physics_process(delta: float) -> void:
 		visual_motion_velocity = frame_displacement / maxf(0.0001, delta)
 	_update_animation(delta)
 	_update_health_bar()
+
+
+func _apply_player_like_movement_velocity(raw_velocity: Vector2) -> Vector2:
+	if not use_player_like_movement:
+		return raw_velocity
+	if raw_velocity.length_squared() <= 0.0001:
+		return Vector2.ZERO
+	if backstab_dash_left > 0.0:
+		return raw_velocity
+	if is_shadow_clone and shadow_clone_scatter_left > 0.0:
+		return raw_velocity
+	var speed_cap := maxf(1.0, move_speed)
+	if raw_velocity.length() > speed_cap * 1.15:
+		return raw_velocity
+	if raw_velocity.length() <= speed_cap * clampf(player_like_move_deadzone_ratio, 0.0, 0.95):
+		return Vector2.ZERO
+	var quantized_direction := _quantize_player_like_direction(raw_velocity, player_like_direction_steps)
+	if quantized_direction.length_squared() <= 0.0001:
+		return Vector2.ZERO
+	return quantized_direction * speed_cap
+
+
+func _quantize_player_like_direction(direction: Vector2, steps: int) -> Vector2:
+	if direction.length_squared() <= 0.0001:
+		return Vector2.ZERO
+	var normalized_direction := direction.normalized()
+	var quant_steps := maxi(4, steps)
+	var step_angle := TAU / float(quant_steps)
+	var snapped_angle: float = round(normalized_direction.angle() / step_angle) * step_angle
+	return Vector2.RIGHT.rotated(snapped_angle)
 
 
 func _tick_timers(delta: float) -> void:
@@ -376,12 +412,14 @@ func _tick_combat_logic(delta: float) -> void:
 	if not is_shadow_clone and target_enemy.is_miniboss:
 		var behind_target := _clamp_world_position_to_bounds(_get_backstab_target_position(target_enemy))
 		var behind_now := _is_position_behind_enemy(target_enemy, global_position)
+		var boss_vulnerable := _is_boss_vulnerable(target_enemy)
+		var hold_flank := not behind_now and not boss_vulnerable
 		if _can_start_shadow_clone_cast(target_enemy, distance_to_enemy, behind_now):
 			_set_dps_ai_state(DPSAIState.ASSAULT_CAST, target_enemy)
 			_start_shadow_clone_cast()
 			velocity = Vector2.ZERO
 			return
-		var close_boss_attack_window := attack_connect_window
+		var close_boss_attack_window := attack_connect_window and not hold_flank
 		if close_boss_attack_window:
 			_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
 			_update_facing(to_enemy)
@@ -389,7 +427,8 @@ func _tick_combat_logic(delta: float) -> void:
 				_start_attack_windup("boss_close")
 			velocity = Vector2.ZERO
 			return
-		var miniboss_commit_attack_window := absf(to_enemy.y) <= (attack_depth_tolerance * 2.1) \
+		var miniboss_commit_attack_window := not hold_flank \
+			and absf(to_enemy.y) <= (attack_depth_tolerance * 2.1) \
 			and distance_to_enemy <= attack_range * 2.1
 		if miniboss_commit_attack_window:
 			_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
@@ -404,6 +443,15 @@ func _tick_combat_logic(delta: float) -> void:
 			_start_backstab_dash(target_enemy)
 			return
 		if not behind_now:
+			if hold_flank:
+				var to_behind_hold := behind_target - global_position
+				_set_dps_ai_state(DPSAIState.REPOSITIONING, target_enemy)
+				if to_behind_hold.length() > maxf(4.0, backstab_dash_stop_distance * 0.8):
+					velocity = to_behind_hold.normalized() * move_speed * 0.94
+				else:
+					velocity = _compute_reposition_velocity(to_enemy, distance_to_enemy)
+				_update_facing(target_enemy.global_position - global_position)
+				return
 			var close_frontline_window := attack_cooldown_left <= 0.0 \
 				and absf(to_enemy.y) <= (attack_depth_tolerance * 1.4) \
 				and distance_to_enemy <= attack_range * 1.3
@@ -497,11 +545,15 @@ func _update_dps_ai_state(delta: float, distance_to_enemy: float, depth_aligned:
 	if _can_apply_boss_mark(target_enemy, distance_to_enemy) and not _has_boss_mark(target_enemy):
 		_set_dps_ai_state(DPSAIState.MARKING, target_enemy)
 		return
+	var boss_vulnerable := _is_boss_vulnerable(target_enemy)
+	if not behind_now and not boss_vulnerable:
+		_set_dps_ai_state(DPSAIState.REPOSITIONING, target_enemy)
+		return
 	var tank_front_blocking := _is_in_front_of_tank(target_enemy) and not behind_now
 	var tank_engaged := _is_tank_engaged_with_enemy(target_enemy)
 	var avoid_frontline := tank_front_blocking \
 		and distance_to_enemy > attack_range * 1.85 \
-		and not _is_boss_vulnerable(target_enemy)
+		and not boss_vulnerable
 	var need_realign := (not depth_aligned) and distance_to_enemy > attack_range * 0.95
 	var need_close_distance := distance_to_enemy > attack_range * 2.45 and not tank_engaged
 	if avoid_frontline or need_realign or need_close_distance:
@@ -619,7 +671,7 @@ func _compute_reposition_velocity(to_enemy: Vector2, distance_to_enemy: float) -
 			flank_sign = -signf(player.facing_direction.x)
 		if absf(flank_sign) <= 0.01:
 			flank_sign = -1.0
-		var flank_bias := Vector2(flank_sign * 0.12, signf(to_enemy.y) * 0.06)
+		var flank_bias := Vector2(flank_sign * 0.22, signf(to_enemy.y) * 0.1)
 		var approach := (close_vector + flank_bias).normalized()
 		return approach * move_speed * 0.96
 	var side := -signf(to_enemy.x)
@@ -627,7 +679,7 @@ func _compute_reposition_velocity(to_enemy: Vector2, distance_to_enemy: float) -
 		side = -signf(player.facing_direction.x)
 	if absf(side) <= 0.01:
 		side = -1.0
-	var strafe_direction := Vector2(side, signf(to_enemy.y) * 0.22)
+	var strafe_direction := Vector2(side, signf(to_enemy.y) * 0.34)
 	if strafe_direction.length_squared() <= 0.0001:
 		strafe_direction = Vector2(side, 0.0)
 	return strafe_direction.normalized() * move_speed * 0.5
@@ -912,9 +964,14 @@ func _perform_attack() -> void:
 		var landed := bool(enemy.call("receive_hit", attack_damage, global_position, outgoing_hit_stun_duration, true, attack_knockback_scale))
 		if landed:
 			hit_any = true
+			if enemy.has_method("apply_hitstop"):
+				enemy.apply_hitstop(maxf(0.0, attack_hitstop_duration))
+			var impact_scale := maxf(0.6, attack_impact_vfx_scale)
+			_spawn_hit_effect(enemy.global_position + Vector2(0.0, -12.0), Color(1.0, 0.8, 0.42, 0.95), 7.2 * impact_scale)
 
 	if hit_any:
-		_spawn_hit_effect(global_position + (facing_direction * 14.0) + Vector2(0.0, -10.0), Color(0.9, 0.74, 0.34, 0.95), 8.0)
+		var swing_scale := maxf(0.6, attack_impact_vfx_scale)
+		_spawn_hit_effect(global_position + (facing_direction * 14.0) + Vector2(0.0, -10.0), Color(0.94, 0.78, 0.36, 0.95), 8.0 * swing_scale)
 
 
 func needs_healing(threshold_ratio: float = 0.999) -> bool:
@@ -939,7 +996,7 @@ func receive_heal(amount: float) -> bool:
 	return true
 
 
-func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = false, stun_duration: float = 0.0) -> bool:
+func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = false, stun_duration: float = 0.0, knockback_scale: float = 1.0) -> bool:
 	if dead:
 		return false
 	if amount <= 0.0:
@@ -950,7 +1007,7 @@ func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = f
 	var knockback_direction := (global_position - source_position).normalized()
 	if knockback_direction == Vector2.ZERO:
 		knockback_direction = Vector2.RIGHT if facing_left else Vector2.LEFT
-	knockback_velocity = knockback_direction * hit_knockback_speed
+	knockback_velocity = knockback_direction * hit_knockback_speed * maxf(0.1, knockback_scale)
 	current_health = maxf(0.0, current_health - amount)
 	health_changed.emit(current_health, max_health)
 	hit_flash_left = 0.12

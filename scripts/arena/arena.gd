@@ -334,6 +334,9 @@ func _emit_combat_debug() -> void:
 	var vulnerable_left := 0.0
 	var boss_windup_duration := 0.0
 	var boss_lunge_cycle_left := 0.0
+	var minion_count := 0
+	var clone_count := 0
+
 	var debug_boss := _get_debug_boss()
 	if debug_boss != null:
 		if debug_boss.has_method("get_boss_marked_ally_name"):
@@ -349,6 +352,19 @@ func _emit_combat_debug() -> void:
 		boss_windup_duration = debug_boss.boss_windup_duration
 		boss_lunge_cycle_left = debug_boss.boss_mark_cycle_left
 
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if not enemy.is_miniboss:
+			minion_count += 1
+
+	for clone_node in get_tree().get_nodes_in_group("shadow_clones"):
+		var clone := clone_node as Node2D
+		if clone == null or not is_instance_valid(clone):
+			continue
+		clone_count += 1
+
 	combat_debug_changed.emit({
 		"healer_state": healer_state,
 		"healer_target": healer_target,
@@ -359,7 +375,9 @@ func _emit_combat_debug() -> void:
 		"boss_vulnerable_left": vulnerable_left,
 		"tank_basic_cd_left": tank_basic_cd_left,
 		"boss_windup_duration": boss_windup_duration,
-		"boss_lunge_cycle_left": boss_lunge_cycle_left
+		"boss_lunge_cycle_left": boss_lunge_cycle_left,
+		"minion_count": minion_count,
+		"clone_count": clone_count
 	})
 
 

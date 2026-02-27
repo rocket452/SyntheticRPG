@@ -11,6 +11,7 @@ class_name AutoplayTestRunner
 var arena: Arena = null
 var player: Player = null
 var enemy: EnemyBase = null
+var autoplay_scenario: String = "charge_attack"
 var elapsed: float = 0.0
 var phase: int = 0
 var phase_time: float = 0.0
@@ -24,11 +25,16 @@ func configure(target_arena: Arena) -> void:
 
 
 func _ready() -> void:
+	autoplay_scenario = OS.get_environment("AUTOPLAY_SCENARIO").strip_edges().to_lower()
+	if autoplay_scenario.is_empty():
+		autoplay_scenario = "charge_attack"
+	if autoplay_scenario == "lunge_block" or autoplay_scenario == "basic_block":
+		timeout_seconds = maxf(timeout_seconds, 45.0)
 	autoplay_log_path = OS.get_environment("AUTOPLAY_LOG_PATH")
 	if autoplay_log_path.is_empty():
 		autoplay_log_path = ProjectSettings.globalize_path("res://artifacts/log.txt")
 	_write_log("AUTOPLAY_TEST START")
-	_write_log("Loaded test scene")
+	_write_log("Loaded test scene (scenario=%s)" % autoplay_scenario)
 	set_physics_process(true)
 
 
@@ -41,12 +47,19 @@ func _physics_process(delta: float) -> void:
 	phase_time += delta
 	_refresh_refs()
 	if elapsed >= timeout_seconds:
-		_finish(1, "timeout")
+		_finish(1, "timeout_%s" % autoplay_scenario)
 		return
 	if not is_instance_valid(player) or not is_instance_valid(enemy):
 		return
 	if player.is_dead:
 		_finish(1, "player_dead")
+		return
+
+	if autoplay_scenario == "lunge_block":
+		_step_lunge_block_scenario()
+		return
+	if autoplay_scenario == "basic_block":
+		_step_basic_block_scenario()
 		return
 
 	match phase:
@@ -61,6 +74,69 @@ func _physics_process(delta: float) -> void:
 			_step_wait_for_resolution()
 		_:
 			pass
+
+
+func _step_lunge_block_scenario() -> void:
+	if not is_instance_valid(player) or not is_instance_valid(enemy):
+		return
+
+	var threatened := false
+	var marked_target: Node2D = null
+	if enemy.has_method("is_lunge_threatening_marked_ally"):
+		threatened = bool(enemy.call("is_lunge_threatening_marked_ally"))
+	if threatened and enemy.has_method("get_marked_ally_node"):
+		marked_target = enemy.call("get_marked_ally_node") as Node2D
+
+	if threatened and marked_target != null and is_instance_valid(marked_target):
+		var intercept_point := marked_target.global_position
+		if enemy.has_method("get_guardian_intercept_point"):
+			var intercept_variant: Variant = enemy.call("get_guardian_intercept_point", marked_target.global_position)
+			if intercept_variant is Vector2:
+				intercept_point = intercept_variant
+		var to_intercept := intercept_point - player.global_position
+		if to_intercept.length() > 52.0:
+			_set_move_inputs(to_intercept.normalized())
+			Input.action_press("block")
+		else:
+			_set_move_inputs(Vector2.ZERO)
+			Input.action_press("block")
+	else:
+		Input.action_release("block")
+		var to_enemy := enemy.global_position - player.global_position
+		var desired_distance := 72.0
+		if to_enemy.length() > desired_distance + 12.0:
+			_set_move_inputs(to_enemy.normalized())
+		elif to_enemy.length() < desired_distance - 12.0:
+			_set_move_inputs((-to_enemy).normalized())
+		else:
+			_set_move_inputs(Vector2.ZERO)
+
+	var impact_reason := String(enemy.get("boss_lunge_last_impact_reason")).strip_edges().to_lower()
+	if impact_reason == "shield_intercept":
+		_finish(0, "shield_intercept")
+
+
+func _step_basic_block_scenario() -> void:
+	if not is_instance_valid(player) or not is_instance_valid(enemy):
+		return
+
+	enemy.use_single_phase_loop = false
+	enemy.spin_attack_enabled = false
+
+	var block_fx_count := int(enemy.get("block_success_fx_count"))
+	if block_fx_count > 0:
+		_finish(0, "basic_block_fx")
+		return
+
+	var to_enemy := enemy.global_position - player.global_position
+	var attack_range := maxf(28.0, enemy.attack_range)
+	var desired_distance := attack_range - 6.0
+	if to_enemy.length() > desired_distance + 8.0:
+		Input.action_release("block")
+		_set_move_inputs(to_enemy.normalized())
+	else:
+		_set_move_inputs(Vector2.ZERO)
+		Input.action_press("block")
 
 
 func _refresh_refs() -> void:

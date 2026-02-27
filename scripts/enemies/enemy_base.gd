@@ -45,10 +45,19 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var boss_lunge_speed: float = 420.0
 @export var boss_lunge_damage_multiplier: float = 1.35
 @export var boss_lunge_stun_bonus: float = 0.08
+@export var boss_lunge_max_duration: float = 0.72
+@export var boss_lunge_distance_padding: float = 14.0
+@export var boss_lunge_steer_rate: float = 9.0
 @export var boss_lunge_hit_start_offset: float = 12.0
 @export var boss_lunge_hit_length: float = 112.0
 @export var boss_lunge_hit_half_width: float = 26.0
 @export var boss_lunge_tip_radius: float = 22.0
+@export var boss_lunge_collateral_trigger_travel: float = 18.0
+@export var boss_lunge_knockback_scale: float = 2.35
+@export var boss_lunge_impact_effect_size: float = 22.0
+@export var boss_lunge_block_effect_size: float = 28.0
+@export var boss_lunge_block_hitstop: float = 0.09
+@export var basic_block_success_fx_delay: float = 0.08
 @export var boss_vulnerable_duration: float = 3.0
 @export var boss_mark_cycle_interval: float = 12.5
 @export var boss_summon_interval: float = 25.0
@@ -216,9 +225,15 @@ var boss_marked_ally: Node2D = null
 var boss_lunge_direction: Vector2 = Vector2.RIGHT
 var boss_lunge_hit_landed: bool = false
 var boss_lunge_intercepted: bool = false
+var boss_lunge_impact_triggered: bool = false
+var boss_lunge_travel_distance: float = 0.0
+var boss_lunge_last_impact_reason: String = ""
 var boss_lunge_hit_ids: Dictionary = {}
+var block_success_fx_count: int = 0
+var pending_basic_block_success_fx: Array[Dictionary] = []
 var boss_completed_lunge_cycles: int = 0
 var boss_summon_emitted: bool = false
+var boss_lunge_debug_logging_enabled: bool = false
 var boss_mark_cycle_left: float = 0.0
 var boss_summon_cycle_left: float = 0.0
 var companion_target_refresh_left: float = 0.0
@@ -267,6 +282,7 @@ var cloth_back_base_rotation: float = 0.0
 
 
 func _ready() -> void:
+	boss_lunge_debug_logging_enabled = _is_env_flag_enabled("BOSS_LUNGE_DEBUG")
 	add_to_group("enemies")
 	current_health = max_health
 	attack_cooldown_left = randf_range(0.1, attack_cooldown)
@@ -316,6 +332,25 @@ func _ready() -> void:
 	_set_boss_loop_state(BossLoopState.IDLE, 0.0)
 
 
+func _is_env_flag_enabled(env_key: String) -> bool:
+	var raw := OS.get_environment(env_key).strip_edges().to_lower()
+	return not raw.is_empty() and raw not in ["0", "false", "off", "no"]
+
+
+func _log_boss_lunge(message: String) -> void:
+	if not boss_lunge_debug_logging_enabled:
+		return
+	if not is_miniboss:
+		return
+	print("[BOSS_LUNGE] %s" % message)
+
+
+func _get_boss_lunge_marked_distance() -> float:
+	if not _is_valid_mark_target(boss_marked_ally):
+		return -1.0
+	return global_position.distance_to(boss_marked_ally.global_position)
+
+
 func _exit_tree() -> void:
 	_teardown_debug_overlay()
 	if is_instance_valid(spin_warning_area):
@@ -352,6 +387,7 @@ func _physics_process(delta: float) -> void:
 	attack_recovery_hold_left = maxf(0.0, attack_recovery_hold_left - delta)
 	slash_effect_left = maxf(0.0, slash_effect_left - delta)
 	spin_attack_cooldown_left = maxf(0.0, spin_attack_cooldown_left - delta)
+	_tick_pending_basic_block_success_fx(delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.45))
 	if previous_attack_anim_left > 0.0 and attack_anim_left <= 0.0:
 		attack_recovery_hold_left = maxf(attack_recovery_hold_left, attack_recovery_hold_duration)
@@ -615,6 +651,7 @@ func _tick_enemy_runtime_timers(delta: float) -> void:
 	boss_dps_mark_left = maxf(0.0, boss_dps_mark_left - delta)
 	companion_target_refresh_left = maxf(0.0, companion_target_refresh_left - delta)
 	periodic_hurt_anim_cooldown_left = maxf(0.0, periodic_hurt_anim_cooldown_left - delta)
+	_tick_pending_basic_block_success_fx(delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.45))
 	if previous_attack_anim_left > 0.0 and attack_anim_left <= 0.0:
 		attack_recovery_hold_left = maxf(attack_recovery_hold_left, attack_recovery_hold_duration)
@@ -648,6 +685,13 @@ func _is_combat_action_active_for_periodic_hurt() -> bool:
 		or spin_active_left > 0.0:
 		return true
 	return boss_loop_state != BossLoopState.IDLE
+
+
+func _is_lunge_charge_visual_active() -> bool:
+	return use_single_phase_loop \
+		and boss_loop_state == BossLoopState.LUNGE \
+		and not boss_lunge_impact_triggered \
+		and not boss_lunge_intercepted
 
 
 func _reset_periodic_hurt_anim_cooldown() -> void:
@@ -794,6 +838,7 @@ func _tick_boss_windup_state(delta: float) -> void:
 
 func _begin_boss_lunge(marked_position: Vector2) -> void:
 	var lunge_direction := marked_position - global_position
+	var marked_distance := lunge_direction.length()
 	if lunge_direction.length_squared() <= 0.0001:
 		lunge_direction = committed_attack_facing_direction
 	if lunge_direction.length_squared() <= 0.0001:
@@ -802,37 +847,224 @@ func _begin_boss_lunge(marked_position: Vector2) -> void:
 	committed_attack_facing_direction = boss_lunge_direction
 	boss_lunge_hit_landed = false
 	boss_lunge_intercepted = false
+	boss_lunge_impact_triggered = false
+	boss_lunge_travel_distance = 0.0
+	boss_lunge_last_impact_reason = ""
 	boss_lunge_hit_ids.clear()
+	var base_lunge_duration := maxf(0.12, boss_lunge_duration)
+	var max_lunge_duration := maxf(base_lunge_duration, boss_lunge_max_duration)
+	var lunge_speed := maxf(40.0, boss_lunge_speed)
+	var required_duration := (marked_distance + maxf(0.0, boss_lunge_distance_padding)) / lunge_speed
+	var resolved_lunge_duration := clampf(maxf(base_lunge_duration, required_duration), base_lunge_duration, max_lunge_duration)
+	var target_name: String = String(boss_marked_ally.name) if _is_valid_mark_target(boss_marked_ally) else "None"
+	_log_boss_lunge("BEGIN target=%s marked_distance=%.2f duration=%.3f direction=(%.2f, %.2f)" % [
+		target_name,
+		_get_boss_lunge_marked_distance(),
+		resolved_lunge_duration,
+		boss_lunge_direction.x,
+		boss_lunge_direction.y
+	])
+	_set_boss_loop_state(BossLoopState.LUNGE, resolved_lunge_duration)
+
+
+func _trigger_boss_lunge_impact(trigger_reason: String = "unknown") -> void:
+	if boss_lunge_impact_triggered:
+		return
+	boss_lunge_impact_triggered = true
+	boss_lunge_last_impact_reason = trigger_reason
+	_log_boss_lunge("IMPACT reason=%s travel=%.2f marked_distance=%.2f" % [
+		trigger_reason,
+		boss_lunge_travel_distance,
+		_get_boss_lunge_marked_distance()
+	])
 	attack_flash_left = maxf(attack_flash_left, 0.18)
 	_start_attack_animation(maxf(0.16, boss_lunge_duration * 0.92), 1.48)
 	_trigger_slash_effect(maxf(26.0, boss_lunge_hit_length), 72.0, Color(0.98, 0.42, 0.26, 0.9), 0.2, 4.8)
-	_set_boss_loop_state(BossLoopState.LUNGE, boss_lunge_duration)
+
+
+func _is_boss_lunge_contact_with_target(target: Node2D) -> bool:
+	if target == null or not is_instance_valid(target):
+		return false
+	var lunge_direction := boss_lunge_direction
+	if lunge_direction.length_squared() <= 0.0001:
+		lunge_direction = committed_attack_facing_direction
+	if lunge_direction.length_squared() <= 0.0001:
+		lunge_direction = Vector2.RIGHT
+	lunge_direction = lunge_direction.normalized()
+	# Use current-position overlap only so impact cannot fire early.
+	var contact_radius := maxf(7.0, boss_lunge_tip_radius * 0.28)
+	var to_target := target.global_position - global_position
+	var forward_distance := to_target.dot(lunge_direction)
+	if forward_distance < -contact_radius:
+		return false
+	return to_target.length_squared() <= contact_radius * contact_radius
+
+
+func _is_boss_lunge_contact_with_any_friendly() -> bool:
+	for candidate in _get_attackable_friendly_targets():
+		if _is_boss_lunge_contact_with_target(candidate):
+			return true
+	return false
+
+
+func _get_boss_lunge_blocking_player() -> Player:
+	var lunge_direction := boss_lunge_direction
+	if lunge_direction.length_squared() <= 0.0001:
+		lunge_direction = committed_attack_facing_direction
+	if lunge_direction.length_squared() <= 0.0001:
+		lunge_direction = Vector2.RIGHT
+	lunge_direction = lunge_direction.normalized()
+	var shield_check_length := maxf(32.0, boss_lunge_hit_length)
+	var segment_start := global_position + (lunge_direction * boss_lunge_hit_start_offset)
+	var segment_end := segment_start + (lunge_direction * shield_check_length)
+	var half_width := maxf(12.0, boss_lunge_hit_half_width)
+	var tip_radius := maxf(10.0, boss_lunge_tip_radius)
+	for player_node in get_tree().get_nodes_in_group("player"):
+		var player_target := player_node as Player
+		if player_target == null or not is_instance_valid(player_target) or player_target.is_dead:
+			continue
+		if _is_lunge_intersecting_player_block_shield(player_target, segment_start, segment_end, half_width, tip_radius):
+			return player_target
+	return null
+
+
+func _spawn_lunge_block_success_effect(blocking_player: Player) -> void:
+	if blocking_player == null or not is_instance_valid(blocking_player):
+		return
+	block_success_fx_count += 1
+	var shield_center := blocking_player.global_position + Vector2(0.0, -10.0)
+	if blocking_player.has_method("get_block_shield_center_global"):
+		var center_variant: Variant = blocking_player.call("get_block_shield_center_global")
+		if center_variant is Vector2:
+			shield_center = center_variant
+	_spawn_hit_effect(shield_center, Color(0.62, 0.96, 1.0, 0.96), maxf(14.0, boss_lunge_block_effect_size))
+	_spawn_hit_effect(shield_center + (boss_lunge_direction.normalized() * 8.0), Color(1.0, 1.0, 1.0, 0.9), maxf(10.0, boss_lunge_block_effect_size * 0.78))
+	_trigger_slash_effect(maxf(36.0, boss_lunge_hit_length * 0.62), 138.0, Color(0.62, 0.95, 1.0, 0.9), 0.24, 7.2)
+	attack_flash_left = maxf(attack_flash_left, 0.24)
+	apply_hitstop(maxf(0.0, boss_lunge_block_hitstop))
+
+
+func _queue_basic_block_success_effect(blocked_player: Player) -> void:
+	if blocked_player == null or not is_instance_valid(blocked_player):
+		return
+	var delay := maxf(0.0, basic_block_success_fx_delay)
+	if delay <= 0.0:
+		_spawn_lunge_block_success_effect(blocked_player)
+		_log_boss_lunge("BASIC_BLOCK_FX target=%s delay=0.00" % blocked_player.name)
+		return
+	pending_basic_block_success_fx.append({
+		"player": blocked_player,
+		"time_left": delay
+	})
+
+
+func _tick_pending_basic_block_success_fx(delta: float) -> void:
+	if pending_basic_block_success_fx.is_empty():
+		return
+	var active_entries: Array[Dictionary] = []
+	var step := maxf(0.0, delta)
+	for pending in pending_basic_block_success_fx:
+		var blocked_player := pending.get("player") as Player
+		if blocked_player == null or not is_instance_valid(blocked_player):
+			continue
+		var time_left := maxf(0.0, float(pending.get("time_left", 0.0)) - step)
+		if time_left > 0.0:
+			pending["time_left"] = time_left
+			active_entries.append(pending)
+			continue
+		_spawn_lunge_block_success_effect(blocked_player)
+		_log_boss_lunge("BASIC_BLOCK_FX target=%s delay=%.2f" % [blocked_player.name, basic_block_success_fx_delay])
+	pending_basic_block_success_fx = active_entries
 
 
 func _tick_boss_lunge_state(delta: float) -> void:
-	_attempt_boss_lunge_hits()
+	var lunge_step_distance := maxf(0.0, boss_lunge_speed) * maxf(0.0, delta)
+	if not boss_lunge_impact_triggered:
+		if _is_valid_mark_target(boss_marked_ally):
+			var to_marked := boss_marked_ally.global_position - global_position
+			if to_marked.length_squared() > 0.0001:
+				var desired_lunge_direction := to_marked.normalized()
+				var steer_blend := clampf(delta * maxf(0.0, boss_lunge_steer_rate), 0.0, 1.0)
+				boss_lunge_direction = boss_lunge_direction.slerp(desired_lunge_direction, steer_blend).normalized()
+				committed_attack_facing_direction = boss_lunge_direction
+		var collateral_unlock_distance := maxf(0.0, boss_lunge_collateral_trigger_travel)
+		var allow_collateral_impact := boss_lunge_travel_distance >= collateral_unlock_distance
+		var shield_unlock_distance := minf(collateral_unlock_distance, maxf(8.0, boss_lunge_collateral_trigger_travel * 0.5))
+		var allow_shield_intercept := boss_lunge_travel_distance >= shield_unlock_distance
+		var blocking_player := _get_boss_lunge_blocking_player()
+		if allow_shield_intercept and blocking_player != null:
+			_spawn_lunge_block_success_effect(blocking_player)
+			_apply_blocked_counter_stun()
+			boss_lunge_intercepted = true
+			_trigger_boss_lunge_impact("shield_intercept")
+		elif _is_boss_lunge_contact_with_target(boss_marked_ally):
+			_trigger_boss_lunge_impact("marked_contact")
+		elif allow_collateral_impact and _is_boss_lunge_contact_with_any_friendly():
+			_trigger_boss_lunge_impact("collateral_contact")
+	if boss_lunge_impact_triggered and not boss_lunge_intercepted:
+		_attempt_boss_lunge_hits()
 	if boss_lunge_intercepted:
 		velocity = Vector2.ZERO
 		boss_completed_lunge_cycles += 1
+		boss_marked_ally = null
+		_face_player_after_lunge()
 		_set_boss_loop_state(BossLoopState.VULNERABLE, boss_vulnerable_duration)
 		return
-	velocity = boss_lunge_direction * maxf(40.0, boss_lunge_speed)
+	if boss_lunge_impact_triggered:
+		velocity = Vector2.ZERO
+	else:
+		velocity = boss_lunge_direction * maxf(40.0, boss_lunge_speed)
+		boss_lunge_travel_distance += lunge_step_distance
 	_tick_boss_state_timer(delta)
 	if boss_state_time_left > 0.0:
 		return
+	if not boss_lunge_impact_triggered:
+		_log_boss_lunge("END no_impact travel=%.2f marked_distance=%.2f" % [
+			boss_lunge_travel_distance,
+			_get_boss_lunge_marked_distance()
+		])
+	elif not boss_lunge_hit_landed:
+		_log_boss_lunge("END impact_no_hit travel=%.2f marked_distance=%.2f intercepted=%s" % [
+			boss_lunge_travel_distance,
+			_get_boss_lunge_marked_distance(),
+			str(boss_lunge_intercepted)
+		])
+	else:
+		_log_boss_lunge("END hit_landed travel=%.2f marked_distance=%.2f intercepted=%s" % [
+			boss_lunge_travel_distance,
+			_get_boss_lunge_marked_distance(),
+			str(boss_lunge_intercepted)
+		])
 	boss_completed_lunge_cycles += 1
 	if boss_lunge_intercepted or not boss_lunge_hit_landed:
+		boss_marked_ally = null
+		_face_player_after_lunge()
 		_set_boss_loop_state(BossLoopState.VULNERABLE, boss_vulnerable_duration)
 		return
+	boss_marked_ally = null
+	_face_player_after_lunge()
 	attack_recovery_hold_left = maxf(attack_recovery_hold_left, boss_short_recovery_duration)
 	_set_boss_loop_state(BossLoopState.IDLE, 0.0)
 
 
+func _face_player_after_lunge() -> void:
+	var player_node := player as Node2D
+	if player_node == null or not is_instance_valid(player_node):
+		return
+	var to_player: Vector2 = player_node.global_position - global_position
+	if to_player.length_squared() > 0.0001:
+		committed_attack_facing_direction = to_player.normalized()
+
+
 func _tick_boss_vulnerable_state(delta: float) -> void:
 	velocity = Vector2.ZERO
-	var vulnerable_target := _get_or_reacquire_mark_target()
-	if vulnerable_target == null and is_instance_valid(player):
+	var vulnerable_target: Node2D = null
+	if not is_instance_valid(player):
+		_reacquire_player()
+	if is_instance_valid(player):
 		vulnerable_target = player as Node2D
+	elif _is_valid_mark_target(boss_marked_ally):
+		vulnerable_target = boss_marked_ally
 	if vulnerable_target != null and is_instance_valid(vulnerable_target):
 		var to_target := vulnerable_target.global_position - global_position
 		if to_target.length_squared() > 0.0001:
@@ -865,10 +1097,11 @@ func _attempt_boss_lunge_hits() -> void:
 	if lunge_direction.length_squared() <= 0.0001:
 		lunge_direction = Vector2.RIGHT
 	lunge_direction = lunge_direction.normalized()
+	var contact_length := maxf(18.0, boss_lunge_hit_length * 0.34)
 	var segment_start := global_position + (lunge_direction * boss_lunge_hit_start_offset)
-	var segment_end := segment_start + (lunge_direction * maxf(24.0, boss_lunge_hit_length))
-	var half_width := maxf(8.0, boss_lunge_hit_half_width)
-	var tip_radius := maxf(8.0, boss_lunge_tip_radius)
+	var segment_end := segment_start + (lunge_direction * contact_length)
+	var half_width := maxf(12.0, boss_lunge_hit_half_width * 0.5)
+	var tip_radius := maxf(10.0, boss_lunge_tip_radius * 0.75)
 	for target in lunge_targets:
 		var target_id := target.get_instance_id()
 		if boss_lunge_hit_ids.has(target_id):
@@ -880,6 +1113,7 @@ func _attempt_boss_lunge_hits() -> void:
 			blocked_by_player_arc = _is_target_blocking_attack(player_target)
 			var blocked_by_shield_area := player_target.is_blocking and _is_lunge_intersecting_player_block_shield(player_target, segment_start, segment_end, half_width, tip_radius)
 			if blocked_by_shield_area:
+				_spawn_lunge_block_success_effect(player_target)
 				_apply_blocked_counter_stun()
 				boss_lunge_intercepted = true
 				return
@@ -887,16 +1121,21 @@ func _attempt_boss_lunge_hits() -> void:
 			target,
 			attack_damage * boss_lunge_damage_multiplier,
 			false,
-			outgoing_hit_stun_duration + boss_lunge_stun_bonus
+			outgoing_hit_stun_duration + boss_lunge_stun_bonus,
+			boss_lunge_knockback_scale
 		)
 		if player_target != null and blocked_by_player_arc:
 			boss_lunge_intercepted = true
 			if landed:
 				boss_lunge_hit_landed = true
+				_spawn_hit_effect(target.global_position + Vector2(0.0, -15.0), Color(1.0, 0.54, 0.34, 0.96), maxf(12.0, boss_lunge_impact_effect_size))
+				_log_boss_lunge("HIT target=%s blocked_arc=true distance=%.2f kb=%.2f" % [target.name, global_position.distance_to(target.global_position), boss_lunge_knockback_scale])
 			return
 		if not landed:
 			continue
 		boss_lunge_hit_landed = true
+		_spawn_hit_effect(target.global_position + Vector2(0.0, -15.0), Color(1.0, 0.54, 0.34, 0.96), maxf(12.0, boss_lunge_impact_effect_size))
+		_log_boss_lunge("HIT target=%s blocked_arc=false distance=%.2f kb=%.2f" % [target.name, global_position.distance_to(target.global_position), boss_lunge_knockback_scale])
 		if player_target != null:
 			boss_lunge_intercepted = true
 			return
@@ -911,11 +1150,15 @@ func _query_friendly_hits_for_lunge() -> Array[Node2D]:
 	if lunge_direction.length_squared() <= 0.0001:
 		lunge_direction = Vector2.RIGHT
 	lunge_direction = lunge_direction.normalized()
+	var contact_length := maxf(18.0, boss_lunge_hit_length * 0.34)
 	var segment_start := global_position + (lunge_direction * boss_lunge_hit_start_offset)
-	var segment_end := segment_start + (lunge_direction * maxf(24.0, boss_lunge_hit_length))
-	var half_width := maxf(8.0, boss_lunge_hit_half_width)
-	var tip_radius := maxf(8.0, boss_lunge_tip_radius)
+	var segment_end := segment_start + (lunge_direction * contact_length)
+	var half_width := maxf(12.0, boss_lunge_hit_half_width * 0.5)
+	var tip_radius := maxf(10.0, boss_lunge_tip_radius * 0.75)
 	for candidate in _get_attackable_friendly_targets():
+		if _is_boss_lunge_contact_with_target(candidate):
+			hit_targets.append(candidate)
+			continue
 		var player_candidate := candidate as Player
 		if player_candidate != null and _is_lunge_intersecting_player_block_shield(player_candidate, segment_start, segment_end, half_width, tip_radius):
 			hit_targets.append(candidate)
@@ -932,12 +1175,14 @@ func _query_friendly_hits_for_lunge() -> Array[Node2D]:
 func _is_lunge_intersecting_player_block_shield(player_target: Player, segment_start: Vector2, segment_end: Vector2, half_width: float, tip_radius: float) -> bool:
 	if player_target == null or not is_instance_valid(player_target):
 		return false
-	if not player_target.has_method("is_block_shield_active"):
-		return false
-	if not bool(player_target.call("is_block_shield_active")):
+	var block_held := player_target.is_blocking
+	var shield_pose_active := false
+	if player_target.has_method("is_block_shield_active"):
+		shield_pose_active = bool(player_target.call("is_block_shield_active"))
+	if not block_held and not shield_pose_active:
 		return false
 
-	if player_target.has_method("is_point_inside_block_shield") and bool(player_target.call("is_point_inside_block_shield", global_position)):
+	if shield_pose_active and player_target.has_method("is_point_inside_block_shield") and bool(player_target.call("is_point_inside_block_shield", global_position)):
 		return true
 
 	var shield_center := player_target.global_position
@@ -997,28 +1242,43 @@ func _tick_boss_state_timer(delta: float) -> void:
 
 
 func _get_or_reacquire_mark_target() -> Node2D:
+	# Keep the marked ally locked for the current mark->windup->lunge cycle.
+	# If the target becomes invalid, cancel the sequence instead of retargeting.
 	if _is_valid_mark_target(boss_marked_ally):
 		return boss_marked_ally
-	boss_marked_ally = _select_mark_target()
-	return boss_marked_ally
+	return null
 
 
-func _is_valid_mark_target(target: Node2D) -> bool:
-	if target == null or not is_instance_valid(target):
+func _is_valid_mark_target(target: Variant) -> bool:
+	if target == null:
 		return false
-	var target_healer := target as FriendlyHealer
-	var target_ratfolk := target as FriendlyRatfolk
+	if not (target is Object):
+		return false
+	if not is_instance_valid(target):
+		return false
+	var target_node := target as Node2D
+	if target_node == null:
+		return false
+	var target_healer := target_node as FriendlyHealer
+	var target_ratfolk := target_node as FriendlyRatfolk
 	if target_healer == null and target_ratfolk == null:
 		return false
-	if not _is_friendly_target_alive(target):
+	if not _is_friendly_target_alive(target_node):
 		return false
-	if not target.has_method("receive_hit"):
+	if not target_node.has_method("receive_hit"):
 		return false
-	if target.is_in_group("shadow_clones"):
+	if target_node.is_in_group("shadow_clones"):
 		return false
-	if target.has_method("is_shadow_clone_actor") and bool(target.call("is_shadow_clone_actor")):
+	if target_node.has_method("is_shadow_clone_actor") and bool(target_node.call("is_shadow_clone_actor")):
 		return false
 	return true
+
+
+func _is_mark_target_in_start_range(target: Node2D) -> bool:
+	if target == null or not is_instance_valid(target):
+		return false
+	var engage_range := maxf(24.0, boss_mark_start_range)
+	return global_position.distance_squared_to(target.global_position) <= engage_range * engage_range
 
 
 func _is_friendly_target_alive(target: Node2D) -> bool:
@@ -1045,6 +1305,8 @@ func _select_mark_target() -> Node2D:
 		if candidate == null:
 			continue
 		if not _is_valid_mark_target(candidate):
+			continue
+		if not _is_mark_target_in_start_range(candidate):
 			continue
 		var score := candidate.global_position.distance_squared_to(global_position)
 		var candidate_id := candidate.get_instance_id()
@@ -1344,7 +1606,7 @@ func _perform_attack() -> void:
 	if hit_targets.is_empty():
 		return
 	for target in hit_targets:
-		_attempt_friendly_hit(target, attack_damage, false, outgoing_hit_stun_duration)
+		_attempt_friendly_hit(target, attack_damage, false, outgoing_hit_stun_duration, 1.0, true)
 
 
 func _begin_spin_charge(to_player: Vector2) -> void:
@@ -1497,17 +1759,21 @@ func get_trade_stun_duration() -> float:
 	return outgoing_hit_stun_duration
 
 
-func _attempt_friendly_hit(target: Node2D, damage: float, guard_break: bool = false, stun_duration: float = 0.0) -> bool:
+func _attempt_friendly_hit(target: Node2D, damage: float, guard_break: bool = false, stun_duration: float = 0.0, knockback_scale: float = 1.0, spawn_block_success_fx: bool = false) -> bool:
 	if target == null or not is_instance_valid(target):
 		return false
 	if not target.has_method("receive_hit"):
 		return false
 	var was_blocked := _is_target_blocking_attack(target)
 	var adjusted_damage := damage * _get_protective_shield_damage_multiplier(target)
-	var landed := bool(target.call("receive_hit", adjusted_damage, global_position, guard_break, stun_duration))
+	var landed := bool(target.call("receive_hit", adjusted_damage, global_position, guard_break, stun_duration, knockback_scale))
 	if landed:
 		_spawn_hit_effect(target.global_position + Vector2(0.0, -14.0), Color(1.0, 0.44, 0.3, 0.95), 10.0)
 	if was_blocked and not guard_break:
+		if spawn_block_success_fx:
+			var blocked_player := target as Player
+			if blocked_player != null:
+				_queue_basic_block_success_effect(blocked_player)
 		_apply_blocked_counter_stun()
 	return landed
 
@@ -1764,6 +2030,7 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	var has_cosmetic_hurt_anim := cosmetic_hurt_anim_left > 0.0 and not _is_combat_action_active_for_periodic_hurt()
 	var displayed_hurt_left := hurt_anim_left if has_true_hurt_anim else cosmetic_hurt_anim_left
 	var displayed_hurt_duration := hurt_anim_duration if has_true_hurt_anim else periodic_hurt_anim_duration
+	var lunge_charge_visual_active := _is_lunge_charge_visual_active()
 
 	var action_key := "idle"
 	if dead:
@@ -1773,6 +2040,8 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	elif spin_active_left > 0.0:
 		action_key = "spin"
 	elif spin_charge_left > 0.0:
+		action_key = "attack"
+	elif lunge_charge_visual_active:
 		action_key = "attack"
 	elif pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0:
 		action_key = "attack"
@@ -1812,6 +2081,7 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	var preparing_attack_hold := action_key == "attack" and pending_attack and attack_windup_left > 0.0 and attack_prestrike_hold_duration > 0.0
 	var holding_recovery_frame := action_key == "attack" and not pending_attack and attack_anim_left <= 0.0 and attack_recovery_hold_left > 0.0
 	var holding_spin_charge_frame := action_key == "attack" and spin_charge_left > 0.0
+	var holding_lunge_charge_frame := action_key == "attack" and lunge_charge_visual_active
 	if not holding_attack_frame and not holding_recovery_frame:
 		monster_anim_time += delta * fps
 	var frame_index: int
@@ -1820,6 +2090,9 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	elif action_key == "attack":
 		if holding_spin_charge_frame:
 			frame_index = clampi(maxi(0, attack_hold_frame - 1), 0, max(0, frame_count - 1))
+			monster_anim_time = float(frame_index)
+		elif holding_lunge_charge_frame:
+			frame_index = clampi(maxi(0, attack_hold_frame), 0, max(0, frame_count - 1))
 			monster_anim_time = float(frame_index)
 		elif holding_attack_frame:
 			frame_index = clampi(attack_hold_frame, 0, max(0, frame_count - 1))
@@ -1989,6 +2262,7 @@ func _update_spin_warning_visual(delta: float) -> void:
 func _die() -> void:
 	dead = true
 	knockback_velocity = Vector2.ZERO
+	pending_basic_block_success_fx.clear()
 	_cancel_spin_attack()
 	_teardown_debug_overlay()
 	died.emit(self)
@@ -2041,6 +2315,7 @@ func _update_model_animation(delta: float, movement_ratio: float, to_player: Vec
 		cloth_back_visual.rotation = cloth_back_base_rotation - (step * 0.07) - (movement_ratio * 0.06)
 	if cloth_front_visual != null:
 		cloth_front_visual.rotation = cloth_front_base_rotation + (step * 0.06)
+	var lunge_charge_visual_active := _is_lunge_charge_visual_active()
 
 	if pending_attack:
 		var windup_progress := clampf(1.0 - (attack_windup_left / maxf(0.01, attack_windup)), 0.0, 1.0)
@@ -2061,6 +2336,11 @@ func _update_model_animation(delta: float, movement_ratio: float, to_player: Vec
 		left_leg_visual.rotation = lerp_angle(left_leg_visual.rotation, -0.28, clampf(delta * 10.0, 0.0, 1.0))
 		right_leg_visual.rotation = lerp_angle(right_leg_visual.rotation, -0.2, clampf(delta * 10.0, 0.0, 1.0))
 		body_visual.rotation = lerp_angle(body_visual.rotation, body_visual.rotation + (charge_progress * 0.06), clampf(delta * 8.0, 0.0, 1.0))
+	elif lunge_charge_visual_active:
+		right_arm_visual.rotation = lerp_angle(right_arm_visual.rotation, -1.05, clampf(delta * 14.0, 0.0, 1.0))
+		weapon_visual.rotation = lerp_angle(weapon_visual.rotation, -1.55, clampf(delta * 14.0, 0.0, 1.0))
+		left_leg_visual.rotation = lerp_angle(left_leg_visual.rotation, -0.2, clampf(delta * 10.0, 0.0, 1.0))
+		right_leg_visual.rotation = lerp_angle(right_leg_visual.rotation, -0.16, clampf(delta * 10.0, 0.0, 1.0))
 
 	if spin_active_left > 0.0:
 		body_visual.rotation += delta * 15.0
@@ -2082,7 +2362,7 @@ func _update_model_animation(delta: float, movement_ratio: float, to_player: Vec
 
 	if spin_active_left <= 0.0:
 		var body_aim := external_sprite_facing_direction if (stun_left > 0.0 or hurt_anim_left > 0.0) else to_player
-		if stun_left <= 0.0 and hurt_anim_left <= 0.0 and (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001:
+		if stun_left <= 0.0 and hurt_anim_left <= 0.0 and (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0 or lunge_charge_visual_active) and committed_attack_facing_direction.length_squared() > 0.0001:
 			body_aim = committed_attack_facing_direction
 		if body_aim.length_squared() > 0.0001:
 			body_visual.rotation = lerp_angle(body_visual.rotation, body_aim.angle() * 0.16, clampf(delta * 10.0, 0.0, 1.0))

@@ -105,6 +105,9 @@ signal item_looted(item_name: String, total_owned: int)
 @export var hit_confirm_cancel_enabled: bool = true
 @export var camera_shake_duration: float = 0.14
 @export var camera_shake_strength: float = 5.0
+@export var impact_hitstop_multiplier: float = 1.22
+@export var impact_camera_shake_multiplier: float = 1.18
+@export var impact_vfx_scale_multiplier: float = 1.15
 
 @export var pickup_radius: float = 34.0
 @export var health_bar_width: float = 74.0
@@ -551,7 +554,7 @@ func receive_heal(amount: float) -> bool:
 	return true
 
 
-func receive_hit(amount: float, source_position: Vector2, guard_break: bool = false, stun_duration: float = 0.0) -> bool:
+func receive_hit(amount: float, source_position: Vector2, guard_break: bool = false, stun_duration: float = 0.0, knockback_scale: float = 1.0) -> bool:
 	if is_dead:
 		return false
 	if is_invulnerable:
@@ -576,7 +579,7 @@ func receive_hit(amount: float, source_position: Vector2, guard_break: bool = fa
 		knockback_direction = Vector2.LEFT if facing_direction.x >= 0.0 else Vector2.RIGHT
 	var can_super_armor := _has_super_armor() and not blocked and not guard_break
 	var super_armor_active := can_super_armor and damage_to_apply < armor_break_threshold
-	var knockback_strength := hit_knockback_speed * (0.45 if blocked else 1.0)
+	var knockback_strength := hit_knockback_speed * (0.45 if blocked else 1.0) * maxf(0.1, knockback_scale)
 	if super_armor_active:
 		knockback_strength *= 0.45
 	knockback_velocity = knockback_direction * knockback_strength
@@ -1624,6 +1627,9 @@ func _apply_melee_strike(
 	var facing := facing_direction.normalized()
 	if facing == Vector2.ZERO:
 		facing = Vector2.RIGHT
+	var hitstop_scale := maxf(0.4, impact_hitstop_multiplier)
+	var shake_scale := maxf(0.4, impact_camera_shake_multiplier)
+	var impact_vfx_scale := maxf(0.5, impact_vfx_scale_multiplier)
 	var arc_threshold := cos(deg_to_rad(arc_degrees * 0.5))
 	var hit_ids: Dictionary = {}
 	var hit_confirmed := false
@@ -1649,18 +1655,19 @@ func _apply_melee_strike(
 		if enemy.receive_hit(damage, global_position, stun_duration, true, knockback_scale):
 			hit_confirmed = true
 			var hit_world_position := enemy.global_position + Vector2(0.0, -12.0)
-			strongest_hitstop = maxf(strongest_hitstop, hitstop_duration)
-			strongest_vfx_scale = maxf(strongest_vfx_scale, vfx_scale)
+			var applied_hitstop := hitstop_duration * hitstop_scale
+			strongest_hitstop = maxf(strongest_hitstop, applied_hitstop)
+			strongest_vfx_scale = maxf(strongest_vfx_scale, vfx_scale * impact_vfx_scale)
 			if enemy.has_method("apply_hitstop"):
-				enemy.apply_hitstop(hitstop_duration)
-			_spawn_hit_effect(hit_world_position, Color(1.0, 0.8, 0.44, 0.95), 9.0 * maxf(0.6, vfx_scale))
+				enemy.apply_hitstop(applied_hitstop)
+			_spawn_hit_effect(hit_world_position, Color(1.0, 0.82, 0.46, 0.95), 9.0 * maxf(0.6, vfx_scale * impact_vfx_scale))
 			if not is_dead and enemy.can_trade_melee_with(self):
 				receive_hit(enemy.get_trade_damage(), enemy.global_position, false, enemy.get_trade_stun_duration())
 				if is_dead:
 					return true
 	if hit_confirmed:
 		_start_hitstop(strongest_hitstop)
-		_start_camera_shake(camera_shake_duration, camera_shake_strength * maxf(0.7, strongest_vfx_scale))
+		_start_camera_shake(camera_shake_duration * shake_scale, (camera_shake_strength * shake_scale) * maxf(0.7, strongest_vfx_scale))
 	return hit_confirmed
 
 
