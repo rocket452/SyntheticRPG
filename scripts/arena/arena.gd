@@ -17,7 +17,10 @@ const MELEE_ENEMY_SCENE: PackedScene = preload("res://scenes/enemies/MeleeEnemy.
 const ITEM_SCENE: PackedScene = preload("res://scenes/items/ItemPickup.tscn")
 
 @export var regular_enemy_count: int = 1
-@export var allow_multiple_minotaurs: bool = false
+@export var allow_multiple_minotaurs: bool = true
+@export var max_active_minotaurs: int = 2
+@export var timed_extra_minotaur_enabled: bool = true
+@export var timed_extra_minotaur_delay: float = 12.0
 @export var spawn_jitter: float = 18.0
 @export var arena_min_x: float = -760.0
 @export var arena_max_x: float = 760.0
@@ -45,6 +48,9 @@ var ratfolk: Node2D = null
 var alive_regular_enemies: int = 0
 var demo_started: bool = false
 var spawn_next_debug_enemy_on_left: bool = true
+var demo_elapsed: float = 0.0
+var timed_extra_minotaur_spawned: bool = false
+var initial_minotaur_spawn_on_left: bool = false
 var rng := RandomNumberGenerator.new()
 
 
@@ -55,9 +61,11 @@ func _ready() -> void:
 		rng.randomize()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if not demo_started:
 		return
+	demo_elapsed += maxf(0.0, delta)
+	_try_spawn_timed_extra_minotaur()
 	_emit_combat_debug()
 
 
@@ -65,6 +73,9 @@ func start_demo() -> void:
 	if demo_started:
 		return
 	demo_started = true
+	demo_elapsed = 0.0
+	timed_extra_minotaur_spawned = false
+	initial_minotaur_spawn_on_left = false
 	_spawn_player()
 	_spawn_friendly_healer()
 	_spawn_friendly_ratfolk()
@@ -125,12 +136,20 @@ func _spawn_friendly_ratfolk() -> void:
 
 func _spawn_regular_enemies() -> void:
 	alive_regular_enemies = 0
+	var spawn_count := regular_enemy_count
+	var minotaur_cap := maxi(1, max_active_minotaurs)
+	if not allow_multiple_minotaurs:
+		minotaur_cap = 1
+	spawn_count = mini(spawn_count, minotaur_cap)
+	if spawn_count >= 2:
+		_spawn_edge_minotaur_on_side(false, -24.0)
+		_spawn_edge_minotaur_on_side(false, 24.0)
+		spawn_count -= 2
+	if spawn_count <= 0:
+		return
 	if spawn_points.is_empty():
 		push_error("No spawn points configured in Arena scene.")
 		return
-	var spawn_count := regular_enemy_count
-	if not allow_multiple_minotaurs:
-		spawn_count = mini(1, regular_enemy_count)
 	for i in spawn_count:
 		var spawn_marker := spawn_points[rng.randi_range(0, spawn_points.size() - 1)] as Marker2D
 		if spawn_marker == null:
@@ -145,24 +164,52 @@ func _spawn_regular_enemies() -> void:
 		enemy.is_miniboss = true
 		enemy.max_health = maxf(10.0, enemy.max_health * miniboss_health_scale)
 		enemy.current_health = enemy.max_health
+		if alive_regular_enemies <= 0:
+			initial_minotaur_spawn_on_left = spawn_position.x < _get_arena_center_x()
 		alive_regular_enemies += 1
 
 
 func spawn_debug_minotaur_alternating() -> void:
 	if not demo_started:
 		return
-	if not allow_multiple_minotaurs and _has_any_alive_enemy():
+	if not _can_spawn_additional_minotaur():
+		return
+	_spawn_edge_minotaur()
+
+
+func _try_spawn_timed_extra_minotaur() -> void:
+	if not timed_extra_minotaur_enabled:
+		return
+	if timed_extra_minotaur_spawned:
+		return
+	if not _can_spawn_additional_minotaur():
+		return
+	if alive_regular_enemies <= 0:
+		return
+	if demo_elapsed < maxf(0.0, timed_extra_minotaur_delay):
+		return
+	timed_extra_minotaur_spawned = true
+	_spawn_edge_minotaur_on_side(initial_minotaur_spawn_on_left)
+
+
+func _spawn_edge_minotaur() -> void:
+	_spawn_edge_minotaur_on_side(spawn_next_debug_enemy_on_left)
+	spawn_next_debug_enemy_on_left = not spawn_next_debug_enemy_on_left
+
+
+func _spawn_edge_minotaur_on_side(spawn_on_left: bool, vertical_offset: float = 0.0) -> void:
+	if not _can_spawn_additional_minotaur():
 		return
 	var min_x := minf(arena_min_x, arena_max_x)
 	var max_x := maxf(arena_min_x, arena_max_x)
 	var min_y := minf(arena_min_y, arena_max_y)
 	var max_y := maxf(arena_min_y, arena_max_y)
 	var edge_inset := 26.0
-	var spawn_x := min_x + edge_inset if spawn_next_debug_enemy_on_left else max_x - edge_inset
-	spawn_next_debug_enemy_on_left = not spawn_next_debug_enemy_on_left
+	var spawn_x := min_x + edge_inset if spawn_on_left else max_x - edge_inset
 	var spawn_y := lerpf(min_y, max_y, 0.5)
 	if is_instance_valid(player):
 		spawn_y = clampf(player.position.y, min_y + 8.0, max_y - 8.0)
+	spawn_y = clampf(spawn_y + vertical_offset, min_y + 8.0, max_y - 8.0)
 	var spawn_position := to_global(Vector2(spawn_x, spawn_y))
 	var enemy := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position)
 	if enemy == null:
@@ -170,8 +217,33 @@ func spawn_debug_minotaur_alternating() -> void:
 	enemy.is_miniboss = true
 	enemy.max_health = maxf(10.0, enemy.max_health * miniboss_health_scale)
 	enemy.current_health = enemy.max_health
+	if alive_regular_enemies <= 0:
+		initial_minotaur_spawn_on_left = spawn_on_left
 	alive_regular_enemies += 1
 	_update_objective()
+
+
+func _can_spawn_additional_minotaur() -> bool:
+	var minotaur_cap := maxi(1, max_active_minotaurs)
+	if not allow_multiple_minotaurs:
+		minotaur_cap = 1
+	return _count_alive_minotaurs() < minotaur_cap
+
+
+func _count_alive_minotaurs() -> int:
+	var count := 0
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if not enemy.is_miniboss:
+			continue
+		count += 1
+	return count
+
+
+func _get_arena_center_x() -> float:
+	return (minf(arena_min_x, arena_max_x) + maxf(arena_min_x, arena_max_x)) * 0.5
 
 
 func _spawn_enemy(scene: PackedScene, spawn_position: Vector2) -> EnemyBase:
@@ -190,8 +262,6 @@ func _spawn_enemy(scene: PackedScene, spawn_position: Vector2) -> EnemyBase:
 
 func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> void:
 	if not demo_started:
-		return
-	if not allow_multiple_minotaurs:
 		return
 	var total_to_spawn := maxi(1, count)
 	var min_x := minf(arena_min_x, arena_max_x)

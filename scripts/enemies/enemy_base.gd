@@ -1,6 +1,11 @@
 extends CharacterBody2D
 class_name EnemyBase
 
+const SHADOW_FEAR_DEBUFF_TEXTURE_PATH: String = "res://assets/vfx/opengameart/shadow_fear_debuff_pure_21.png"
+const SHADOW_FEAR_DEBUFF_SPRITE_SCALE: Vector2 = Vector2(0.42, 0.42)
+
+static var shadow_fear_debuff_texture_cache: Texture2D = null
+
 signal died(enemy: EnemyBase)
 signal summon_minions_requested(enemy: EnemyBase, count: int)
 
@@ -115,6 +120,7 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var health_bar_width: float = 58.0
 @export var health_bar_thickness: float = 5.0
 @export var health_bar_y_offset: float = -62.0
+@export var shadow_fear_break_duration: float = 5.0
 @export var is_miniboss: bool = false
 @export var debug_orientation_overlay: bool = false
 @export var debug_focus_nearest_enemy_only: bool = true
@@ -238,6 +244,11 @@ var boss_mark_cycle_left: float = 0.0
 var boss_summon_cycle_left: float = 0.0
 var companion_target_refresh_left: float = 0.0
 var boss_dps_mark_left: float = 0.0
+var shadow_fear_left: float = 0.0
+var shadow_fear_apply_count: int = 0
+var shadow_fear_vfx_time: float = 0.0
+var shadow_fear_vfx_root: Node2D = null
+var shadow_fear_vfx_sprite: Sprite2D = null
 
 @onready var shadow_visual: Polygon2D = $Shadow
 @onready var body_visual: Polygon2D = $Body
@@ -351,8 +362,137 @@ func _get_boss_lunge_marked_distance() -> float:
 	return global_position.distance_to(boss_marked_ally.global_position)
 
 
+func _log_shadow_fear(message: String) -> void:
+	print("[SHADOW_FEAR] %s" % message)
+
+
+func _get_shadow_fear_debuff_texture() -> Texture2D:
+	if shadow_fear_debuff_texture_cache != null:
+		return shadow_fear_debuff_texture_cache
+	var texture_path := ProjectSettings.globalize_path(SHADOW_FEAR_DEBUFF_TEXTURE_PATH)
+	var image := Image.new()
+	var error := image.load(texture_path)
+	if error != OK:
+		push_warning("Failed to load Shadow Fear debuff texture: %s (%s)" % [texture_path, error_string(error)])
+		return null
+	shadow_fear_debuff_texture_cache = ImageTexture.create_from_image(image)
+	return shadow_fear_debuff_texture_cache
+
+
+func is_shadow_fear_active() -> bool:
+	return shadow_fear_left > 0.0
+
+
+func has_hard_cc_active() -> bool:
+	return shadow_fear_left > 0.0 or stun_left > 0.0
+
+
+func apply_shadow_fear(duration: float) -> bool:
+	if dead:
+		return false
+	var applied_duration := maxf(0.0, duration)
+	if applied_duration <= 0.0:
+		applied_duration = maxf(0.0, shadow_fear_break_duration)
+	if applied_duration <= 0.0:
+		return false
+	if has_hard_cc_active():
+		return false
+	shadow_fear_left = applied_duration
+	shadow_fear_apply_count += 1
+	shadow_fear_vfx_time = 0.0
+	_cancel_spin_attack()
+	pending_attack = false
+	attack_windup_left = 0.0
+	attack_prestrike_hold_left = 0.0
+	attack_recovery_hold_left = 0.0
+	attack_anim_left = 0.0
+	attack_flash_left = 0.0
+	attack_telegraph.visible = false
+	weapon_trail_alpha = 0.0
+	weapon_trail.visible = false
+	slash_effect.visible = false
+	velocity = Vector2.ZERO
+	knockback_velocity = Vector2.ZERO
+	_spawn_shadow_fear_vfx()
+	_log_shadow_fear("APPLIED enemy=%s duration=%.2f" % [name, applied_duration])
+	return true
+
+
+func _clear_shadow_fear(broken_by_damage: bool) -> void:
+	if shadow_fear_left <= 0.0 and (shadow_fear_vfx_root == null or not is_instance_valid(shadow_fear_vfx_root)):
+		return
+	shadow_fear_left = 0.0
+	_shadow_fear_teardown_vfx()
+	if broken_by_damage:
+		_log_shadow_fear("BROKEN enemy=%s reason=damage" % name)
+	else:
+		_log_shadow_fear("EXPIRED enemy=%s" % name)
+
+
+func _tick_shadow_fear_status(delta: float) -> void:
+	if shadow_fear_left <= 0.0:
+		return
+	shadow_fear_left = maxf(0.0, shadow_fear_left - maxf(0.0, delta))
+	_update_shadow_fear_vfx(delta)
+	if shadow_fear_left <= 0.0:
+		_clear_shadow_fear(false)
+
+
+func _hold_shadow_fear_state(delta: float, to_player: Vector2) -> void:
+	velocity = Vector2.ZERO
+	knockback_velocity = Vector2.ZERO
+	attack_telegraph.visible = false
+	weapon_trail.visible = false
+	slash_effect.visible = false
+	move_and_slide()
+	_clamp_to_arena()
+	_update_visuals(delta, to_player)
+	_update_health_bar()
+
+
+func _spawn_shadow_fear_vfx() -> void:
+	_shadow_fear_teardown_vfx()
+	shadow_fear_vfx_root = Node2D.new()
+	shadow_fear_vfx_root.name = "ShadowFearVfx"
+	shadow_fear_vfx_root.z_index = 5
+	add_child(shadow_fear_vfx_root)
+	shadow_fear_vfx_sprite = Sprite2D.new()
+	shadow_fear_vfx_sprite.name = "FearBurst"
+	shadow_fear_vfx_sprite.centered = true
+	shadow_fear_vfx_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	shadow_fear_vfx_sprite.texture = _get_shadow_fear_debuff_texture()
+	shadow_fear_vfx_sprite.position = Vector2.ZERO
+	shadow_fear_vfx_sprite.scale = SHADOW_FEAR_DEBUFF_SPRITE_SCALE
+	shadow_fear_vfx_sprite.modulate = Color(0.64, 0.3, 0.9, 0.9)
+	shadow_fear_vfx_root.add_child(shadow_fear_vfx_sprite)
+
+	_update_shadow_fear_vfx(0.0)
+
+
+func _update_shadow_fear_vfx(delta: float) -> void:
+	if shadow_fear_vfx_root == null or not is_instance_valid(shadow_fear_vfx_root):
+		return
+	shadow_fear_vfx_time += maxf(0.0, delta)
+	var pulse := 0.5 + (sin(shadow_fear_vfx_time * 6.8) * 0.5)
+	var sway := sin(shadow_fear_vfx_time * 8.2)
+	shadow_fear_vfx_root.position = Vector2(sway * 1.8, -28.0 + (sin(shadow_fear_vfx_time * 3.2) * 3.2))
+	if shadow_fear_vfx_sprite != null and is_instance_valid(shadow_fear_vfx_sprite):
+		var sprite_scale := lerpf(0.36, 0.54, pulse)
+		shadow_fear_vfx_sprite.scale = Vector2(sprite_scale, sprite_scale)
+		shadow_fear_vfx_sprite.rotation = sway * 0.12
+		shadow_fear_vfx_sprite.modulate = Color(0.6 + (pulse * 0.18), 0.24 + (pulse * 0.14), 0.86 + (pulse * 0.12), lerpf(0.62, 1.0, pulse))
+
+
+func _shadow_fear_teardown_vfx() -> void:
+	if is_instance_valid(shadow_fear_vfx_root):
+		shadow_fear_vfx_root.queue_free()
+	shadow_fear_vfx_root = null
+	shadow_fear_vfx_sprite = null
+
+
 func _exit_tree() -> void:
 	_teardown_debug_overlay()
+	_shadow_fear_teardown_vfx()
 	if is_instance_valid(spin_warning_area):
 		spin_warning_area.queue_free()
 
@@ -365,6 +505,7 @@ func _physics_process(delta: float) -> void:
 		return
 	if hitstop_left > 0.0:
 		hitstop_left = maxf(0.0, hitstop_left - delta)
+		_tick_shadow_fear_status(delta)
 		if not is_instance_valid(player):
 			_reacquire_player()
 		var freeze_to_player := Vector2.RIGHT
@@ -388,6 +529,7 @@ func _physics_process(delta: float) -> void:
 	slash_effect_left = maxf(0.0, slash_effect_left - delta)
 	spin_attack_cooldown_left = maxf(0.0, spin_attack_cooldown_left - delta)
 	_tick_pending_basic_block_success_fx(delta)
+	_tick_shadow_fear_status(delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.45))
 	if previous_attack_anim_left > 0.0 and attack_anim_left <= 0.0:
 		attack_recovery_hold_left = maxf(attack_recovery_hold_left, attack_recovery_hold_duration)
@@ -433,6 +575,10 @@ func _physics_process(delta: float) -> void:
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
 		_update_health_bar()
+		return
+
+	if shadow_fear_left > 0.0:
+		_hold_shadow_fear_state(delta, to_player)
 		return
 
 	if spin_charge_left > 0.0:
@@ -532,6 +678,7 @@ func _physics_process(delta: float) -> void:
 func _physics_process_single_phase(delta: float) -> void:
 	if hitstop_left > 0.0:
 		hitstop_left = maxf(0.0, hitstop_left - delta)
+		_tick_shadow_fear_status(delta)
 		if not is_instance_valid(player):
 			_reacquire_player()
 		var freeze_to_player := Vector2.RIGHT
@@ -569,6 +716,10 @@ func _physics_process_single_phase(delta: float) -> void:
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
 		_update_health_bar()
+		return
+
+	if shadow_fear_left > 0.0:
+		_hold_shadow_fear_state(delta, to_player)
 		return
 
 	if pending_attack and boss_loop_state == BossLoopState.IDLE:
@@ -652,6 +803,7 @@ func _tick_enemy_runtime_timers(delta: float) -> void:
 	companion_target_refresh_left = maxf(0.0, companion_target_refresh_left - delta)
 	periodic_hurt_anim_cooldown_left = maxf(0.0, periodic_hurt_anim_cooldown_left - delta)
 	_tick_pending_basic_block_success_fx(delta)
+	_tick_shadow_fear_status(delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.45))
 	if previous_attack_anim_left > 0.0 and attack_anim_left <= 0.0:
 		attack_recovery_hold_left = maxf(attack_recovery_hold_left, attack_recovery_hold_duration)
@@ -674,7 +826,7 @@ func _tick_periodic_hurt_animation() -> void:
 
 
 func _is_combat_action_active_for_periodic_hurt() -> bool:
-	if stun_left > 0.0 or hitstop_left > 0.0:
+	if stun_left > 0.0 or hitstop_left > 0.0 or shadow_fear_left > 0.0:
 		return true
 	if pending_attack \
 		or attack_windup_left > 0.0 \
@@ -1671,6 +1823,8 @@ func _perform_spin_attack_hit() -> void:
 func receive_hit(amount: float, source_position: Vector2, stun_duration: float = 0.0, apply_hit_stun: bool = true, knockback_scale: float = 1.0) -> bool:
 	if dead:
 		return false
+	if shadow_fear_left > 0.0 and amount > 0.0:
+		_clear_shadow_fear(true)
 	var damage_to_apply := maxf(0.0, amount)
 	if boss_dps_mark_left > 0.0:
 		damage_to_apply *= maxf(1.0, boss_dps_mark_damage_taken_multiplier)
@@ -2262,6 +2416,8 @@ func _update_spin_warning_visual(delta: float) -> void:
 func _die() -> void:
 	dead = true
 	knockback_velocity = Vector2.ZERO
+	shadow_fear_left = 0.0
+	_shadow_fear_teardown_vfx()
 	pending_basic_block_success_fx.clear()
 	_cancel_spin_attack()
 	_teardown_debug_overlay()

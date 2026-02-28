@@ -18,6 +18,12 @@ var phase_time: float = 0.0
 var attempt_count: int = 0
 var saw_hitstop: bool = false
 var autoplay_log_path: String = ""
+var shadow_fear_primary_enemy_id: int = -1
+var shadow_fear_new_enemy_applied: bool = false
+var shadow_fear_primary_engaged: bool = false
+var shadow_fear_tuned_miniboss_ids: Dictionary = {}
+var shadow_fear_layout_variant: int = 0
+var shadow_fear_layout_applied: bool = false
 
 
 func configure(target_arena: Arena) -> void:
@@ -28,7 +34,14 @@ func _ready() -> void:
 	autoplay_scenario = OS.get_environment("AUTOPLAY_SCENARIO").strip_edges().to_lower()
 	if autoplay_scenario.is_empty():
 		autoplay_scenario = "charge_attack"
-	if autoplay_scenario == "lunge_block" or autoplay_scenario == "basic_block":
+	shadow_fear_primary_enemy_id = -1
+	shadow_fear_new_enemy_applied = false
+	shadow_fear_primary_engaged = false
+	shadow_fear_tuned_miniboss_ids.clear()
+	shadow_fear_layout_applied = false
+	var layout_variant_env := OS.get_environment("AUTOPLAY_LAYOUT_VARIANT").strip_edges()
+	shadow_fear_layout_variant = int(layout_variant_env) if layout_variant_env.is_valid_int() else 0
+	if autoplay_scenario == "lunge_block" or autoplay_scenario == "basic_block" or autoplay_scenario == "shadow_fear" or autoplay_scenario == "shadow_fear_break" or autoplay_scenario == "shadow_fear_new_enemy":
 		timeout_seconds = maxf(timeout_seconds, 45.0)
 	autoplay_log_path = OS.get_environment("AUTOPLAY_LOG_PATH")
 	if autoplay_log_path.is_empty():
@@ -60,6 +73,15 @@ func _physics_process(delta: float) -> void:
 		return
 	if autoplay_scenario == "basic_block":
 		_step_basic_block_scenario()
+		return
+	if autoplay_scenario == "shadow_fear":
+		_step_shadow_fear_scenario()
+		return
+	if autoplay_scenario == "shadow_fear_break":
+		_step_shadow_fear_scenario()
+		return
+	if autoplay_scenario == "shadow_fear_new_enemy":
+		_step_shadow_fear_new_enemy_scenario()
 		return
 
 	match phase:
@@ -139,6 +161,162 @@ func _step_basic_block_scenario() -> void:
 		Input.action_press("block")
 
 
+func _step_shadow_fear_scenario() -> void:
+	var boss_enemy := _get_boss_enemy()
+	if boss_enemy == null:
+		return
+
+	if is_instance_valid(arena):
+		arena.allow_multiple_minotaurs = true
+	boss_enemy.spin_attack_enabled = false
+	boss_enemy.boss_summon_interval = minf(boss_enemy.boss_summon_interval, 4.0)
+	boss_enemy.boss_summon_cycle_left = minf(float(boss_enemy.get("boss_summon_cycle_left")), 0.2)
+	if get_tree().get_nodes_in_group("enemies").size() < 2 and is_instance_valid(arena):
+		arena.call("_on_enemy_summon_minions_requested", boss_enemy, 2)
+
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var candidate := node as EnemyBase
+		if candidate == null or not is_instance_valid(candidate) or candidate.dead or candidate.is_miniboss:
+			continue
+		if candidate.has_method("is_shadow_fear_active") and bool(candidate.call("is_shadow_fear_active")):
+			if autoplay_scenario == "shadow_fear_break":
+				candidate.receive_hit(1.0, player.global_position, 0.0, false)
+				if not bool(candidate.call("is_shadow_fear_active")):
+					_finish(0, "shadow_fear_break")
+				return
+			_finish(0, "shadow_fear")
+			return
+
+	var to_boss := boss_enemy.global_position - player.global_position
+	var desired_distance := 92.0
+	if to_boss.length() > desired_distance + 14.0:
+		Input.action_release("block")
+		_set_move_inputs(to_boss.normalized())
+	elif to_boss.length() < desired_distance - 16.0:
+		Input.action_release("block")
+		_set_move_inputs((-to_boss).normalized())
+	else:
+		_set_move_inputs(Vector2.ZERO)
+		Input.action_press("block")
+
+
+func _step_shadow_fear_new_enemy_scenario() -> void:
+	if not is_instance_valid(player) or not is_instance_valid(arena):
+		return
+
+	arena.allow_multiple_minotaurs = true
+	arena.max_active_minotaurs = maxi(2, arena.max_active_minotaurs)
+	arena.timed_extra_minotaur_enabled = true
+	arena.timed_extra_minotaur_delay = 12.0
+
+	var minibosses: Array[EnemyBase] = []
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var candidate := node as EnemyBase
+		if candidate == null or not is_instance_valid(candidate) or candidate.dead:
+			continue
+		if not candidate.is_miniboss:
+			continue
+		var candidate_id := candidate.get_instance_id()
+		if not shadow_fear_tuned_miniboss_ids.has(candidate_id):
+			candidate.max_health = maxf(candidate.max_health, 1000.0)
+			candidate.current_health = candidate.max_health
+			shadow_fear_tuned_miniboss_ids[candidate_id] = true
+		candidate.boss_can_summon_minions = false
+		candidate.boss_summon_count = 0
+		candidate.spin_attack_enabled = false
+		candidate.use_single_phase_loop = false
+		candidate.attack_cooldown = maxf(candidate.attack_cooldown, 3.5)
+		candidate.attack_damage = minf(candidate.attack_damage, 2.0)
+		candidate.move_speed = 0.0
+		minibosses.append(candidate)
+	if minibosses.is_empty():
+		return
+
+	if shadow_fear_primary_enemy_id < 0:
+		var lowest_id := INF
+		for candidate in minibosses:
+			var candidate_id := candidate.get_instance_id()
+			if candidate_id < lowest_id:
+				lowest_id = candidate_id
+		shadow_fear_primary_enemy_id = int(lowest_id)
+
+	var primary_enemy: EnemyBase = null
+	var newest_enemy: EnemyBase = null
+	var newest_id := -1
+	for candidate in minibosses:
+		var candidate_id := candidate.get_instance_id()
+		if candidate_id == shadow_fear_primary_enemy_id:
+			primary_enemy = candidate
+		if candidate_id > newest_id:
+			newest_id = candidate_id
+			newest_enemy = candidate
+	if primary_enemy == null:
+		primary_enemy = minibosses[0]
+	_apply_shadow_fear_opening_layout(primary_enemy)
+	if is_instance_valid(arena.ratfolk) and arena.ratfolk.get("target_enemy") == primary_enemy:
+		shadow_fear_primary_engaged = true
+	if minibosses.size() >= 2 and newest_enemy != null and newest_enemy != primary_enemy:
+		var newest_apply_count := int(newest_enemy.get("shadow_fear_apply_count"))
+		if newest_apply_count > 0:
+			shadow_fear_new_enemy_applied = true
+		if shadow_fear_primary_engaged and shadow_fear_new_enemy_applied:
+			var rat_target_matches_primary := true
+			if is_instance_valid(arena.ratfolk):
+				rat_target_matches_primary = arena.ratfolk.get("target_enemy") == primary_enemy
+			if rat_target_matches_primary:
+				_finish(0, "shadow_fear_new_enemy")
+				return
+
+	var to_primary := primary_enemy.global_position - player.global_position
+	var desired_distance := 128.0
+	if to_primary.length() > desired_distance + 14.0:
+		Input.action_release("block")
+		_set_move_inputs(to_primary.normalized())
+	elif to_primary.length() < desired_distance - 16.0:
+		Input.action_release("block")
+		_set_move_inputs((-to_primary).normalized())
+	else:
+		_set_move_inputs(Vector2.ZERO)
+		Input.action_press("block")
+
+
+func _apply_shadow_fear_opening_layout(primary_enemy: EnemyBase) -> void:
+	if shadow_fear_layout_applied:
+		return
+	if not is_instance_valid(arena) or not is_instance_valid(player) or not is_instance_valid(arena.ratfolk):
+		return
+	if primary_enemy == null or not is_instance_valid(primary_enemy) or primary_enemy.dead:
+		return
+	var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+	var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+	var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+	var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+	var player_pos := Vector2(max_x - 420.0, clampf(18.0, min_y + 8.0, max_y - 8.0))
+	var rat_pos := Vector2(max_x - 300.0, clampf(-6.0, min_y + 8.0, max_y - 8.0))
+	var first_enemy_pos := Vector2(max_x - 190.0, clampf(12.0, min_y + 8.0, max_y - 8.0))
+	match posmod(shadow_fear_layout_variant, 3):
+		1:
+			player_pos = Vector2(max_x - 460.0, clampf(-42.0, min_y + 8.0, max_y - 8.0))
+			rat_pos = Vector2(max_x - 330.0, clampf(-10.0, min_y + 8.0, max_y - 8.0))
+			first_enemy_pos = Vector2(max_x - 210.0, clampf(-48.0, min_y + 8.0, max_y - 8.0))
+		2:
+			player_pos = Vector2(max_x - 400.0, clampf(76.0, min_y + 8.0, max_y - 8.0))
+			rat_pos = Vector2(max_x - 280.0, clampf(38.0, min_y + 8.0, max_y - 8.0))
+			first_enemy_pos = Vector2(max_x - 170.0, clampf(58.0, min_y + 8.0, max_y - 8.0))
+	player.global_position = arena.to_global(player_pos)
+	player.velocity = Vector2.ZERO
+	var rat_body := arena.ratfolk as CharacterBody2D
+	if rat_body != null:
+		rat_body.global_position = arena.to_global(rat_pos)
+		rat_body.velocity = Vector2.ZERO
+	var first_enemy := primary_enemy as CharacterBody2D
+	if first_enemy != null:
+		first_enemy.global_position = arena.to_global(first_enemy_pos)
+		first_enemy.velocity = Vector2.ZERO
+	shadow_fear_layout_applied = true
+	_write_log("Shadow fear layout variant=%d" % posmod(shadow_fear_layout_variant, 3))
+
+
 func _refresh_refs() -> void:
 	if not is_instance_valid(player):
 		if is_instance_valid(arena):
@@ -157,6 +335,16 @@ func _refresh_refs() -> void:
 				nearest_dist_sq = dist_sq
 				nearest_enemy = candidate
 		enemy = nearest_enemy
+
+
+func _get_boss_enemy() -> EnemyBase:
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var candidate := node as EnemyBase
+		if candidate == null or not is_instance_valid(candidate) or candidate.dead:
+			continue
+		if candidate.is_miniboss:
+			return candidate
+	return null
 
 
 func _step_approach_enemy() -> void:

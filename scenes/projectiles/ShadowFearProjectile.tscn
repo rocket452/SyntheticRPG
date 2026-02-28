@@ -1,0 +1,31 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/projectiles/shadow_fear_projectile.gd" id="1_6l0pe"]
+
+[node name="ShadowFearProjectile" type="Node2D"]
+z_index = 4
+script = ExtResource("1_6l0pe")
+
+[node name="Trail" type="Line2D" parent="."]
+visible = false
+default_color = Color(0.24, 0.06, 0.32, 0.74)
+width = 2.2
+round_precision = 8
+joint_mode = 2
+begin_cap_mode = 1
+end_cap_mode = 1
+points = PackedVector2Array(-18, 0, -8, 0, 8, 0)
+
+[node name="Halo" type="Polygon2D" parent="."]
+visible = false
+color = Color(0.34, 0.08, 0.46, 0.38)
+polygon = PackedVector2Array(-8, 0, 0, -6, 8, 0, 0, 6)
+
+[node name="Core" type="Polygon2D" parent="."]
+visible = false
+color = Color(0.62, 0.36, 0.78, 0.84)
+polygon = PackedVector2Array(-4, 0, 0, -3, 4, 0, 0, 3)
+
+[node name="ProjectileSprite" type="Sprite2D" parent="."]
+modulate = Color(0.68, 0.44, 0.92, 0.92)
+scale = Vector2(0.42, 0.42)
