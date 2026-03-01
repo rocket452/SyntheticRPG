@@ -24,6 +24,10 @@ var shadow_fear_primary_engaged: bool = false
 var shadow_fear_tuned_miniboss_ids: Dictionary = {}
 var shadow_fear_layout_variant: int = 0
 var shadow_fear_layout_applied: bool = false
+var healer_tidal_wave_setup_done: bool = false
+var healer_respects_fear_setup_done: bool = false
+var healer_respects_fear_start_time: float = -1.0
+var healer_respects_fear_health_floor: float = -1.0
 
 
 func configure(target_arena: Arena) -> void:
@@ -39,9 +43,13 @@ func _ready() -> void:
 	shadow_fear_primary_engaged = false
 	shadow_fear_tuned_miniboss_ids.clear()
 	shadow_fear_layout_applied = false
+	healer_tidal_wave_setup_done = false
+	healer_respects_fear_setup_done = false
+	healer_respects_fear_start_time = -1.0
+	healer_respects_fear_health_floor = -1.0
 	var layout_variant_env := OS.get_environment("AUTOPLAY_LAYOUT_VARIANT").strip_edges()
 	shadow_fear_layout_variant = int(layout_variant_env) if layout_variant_env.is_valid_int() else 0
-	if autoplay_scenario == "lunge_block" or autoplay_scenario == "basic_block" or autoplay_scenario == "shadow_fear" or autoplay_scenario == "shadow_fear_break" or autoplay_scenario == "shadow_fear_new_enemy":
+	if autoplay_scenario == "lunge_block" or autoplay_scenario == "basic_block" or autoplay_scenario == "shadow_fear" or autoplay_scenario == "shadow_fear_break" or autoplay_scenario == "shadow_fear_new_enemy" or autoplay_scenario == "healer_tidal_wave" or autoplay_scenario == "healer_respects_fear":
 		timeout_seconds = maxf(timeout_seconds, 45.0)
 	autoplay_log_path = OS.get_environment("AUTOPLAY_LOG_PATH")
 	if autoplay_log_path.is_empty():
@@ -82,6 +90,12 @@ func _physics_process(delta: float) -> void:
 		return
 	if autoplay_scenario == "shadow_fear_new_enemy":
 		_step_shadow_fear_new_enemy_scenario()
+		return
+	if autoplay_scenario == "healer_tidal_wave":
+		_step_healer_tidal_wave_scenario()
+		return
+	if autoplay_scenario == "healer_respects_fear":
+		_step_healer_respects_fear_scenario()
 		return
 
 	match phase:
@@ -280,6 +294,121 @@ func _step_shadow_fear_new_enemy_scenario() -> void:
 		Input.action_press("block")
 
 
+func _step_healer_tidal_wave_scenario() -> void:
+	if not is_instance_valid(player) or not is_instance_valid(arena):
+		return
+	var boss_enemy := _get_boss_enemy()
+	if boss_enemy == null:
+		return
+
+	arena.allow_multiple_minotaurs = false
+	arena.max_active_minotaurs = 1
+	arena.timed_extra_minotaur_enabled = false
+	boss_enemy.boss_can_summon_minions = false
+	boss_enemy.boss_summon_count = 0
+	boss_enemy.spin_attack_enabled = false
+	boss_enemy.use_single_phase_loop = false
+	boss_enemy.move_speed = 0.0
+	boss_enemy.attack_cooldown = maxf(boss_enemy.attack_cooldown, 3.5)
+	boss_enemy.attack_damage = minf(boss_enemy.attack_damage, 2.0)
+	boss_enemy.max_health = maxf(boss_enemy.max_health, 1000.0)
+	boss_enemy.current_health = boss_enemy.max_health
+
+	if not healer_tidal_wave_setup_done:
+		_apply_healer_tidal_wave_layout(boss_enemy)
+		if is_instance_valid(player):
+			player.current_health = maxf(1.0, player.current_health - 24.0)
+			if player.has_method("_update_health_bar"):
+				player.call("_update_health_bar")
+		if is_instance_valid(arena.healer):
+			arena.healer.set("tidal_wave_cooldown_left", 0.0)
+			var light_bolt_cooldown_value: float = 0.4
+			var light_bolt_cooldown_variant: Variant = arena.healer.get("light_bolt_cooldown")
+			if light_bolt_cooldown_variant is float or light_bolt_cooldown_variant is int:
+				light_bolt_cooldown_value = light_bolt_cooldown_variant
+			arena.healer.set("light_bolt_cooldown_left", maxf(0.4, light_bolt_cooldown_value))
+			arena.healer.set("basic_heal_cooldown_left", 0.0)
+			arena.healer.set("heal_timer_left", 0.0)
+		healer_tidal_wave_setup_done = true
+		_write_log("Healer tidal wave setup applied")
+
+	if is_instance_valid(arena.healer):
+		var active_waves: Variant = arena.healer.get("active_tidal_waves")
+		if active_waves is Array and (active_waves as Array).size() > 0:
+			_finish(0, "healer_tidal_wave")
+			return
+
+	var to_boss := boss_enemy.global_position - player.global_position
+	var desired_distance := 128.0
+	if to_boss.length() > desired_distance + 14.0:
+		Input.action_release("block")
+		_set_move_inputs(to_boss.normalized())
+	elif to_boss.length() < desired_distance - 16.0:
+		Input.action_release("block")
+		_set_move_inputs((-to_boss).normalized())
+	else:
+		_set_move_inputs(Vector2.ZERO)
+		Input.action_press("block")
+
+
+func _step_healer_respects_fear_scenario() -> void:
+	if not is_instance_valid(player) or not is_instance_valid(arena):
+		return
+	var boss_enemy := _get_boss_enemy()
+	if boss_enemy == null:
+		return
+
+	arena.allow_multiple_minotaurs = false
+	arena.max_active_minotaurs = 1
+	arena.timed_extra_minotaur_enabled = false
+	boss_enemy.boss_can_summon_minions = false
+	boss_enemy.boss_summon_count = 0
+	boss_enemy.spin_attack_enabled = false
+	boss_enemy.use_single_phase_loop = false
+	boss_enemy.move_speed = 0.0
+	boss_enemy.attack_cooldown = maxf(boss_enemy.attack_cooldown, 3.5)
+	boss_enemy.attack_damage = minf(boss_enemy.attack_damage, 2.0)
+	boss_enemy.max_health = maxf(boss_enemy.max_health, 1000.0)
+	boss_enemy.current_health = boss_enemy.max_health
+
+	if not healer_respects_fear_setup_done:
+		_apply_healer_tidal_wave_layout(boss_enemy)
+		if is_instance_valid(player):
+			player.current_health = maxf(1.0, player.current_health - 24.0)
+			healer_respects_fear_health_floor = player.current_health
+			if player.has_method("_update_health_bar"):
+				player.call("_update_health_bar")
+		if is_instance_valid(arena.healer):
+			arena.healer.set("tidal_wave_cooldown_left", 0.0)
+			arena.healer.set("light_bolt_cooldown_left", 0.0)
+			arena.healer.set("basic_heal_cooldown_left", 0.0)
+			arena.healer.set("heal_timer_left", 0.0)
+		if boss_enemy.has_method("apply_shadow_fear"):
+			boss_enemy.call("apply_shadow_fear", 5.0)
+		healer_respects_fear_setup_done = true
+		healer_respects_fear_start_time = elapsed
+		_write_log("Healer respects fear setup applied")
+
+	_set_move_inputs(Vector2.ZERO)
+	Input.action_press("block")
+
+	var scenario_elapsed := maxf(0.0, elapsed - healer_respects_fear_start_time)
+	var fear_active := bool(boss_enemy.call("is_shadow_fear_active")) if boss_enemy.has_method("is_shadow_fear_active") else false
+	if scenario_elapsed >= 0.45 and not fear_active:
+		_finish(1, "healer_broke_fear")
+		return
+	var player_healed := is_instance_valid(player) and player.current_health > healer_respects_fear_health_floor + 0.1
+	if scenario_elapsed >= 2.4:
+		if not fear_active:
+			_finish(1, "healer_broke_fear")
+			return
+		if not player_healed:
+			_finish(1, "healer_no_heal")
+			return
+		_finish(0, "healer_respects_fear")
+		return
+
+
 func _apply_shadow_fear_opening_layout(primary_enemy: EnemyBase) -> void:
 	if shadow_fear_layout_applied:
 		return
@@ -315,6 +444,34 @@ func _apply_shadow_fear_opening_layout(primary_enemy: EnemyBase) -> void:
 		first_enemy.velocity = Vector2.ZERO
 	shadow_fear_layout_applied = true
 	_write_log("Shadow fear layout variant=%d" % posmod(shadow_fear_layout_variant, 3))
+
+
+func _apply_healer_tidal_wave_layout(primary_enemy: EnemyBase) -> void:
+	if not is_instance_valid(arena) or not is_instance_valid(player) or not is_instance_valid(arena.healer):
+		return
+	if primary_enemy == null or not is_instance_valid(primary_enemy) or primary_enemy.dead:
+		return
+	var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+	var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+	var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+	var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+	var player_pos := Vector2(max_x - 430.0, clampf(16.0, min_y + 8.0, max_y - 8.0))
+	var healer_pos := Vector2(max_x - 560.0, clampf(12.0, min_y + 8.0, max_y - 8.0))
+	var rat_pos := Vector2(max_x - 470.0, clampf(-12.0, min_y + 8.0, max_y - 8.0))
+	var enemy_pos := Vector2(max_x - 230.0, clampf(14.0, min_y + 8.0, max_y - 8.0))
+	player.global_position = arena.to_global(player_pos)
+	player.velocity = Vector2.ZERO
+	var healer_body := arena.healer as Node2D
+	if healer_body != null:
+		healer_body.global_position = arena.to_global(healer_pos)
+	var rat_body := arena.ratfolk as CharacterBody2D
+	if rat_body != null:
+		rat_body.global_position = arena.to_global(rat_pos)
+		rat_body.velocity = Vector2.ZERO
+	var enemy_body := primary_enemy as CharacterBody2D
+	if enemy_body != null:
+		enemy_body.global_position = arena.to_global(enemy_pos)
+		enemy_body.velocity = Vector2.ZERO
 
 
 func _refresh_refs() -> void:

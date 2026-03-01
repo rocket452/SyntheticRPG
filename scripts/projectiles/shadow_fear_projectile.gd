@@ -1,9 +1,13 @@
 extends Node2D
 class_name ShadowFearProjectile
 
-const PROJECTILE_TEXTURE_PATH: String = "res://assets/vfx/opengameart/shadow_fear_projectile_pure_08.png"
+const PROJECTILE_TEXTURE_PATH: String = "res://assets/external/DarkEffects/Dark VFX 1 (40x32).png"
+const PROJECTILE_FRAME_SIZE: Vector2i = Vector2i(40, 32)
+const PROJECTILE_FRAME_COUNT: int = 10
+const PROJECTILE_TRAVEL_ROW: int = 0
 
 static var projectile_texture_cache: Texture2D = null
+static var projectile_frames_cache: SpriteFrames = null
 
 @export var hit_radius: float = 18.0
 @export var pulse_speed: float = 10.0
@@ -20,11 +24,14 @@ var visual_time: float = 0.0
 var launch_hold_left: float = 0.0
 var projectile_sprite_base_scale: Vector2 = Vector2.ONE
 var projectile_sprite_base_modulate: Color = Color.WHITE
+var projectile_glow_base_scale: Vector2 = Vector2.ONE
+var projectile_glow_base_modulate: Color = Color.WHITE
 
 @onready var trail: Line2D = $Trail
 @onready var halo: Polygon2D = $Halo
 @onready var core: Polygon2D = $Core
-@onready var projectile_sprite: Sprite2D = get_node_or_null("ProjectileSprite") as Sprite2D
+@onready var projectile_sprite: AnimatedSprite2D = get_node_or_null("ProjectileSprite") as AnimatedSprite2D
+@onready var projectile_glow: AnimatedSprite2D = get_node_or_null("ProjectileGlow") as AnimatedSprite2D
 
 
 func setup(source_rat: FriendlyRatfolk, start_position: Vector2, direction_sign: float, speed: float, max_distance: float, duration: float, target_enemy: EnemyBase = null) -> void:
@@ -41,11 +48,23 @@ func setup(source_rat: FriendlyRatfolk, start_position: Vector2, direction_sign:
 
 
 func _ready() -> void:
+	var projectile_frames := _get_projectile_frames()
 	if projectile_sprite != null:
-		if projectile_sprite.texture == null:
-			projectile_sprite.texture = _get_projectile_texture()
+		if projectile_sprite.sprite_frames == null:
+			projectile_sprite.sprite_frames = projectile_frames
+		if projectile_sprite.sprite_frames != null and projectile_sprite.sprite_frames.has_animation("fly"):
+			projectile_sprite.animation = "fly"
+			projectile_sprite.play("fly")
 		projectile_sprite_base_scale = Vector2(absf(projectile_sprite.scale.x), absf(projectile_sprite.scale.y))
 		projectile_sprite_base_modulate = projectile_sprite.modulate
+	if projectile_glow != null:
+		if projectile_glow.sprite_frames == null:
+			projectile_glow.sprite_frames = projectile_frames
+		if projectile_glow.sprite_frames != null and projectile_glow.sprite_frames.has_animation("fly"):
+			projectile_glow.animation = "fly"
+			projectile_glow.play("fly")
+		projectile_glow_base_scale = Vector2(absf(projectile_glow.scale.x), absf(projectile_glow.scale.y))
+		projectile_glow_base_modulate = projectile_glow.modulate
 	_refresh_visual_orientation()
 
 
@@ -76,6 +95,8 @@ func _refresh_visual_orientation() -> void:
 		core.scale.x = facing_sign
 	if projectile_sprite != null:
 		projectile_sprite.scale = Vector2(projectile_sprite_base_scale.x * facing_sign, projectile_sprite_base_scale.y)
+	if projectile_glow != null:
+		projectile_glow.scale = Vector2(projectile_glow_base_scale.x * facing_sign, projectile_glow_base_scale.y)
 
 
 func _update_visuals(delta: float) -> void:
@@ -93,12 +114,11 @@ func _update_visuals(delta: float) -> void:
 		core.scale = Vector2.ONE * lerpf(0.92, 1.1, 1.0 - pulse)
 		core.color.a = lerpf(0.58, 0.9, 1.0 - pulse)
 	if projectile_sprite != null:
-		var pulse_x := lerpf(0.96, 1.08, pulse)
-		var pulse_y := lerpf(0.94, 1.04, 1.0 - pulse)
-		projectile_sprite.scale = Vector2(projectile_sprite_base_scale.x * pulse_x * facing_sign, projectile_sprite_base_scale.y * pulse_y)
-		var sprite_modulate := projectile_sprite_base_modulate
-		sprite_modulate.a = lerpf(0.78, projectile_sprite_base_modulate.a, pulse)
-		projectile_sprite.modulate = sprite_modulate
+		projectile_sprite.scale = Vector2(projectile_sprite_base_scale.x * facing_sign, projectile_sprite_base_scale.y)
+		projectile_sprite.modulate = projectile_sprite_base_modulate
+	if projectile_glow != null:
+		projectile_glow.scale = Vector2(projectile_glow_base_scale.x * facing_sign, projectile_glow_base_scale.y)
+		projectile_glow.modulate = projectile_glow_base_modulate
 
 
 func _try_hit_enemy(segment_start: Vector2, segment_end: Vector2) -> bool:
@@ -143,6 +163,28 @@ func _segment_hits_target(segment_start: Vector2, segment_end: Vector2, target: 
 	var travel_t := clampf((target - segment_start).dot(segment) / segment_length_sq, 0.0, 1.0)
 	var nearest_point := segment_start + (segment * travel_t)
 	return nearest_point.distance_squared_to(target) <= radius * radius
+
+
+func _get_projectile_frames() -> SpriteFrames:
+	if projectile_frames_cache != null:
+		return projectile_frames_cache
+	var sheet_texture := _get_projectile_texture()
+	if sheet_texture == null:
+		return null
+	var frames := SpriteFrames.new()
+	frames.add_animation("fly")
+	frames.set_animation_speed("fly", 18.0)
+	frames.set_animation_loop("fly", true)
+	var frame_width := maxi(1, PROJECTILE_FRAME_SIZE.x)
+	var frame_height := maxi(1, PROJECTILE_FRAME_SIZE.y)
+	var frame_row_y := maxi(0, PROJECTILE_TRAVEL_ROW) * frame_height
+	for frame_index in range(PROJECTILE_FRAME_COUNT):
+		var atlas := AtlasTexture.new()
+		atlas.atlas = sheet_texture
+		atlas.region = Rect2i(frame_index * frame_width, frame_row_y, frame_width, frame_height)
+		frames.add_frame("fly", atlas)
+	projectile_frames_cache = frames
+	return projectile_frames_cache
 
 
 func _get_projectile_texture() -> Texture2D:

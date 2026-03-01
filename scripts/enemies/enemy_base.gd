@@ -1,10 +1,13 @@
 extends CharacterBody2D
 class_name EnemyBase
 
-const SHADOW_FEAR_DEBUFF_TEXTURE_PATH: String = "res://assets/vfx/opengameart/shadow_fear_debuff_pure_21.png"
-const SHADOW_FEAR_DEBUFF_SPRITE_SCALE: Vector2 = Vector2(0.42, 0.42)
+const SHADOW_FEAR_DEBUFF_TEXTURE_PATH: String = "res://assets/external/DarkEffects/Dark VFX 2 (48x64).png"
+const SHADOW_FEAR_DEBUFF_FRAME_SIZE: Vector2i = Vector2i(48, 64)
+const SHADOW_FEAR_DEBUFF_FRAME_COUNT: int = 16
+const SHADOW_FEAR_DEBUFF_SPRITE_SCALE: Vector2 = Vector2(1.7, 1.7)
 
 static var shadow_fear_debuff_texture_cache: Texture2D = null
+static var shadow_fear_debuff_frames_cache: SpriteFrames = null
 
 signal died(enemy: EnemyBase)
 signal summon_minions_requested(enemy: EnemyBase, count: int)
@@ -248,7 +251,7 @@ var shadow_fear_left: float = 0.0
 var shadow_fear_apply_count: int = 0
 var shadow_fear_vfx_time: float = 0.0
 var shadow_fear_vfx_root: Node2D = null
-var shadow_fear_vfx_sprite: Sprite2D = null
+var shadow_fear_vfx_sprite: AnimatedSprite2D = null
 
 @onready var shadow_visual: Polygon2D = $Shadow
 @onready var body_visual: Polygon2D = $Body
@@ -379,6 +382,27 @@ func _get_shadow_fear_debuff_texture() -> Texture2D:
 	return shadow_fear_debuff_texture_cache
 
 
+func _get_shadow_fear_debuff_frames() -> SpriteFrames:
+	if shadow_fear_debuff_frames_cache != null:
+		return shadow_fear_debuff_frames_cache
+	var sheet_texture := _get_shadow_fear_debuff_texture()
+	if sheet_texture == null:
+		return null
+	var frames := SpriteFrames.new()
+	frames.add_animation("loop")
+	frames.set_animation_speed("loop", 16.0)
+	frames.set_animation_loop("loop", true)
+	var frame_width := maxi(1, SHADOW_FEAR_DEBUFF_FRAME_SIZE.x)
+	var frame_height := maxi(1, SHADOW_FEAR_DEBUFF_FRAME_SIZE.y)
+	for frame_index in range(SHADOW_FEAR_DEBUFF_FRAME_COUNT):
+		var atlas := AtlasTexture.new()
+		atlas.atlas = sheet_texture
+		atlas.region = Rect2i(frame_index * frame_width, 0, frame_width, frame_height)
+		frames.add_frame("loop", atlas)
+	shadow_fear_debuff_frames_cache = frames
+	return shadow_fear_debuff_frames_cache
+
+
 func is_shadow_fear_active() -> bool:
 	return shadow_fear_left > 0.0
 
@@ -456,14 +480,17 @@ func _spawn_shadow_fear_vfx() -> void:
 	shadow_fear_vfx_root.name = "ShadowFearVfx"
 	shadow_fear_vfx_root.z_index = 5
 	add_child(shadow_fear_vfx_root)
-	shadow_fear_vfx_sprite = Sprite2D.new()
-	shadow_fear_vfx_sprite.name = "FearBurst"
-	shadow_fear_vfx_sprite.centered = true
+	shadow_fear_vfx_sprite = AnimatedSprite2D.new()
+	shadow_fear_vfx_sprite.name = "FearLoop"
 	shadow_fear_vfx_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	shadow_fear_vfx_sprite.texture = _get_shadow_fear_debuff_texture()
+	shadow_fear_vfx_sprite.centered = true
+	shadow_fear_vfx_sprite.sprite_frames = _get_shadow_fear_debuff_frames()
+	if shadow_fear_vfx_sprite.sprite_frames != null and shadow_fear_vfx_sprite.sprite_frames.has_animation("loop"):
+		shadow_fear_vfx_sprite.animation = "loop"
+		shadow_fear_vfx_sprite.play("loop")
 	shadow_fear_vfx_sprite.position = Vector2.ZERO
 	shadow_fear_vfx_sprite.scale = SHADOW_FEAR_DEBUFF_SPRITE_SCALE
-	shadow_fear_vfx_sprite.modulate = Color(0.64, 0.3, 0.9, 0.9)
+	shadow_fear_vfx_sprite.modulate = Color(1, 1, 1, 0.96)
 	shadow_fear_vfx_root.add_child(shadow_fear_vfx_sprite)
 
 	_update_shadow_fear_vfx(0.0)
@@ -477,10 +504,10 @@ func _update_shadow_fear_vfx(delta: float) -> void:
 	var sway := sin(shadow_fear_vfx_time * 8.2)
 	shadow_fear_vfx_root.position = Vector2(sway * 1.8, -28.0 + (sin(shadow_fear_vfx_time * 3.2) * 3.2))
 	if shadow_fear_vfx_sprite != null and is_instance_valid(shadow_fear_vfx_sprite):
-		var sprite_scale := lerpf(0.36, 0.54, pulse)
+		var sprite_scale := lerpf(SHADOW_FEAR_DEBUFF_SPRITE_SCALE.x * 0.9, SHADOW_FEAR_DEBUFF_SPRITE_SCALE.x * 1.15, pulse)
 		shadow_fear_vfx_sprite.scale = Vector2(sprite_scale, sprite_scale)
-		shadow_fear_vfx_sprite.rotation = sway * 0.12
-		shadow_fear_vfx_sprite.modulate = Color(0.6 + (pulse * 0.18), 0.24 + (pulse * 0.14), 0.86 + (pulse * 0.12), lerpf(0.62, 1.0, pulse))
+		shadow_fear_vfx_sprite.rotation = sway * 0.08
+		shadow_fear_vfx_sprite.modulate = Color(1, 1, 1, lerpf(0.86, 1.0, pulse))
 
 
 func _shadow_fear_teardown_vfx() -> void:
@@ -965,9 +992,6 @@ func _tick_boss_mark_state(delta: float) -> void:
 	if mark_target == null:
 		_set_boss_loop_state(BossLoopState.IDLE, 0.0)
 		return
-	var to_marked := mark_target.global_position - global_position
-	if to_marked.length_squared() > 0.0001:
-		committed_attack_facing_direction = to_marked.normalized()
 	_tick_boss_state_timer(delta)
 	if boss_state_time_left <= 0.0:
 		_set_boss_loop_state(BossLoopState.WINDUP, boss_windup_duration)
@@ -979,9 +1003,6 @@ func _tick_boss_windup_state(delta: float) -> void:
 	if mark_target == null:
 		_set_boss_loop_state(BossLoopState.IDLE, 0.0)
 		return
-	var to_marked := mark_target.global_position - global_position
-	if to_marked.length_squared() > 0.0001:
-		committed_attack_facing_direction = to_marked.normalized()
 	_tick_boss_state_timer(delta)
 	if boss_state_time_left > 0.0:
 		return
@@ -1132,13 +1153,8 @@ func _tick_pending_basic_block_success_fx(delta: float) -> void:
 func _tick_boss_lunge_state(delta: float) -> void:
 	var lunge_step_distance := maxf(0.0, boss_lunge_speed) * maxf(0.0, delta)
 	if not boss_lunge_impact_triggered:
-		if _is_valid_mark_target(boss_marked_ally):
-			var to_marked := boss_marked_ally.global_position - global_position
-			if to_marked.length_squared() > 0.0001:
-				var desired_lunge_direction := to_marked.normalized()
-				var steer_blend := clampf(delta * maxf(0.0, boss_lunge_steer_rate), 0.0, 1.0)
-				boss_lunge_direction = boss_lunge_direction.slerp(desired_lunge_direction, steer_blend).normalized()
-				committed_attack_facing_direction = boss_lunge_direction
+		if boss_lunge_direction.length_squared() > 0.0001:
+			committed_attack_facing_direction = boss_lunge_direction.normalized()
 		var collateral_unlock_distance := maxf(0.0, boss_lunge_collateral_trigger_travel)
 		var allow_collateral_impact := boss_lunge_travel_distance >= collateral_unlock_distance
 		var shield_unlock_distance := minf(collateral_unlock_distance, maxf(8.0, boss_lunge_collateral_trigger_travel * 0.5))
@@ -1200,6 +1216,8 @@ func _tick_boss_lunge_state(delta: float) -> void:
 
 
 func _face_player_after_lunge() -> void:
+	if attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0:
+		return
 	var player_node := player as Node2D
 	if player_node == null or not is_instance_valid(player_node):
 		return
@@ -2172,7 +2190,8 @@ func _update_visuals(delta: float, to_player: Vector2) -> void:
 func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vector2) -> void:
 	var lock_facing_from_hit := stun_left > 0.0 or hurt_anim_left > 0.0
 	var facing := external_sprite_facing_direction if lock_facing_from_hit else to_player
-	if not lock_facing_from_hit and (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0 or spin_active_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001:
+	var lunge_charge_visual_active := _is_lunge_charge_visual_active()
+	if not lock_facing_from_hit and (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0 or spin_active_left > 0.0 or lunge_charge_visual_active) and committed_attack_facing_direction.length_squared() > 0.0001:
 		facing = committed_attack_facing_direction
 	elif not lock_facing_from_hit and velocity.length_squared() > 0.001:
 		facing = velocity
@@ -2184,7 +2203,6 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	var has_cosmetic_hurt_anim := cosmetic_hurt_anim_left > 0.0 and not _is_combat_action_active_for_periodic_hurt()
 	var displayed_hurt_left := hurt_anim_left if has_true_hurt_anim else cosmetic_hurt_anim_left
 	var displayed_hurt_duration := hurt_anim_duration if has_true_hurt_anim else periodic_hurt_anim_duration
-	var lunge_charge_visual_active := _is_lunge_charge_visual_active()
 
 	var action_key := "idle"
 	if dead:
@@ -2212,7 +2230,11 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		return
 
 	monster_sprite.position = monster_sprite_base_position
-	monster_sprite.flip_h = facing.x < -0.01
+	var facing_flip_deadzone := 0.08
+	if facing.x < -facing_flip_deadzone:
+		monster_sprite.flip_h = true
+	elif facing.x > facing_flip_deadzone:
+		monster_sprite.flip_h = false
 
 	var sheet := MONSTER_TEXTURES.get(action_key) as Texture2D
 	if sheet == null:
@@ -2268,6 +2290,12 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		frame_index = int(floor(monster_anim_time)) % frame_count
 	var source_column := int(frame_columns[frame_index]) if has_custom_columns else frame_index
 	monster_sprite.frame_coords = Vector2i(source_column, row)
+	var hit_flash_strength := clampf(hit_flash_left / 0.12, 0.0, 1.0)
+	if hit_flash_strength > 0.0:
+		var fade := 1.0 - (hit_flash_strength * 0.62)
+		monster_sprite.modulate = Color(1.0, fade, fade, 1.0)
+	else:
+		monster_sprite.modulate = Color(1.0, 1.0, 1.0, 1.0)
 
 
 func _pick_debug_facing_row(direction: Vector2, fallback_row: int = 6) -> int:
@@ -2426,7 +2454,9 @@ func _die() -> void:
 
 
 func _start_attack_animation(duration: float, strength: float) -> void:
-	var attack_facing := external_sprite_facing_direction
+	var attack_facing := committed_attack_facing_direction
+	if attack_facing.length_squared() <= 0.0001:
+		attack_facing = external_sprite_facing_direction
 	if attack_facing.length_squared() <= 0.0001 and is_instance_valid(player):
 		attack_facing = (player.global_position - global_position).normalized()
 	if attack_facing.length_squared() <= 0.0001:

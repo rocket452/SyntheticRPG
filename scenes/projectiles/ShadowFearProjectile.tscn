@@ -1,6 +1,9 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://scripts/projectiles/shadow_fear_projectile.gd" id="1_6l0pe"]
+
+[sub_resource type="CanvasItemMaterial" id="CanvasItemMaterial_b3syr"]
+blend_mode = 1
 
 [node name="ShadowFearProjectile" type="Node2D"]
 z_index = 4
@@ -26,6 +29,12 @@ visible = false
 color = Color(0.62, 0.36, 0.78, 0.84)
 polygon = PackedVector2Array(-4, 0, 0, -3, 4, 0, 0, 3)
 
-[node name="ProjectileSprite" type="Sprite2D" parent="."]
-modulate = Color(0.68, 0.44, 0.92, 0.92)
-scale = Vector2(0.42, 0.42)
+[node name="ProjectileSprite" type="AnimatedSprite2D" parent="."]
+modulate = Color(1, 1, 1, 1)
+scale = Vector2(1.26, 1.26)
+
+[node name="ProjectileGlow" type="AnimatedSprite2D" parent="."]
+material = SubResource("CanvasItemMaterial_b3syr")
+z_index = -1
+modulate = Color(0.72, 0.44, 1, 0.78)
+scale = Vector2(1.84, 1.84)

@@ -51,6 +51,7 @@ var spawn_next_debug_enemy_on_left: bool = true
 var demo_elapsed: float = 0.0
 var timed_extra_minotaur_spawned: bool = false
 var initial_minotaur_spawn_on_left: bool = false
+var spawned_minotaurs_total: int = 0
 var rng := RandomNumberGenerator.new()
 
 
@@ -76,6 +77,7 @@ func start_demo() -> void:
 	demo_elapsed = 0.0
 	timed_extra_minotaur_spawned = false
 	initial_minotaur_spawn_on_left = false
+	spawned_minotaurs_total = 0
 	_spawn_player()
 	_spawn_friendly_healer()
 	_spawn_friendly_ratfolk()
@@ -137,9 +139,7 @@ func _spawn_friendly_ratfolk() -> void:
 func _spawn_regular_enemies() -> void:
 	alive_regular_enemies = 0
 	var spawn_count := regular_enemy_count
-	var minotaur_cap := maxi(1, max_active_minotaurs)
-	if not allow_multiple_minotaurs:
-		minotaur_cap = 1
+	var minotaur_cap := _get_minotaur_spawn_cap()
 	spawn_count = mini(spawn_count, minotaur_cap)
 	if spawn_count >= 2:
 		_spawn_edge_minotaur_on_side(false, -24.0)
@@ -162,11 +162,14 @@ func _spawn_regular_enemies() -> void:
 		if enemy == null:
 			continue
 		enemy.is_miniboss = true
+		enemy.boss_can_summon_minions = false
+		enemy.boss_summon_count = 0
 		enemy.max_health = maxf(10.0, enemy.max_health * miniboss_health_scale)
 		enemy.current_health = enemy.max_health
 		if alive_regular_enemies <= 0:
 			initial_minotaur_spawn_on_left = spawn_position.x < _get_arena_center_x()
 		alive_regular_enemies += 1
+		spawned_minotaurs_total += 1
 
 
 func spawn_debug_minotaur_alternating() -> void:
@@ -215,19 +218,29 @@ func _spawn_edge_minotaur_on_side(spawn_on_left: bool, vertical_offset: float = 
 	if enemy == null:
 		return
 	enemy.is_miniboss = true
+	enemy.boss_can_summon_minions = false
+	enemy.boss_summon_count = 0
 	enemy.max_health = maxf(10.0, enemy.max_health * miniboss_health_scale)
 	enemy.current_health = enemy.max_health
 	if alive_regular_enemies <= 0:
 		initial_minotaur_spawn_on_left = spawn_on_left
 	alive_regular_enemies += 1
+	spawned_minotaurs_total += 1
 	_update_objective()
 
 
 func _can_spawn_additional_minotaur() -> bool:
+	var minotaur_cap := _get_minotaur_spawn_cap()
+	if spawned_minotaurs_total >= minotaur_cap:
+		return false
+	return _count_alive_minotaurs() < minotaur_cap
+
+
+func _get_minotaur_spawn_cap() -> int:
 	var minotaur_cap := maxi(1, max_active_minotaurs)
 	if not allow_multiple_minotaurs:
 		minotaur_cap = 1
-	return _count_alive_minotaurs() < minotaur_cap
+	return minotaur_cap
 
 
 func _count_alive_minotaurs() -> int:

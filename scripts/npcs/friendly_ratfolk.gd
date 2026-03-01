@@ -33,7 +33,7 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var attack_range: float = 82.0
 @export var attack_arc_degrees: float = 95.0
 @export var attack_depth_tolerance: float = 58.0
-@export var preferred_attack_spacing: float = 40.0
+@export var preferred_attack_spacing: float = 48.0
 @export var preferred_attack_spacing_tolerance: float = 8.0
 @export var attack_range_indicator_duration: float = 0.14
 @export var attack_range_indicator_width: float = 2.6
@@ -391,7 +391,7 @@ func _tick_combat_logic(delta: float) -> void:
 
 	if attack_windup_left > 0.0:
 		attack_windup_left = maxf(0.0, attack_windup_left - delta)
-		velocity = Vector2.ZERO
+		velocity = _compute_attack_hold_spacing_velocity(target_enemy)
 		if attack_windup_left <= 0.0:
 			_perform_attack()
 			attack_recovery_left = maxf(0.01, attack_recovery)
@@ -399,7 +399,7 @@ func _tick_combat_logic(delta: float) -> void:
 
 	if attack_recovery_left > 0.0:
 		attack_recovery_left = maxf(0.0, attack_recovery_left - delta)
-		velocity = Vector2.ZERO
+		velocity = _compute_attack_hold_spacing_velocity(target_enemy)
 		return
 
 	if is_shadow_clone and shadow_clone_scatter_left > 0.0:
@@ -745,6 +745,18 @@ func _compute_reposition_velocity(enemy: EnemyBase, to_enemy: Vector2, distance_
 	elif orbit_direction.y * orbit_sign < 0.0:
 		orbit_direction = -orbit_direction
 	return orbit_direction.normalized() * move_speed * 0.34
+
+
+func _compute_attack_hold_spacing_velocity(enemy: EnemyBase) -> Vector2:
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+		return Vector2.ZERO
+	var to_enemy := enemy.global_position - global_position
+	var distance_to_enemy := to_enemy.length()
+	var too_close := distance_to_enemy < (_get_attack_spacing_min() + 2.0)
+	var depth_misaligned := absf(to_enemy.y) > (attack_depth_tolerance * 1.15)
+	if too_close or depth_misaligned:
+		return _compute_reposition_velocity(enemy, to_enemy, distance_to_enemy)
+	return Vector2.ZERO
 
 
 func _get_preferred_attack_position(enemy: EnemyBase) -> Vector2:
@@ -1748,7 +1760,7 @@ func _spawn_attack_range_indicator() -> void:
 	indicator.z_index = 229
 	scene_root.add_child(indicator)
 
-	var attack_radius := attack_range * 1.12
+	var attack_radius := attack_range * 0.28
 	var arc := Line2D.new()
 	arc.default_color = Color(1.0, 0.82, 0.42, 0.84)
 	arc.width = maxf(1.4, attack_range_indicator_width)

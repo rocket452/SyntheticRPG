@@ -24,6 +24,7 @@ enum CastAction {
 	NONE,
 	QUICK_HEAL,
 	PROTECTIVE_SHIELD,
+	TIDAL_WAVE,
 	LIGHT_BOLT
 }
 
@@ -110,9 +111,13 @@ enum CastAction {
 @export var miniboss_soft_collision_max_push_per_frame: float = 5.6
 
 const HEALER_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/fishfolk/Fishfolk Archpriest Sprite Sheet.png")
-const TIDAL_WAVE_SHEET_PATH: String = "res://assets/external/wave_fx/tidal_wave_sheet/animated_water_24x129x96.png"
-const TIDAL_WAVE_FRAME_SIZE: Vector2i = Vector2i(192, 96)
-const TIDAL_WAVE_FRAME_COUNT: int = 24
+const TIDAL_WAVE_STARTUP_SHEET_PATH: String = "res://assets/external/Water Blast - Spritesheet/Water Blast - Startup and Infinite.png"
+const TIDAL_WAVE_END_SHEET_PATH: String = "res://assets/external/Water Blast - Spritesheet/Water Blast - End.png"
+const TIDAL_WAVE_FRAME_SIZE: Vector2i = Vector2i(128, 128)
+const TIDAL_WAVE_STARTUP_FRAME_COUNT: int = 12
+const TIDAL_WAVE_LOOP_FRAME_START: int = 8
+const TIDAL_WAVE_LOOP_FRAME_END: int = 11
+const TIDAL_WAVE_END_FRAME_COUNT: int = 9
 const HEALER_HFRAMES: int = 9
 const HEALER_VFRAMES: int = 6
 const FRAME_ALPHA_THRESHOLD: float = 0.08
@@ -155,7 +160,8 @@ var frame_anchor_points: Dictionary = {}
 var alignment_anchor_point: Vector2 = Vector2.ZERO
 var active_tidal_waves: Array[Dictionary] = []
 var tidal_wave_sprite_frames: SpriteFrames = null
-var tidal_wave_sheet_texture: Texture2D = null
+var tidal_wave_startup_sheet_texture: Texture2D = null
+var tidal_wave_end_sheet_texture: Texture2D = null
 var move_velocity: Vector2 = Vector2.ZERO
 var orbit_phase: float = 0.0
 var smoothed_target_position: Vector2 = Vector2.ZERO
@@ -339,7 +345,7 @@ func _update_healer_ai_state(delta: float, primary_enemy: EnemyBase) -> void:
 
 	var attack_target := _find_healer_attack_target()
 	if attack_target != null:
-		if _needs_reposition(primary_enemy):
+		if _needs_reposition(primary_enemy) and not _should_prepare_tidal_wave(attack_target):
 			_set_healer_ai_state(HealerAIState.REPOSITIONING, player)
 		else:
 			_set_healer_ai_state(HealerAIState.ATTACKING, attack_target)
@@ -416,6 +422,8 @@ func _find_healer_attack_target() -> EnemyBase:
 		var enemy := enemy_node as EnemyBase
 		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
 			continue
+		if _is_enemy_shadow_feared(enemy):
+			continue
 		var distance_sq := global_position.distance_squared_to(enemy.global_position)
 		var enemy_id := enemy.get_instance_id()
 		if enemy.is_miniboss:
@@ -459,6 +467,10 @@ func _try_begin_ai_cast() -> void:
 	match healer_ai_state:
 		HealerAIState.HEALING:
 			var heal_target := _resolve_heal_target(healer_ai_target)
+			var wave_attack_target := _find_healer_attack_target()
+			if _should_cast_tidal_wave(wave_attack_target):
+				_queue_cast_action(CastAction.TIDAL_WAVE, wave_attack_target, 0.08)
+				return
 			if basic_heal_cooldown_left <= 0.0:
 				if _can_cast_basic_heal_on_target(heal_target):
 					_queue_cast_action(CastAction.QUICK_HEAL, heal_target, 0.08)
@@ -483,7 +495,10 @@ func _try_begin_ai_cast() -> void:
 			if light_bolt_enabled and light_bolt_cooldown_left <= 0.0 and _can_cast_light_bolt_on_target(attack_target):
 				_queue_cast_action(CastAction.LIGHT_BOLT, attack_target, 0.1)
 				return
-			heal_timer_left = maxf(0.1, light_bolt_cooldown_left)
+			var next_attack_ready := maxf(0.1, light_bolt_cooldown_left)
+			if tidal_wave_enabled:
+				next_attack_ready = minf(next_attack_ready, maxf(0.1, tidal_wave_cooldown_left))
+			heal_timer_left = next_attack_ready
 			return
 		_:
 			pass
@@ -501,6 +516,16 @@ func _queue_cast_action(action: CastAction, target: Node2D, next_timer: float) -
 	pending_cast_action = action
 	pending_cast_target = target
 	_log_cast_event("QUEUE", action, target)
+	if cast_debug_logging_enabled and action == CastAction.TIDAL_WAVE:
+		var evaluation := _evaluate_tidal_wave_targets(target)
+		print("[HEALER_CAST] TIDAL_WAVE_EVAL target=%s enemies=%d allies=%d injured_allies=%d target_in_lane=%s dir=%.0f" % [
+			target.name if target != null and is_instance_valid(target) else "None",
+			int(evaluation.get("enemy_hits", 0)),
+			int(evaluation.get("ally_hits", 0)),
+			int(evaluation.get("injured_allies", 0)),
+			str(bool(evaluation.get("target_in_lane", false))),
+			float((evaluation.get("direction", Vector2.RIGHT) as Vector2).x)
+		])
 	_begin_cast()
 	heal_timer_left = maxf(0.05, next_timer)
 
@@ -673,7 +698,7 @@ func _resolve_support_target(preferred_target: Node2D = null) -> Node2D:
 
 func _resolve_attack_target(preferred_target: Node2D = null) -> EnemyBase:
 	var preferred_enemy := preferred_target as EnemyBase
-	if preferred_enemy != null and is_instance_valid(preferred_enemy) and not preferred_enemy.dead:
+	if preferred_enemy != null and is_instance_valid(preferred_enemy) and not preferred_enemy.dead and not _is_enemy_shadow_feared(preferred_enemy):
 		return preferred_enemy
 	return _find_healer_attack_target()
 
@@ -689,7 +714,51 @@ func _can_cast_light_bolt_on_target(target: Node2D) -> bool:
 	var resolved_target := _resolve_attack_target(target)
 	if resolved_target == null:
 		return false
+	if _is_enemy_shadow_feared(resolved_target):
+		return false
 	return global_position.distance_squared_to(resolved_target.global_position) <= light_bolt_range * light_bolt_range
+
+
+func _can_cast_tidal_wave_on_target(target: Node2D) -> bool:
+	if not tidal_wave_enabled:
+		return false
+	var resolved_target := _resolve_attack_target(target)
+	if resolved_target == null:
+		return false
+	var evaluation := _evaluate_tidal_wave_targets(resolved_target)
+	if int(evaluation.get("enemy_hits", 0)) <= 0:
+		return false
+	if int(evaluation.get("injured_allies", 0)) <= 0:
+		return false
+	if not bool(evaluation.get("target_in_lane", false)):
+		return false
+	return true
+
+
+func _should_cast_tidal_wave(target: Node2D) -> bool:
+	if not tidal_wave_enabled or tidal_wave_cooldown_left > 0.0:
+		return false
+	var resolved_target := _resolve_attack_target(target)
+	if resolved_target == null:
+		return false
+	var evaluation := _evaluate_tidal_wave_targets(resolved_target)
+	var enemy_hits := int(evaluation.get("enemy_hits", 0))
+	if enemy_hits <= 0:
+		return false
+	var injured_allies := int(evaluation.get("injured_allies", 0))
+	if injured_allies <= 0:
+		return false
+	return bool(evaluation.get("target_in_lane", false))
+
+
+func _should_prepare_tidal_wave(target: Node2D) -> bool:
+	if not tidal_wave_enabled:
+		return false
+	if tidal_wave_cooldown_left > 0.3:
+		return false
+	if _resolve_attack_target(target) == null:
+		return false
+	return _find_best_tidal_wave_heal_target(target) != null
 
 
 func _apply_heal(target: Node2D = null) -> bool:
@@ -788,6 +857,8 @@ func _apply_light_bolt(target: Node2D) -> bool:
 	var bolt_target := _resolve_attack_target(target)
 	if bolt_target == null:
 		return false
+	if _is_enemy_shadow_feared(bolt_target):
+		return false
 	if not _can_cast_light_bolt_on_target(bolt_target):
 		return false
 	var hit_origin := global_position + Vector2(0.0, -16.0)
@@ -811,6 +882,10 @@ func _trigger_healing_ability() -> void:
 		CastAction.PROTECTIVE_SHIELD:
 			if shield_cooldown_left <= 0.0:
 				_apply_protective_shield(cast_target)
+		CastAction.TIDAL_WAVE:
+			if tidal_wave_enabled and tidal_wave_cooldown_left <= 0.0:
+				_spawn_tidal_wave(cast_target)
+				tidal_wave_cooldown_left = maxf(0.0, tidal_wave_cooldown)
 		CastAction.LIGHT_BOLT:
 			if light_bolt_enabled and light_bolt_cooldown_left <= 0.0:
 				_apply_light_bolt(cast_target)
@@ -825,6 +900,8 @@ func _is_healing_ability_ready() -> bool:
 		return true
 	if shield_cooldown_left <= 0.0:
 		return true
+	if tidal_wave_enabled and tidal_wave_cooldown_left <= 0.0:
+		return true
 	if light_bolt_enabled and light_bolt_cooldown_left <= 0.0:
 		return true
 	return false
@@ -833,6 +910,8 @@ func _is_healing_ability_ready() -> bool:
 func _time_until_next_healing_ability_ready() -> float:
 	var next_ready := maxf(0.0, basic_heal_cooldown_left)
 	next_ready = minf(next_ready, maxf(0.0, shield_cooldown_left))
+	if tidal_wave_enabled:
+		next_ready = minf(next_ready, maxf(0.0, tidal_wave_cooldown_left))
 	if light_bolt_enabled:
 		next_ready = minf(next_ready, maxf(0.0, light_bolt_cooldown_left))
 	return maxf(0.0, next_ready)
@@ -888,7 +967,12 @@ func _update_tactical_positioning(delta: float) -> void:
 			else:
 				desired_position = _clamp_to_bounds(shield_target_position + Vector2(-14.0, 10.0))
 	elif healer_ai_state == HealerAIState.HEALING:
-		desired_position = _compute_heal_approach_position(_resolve_heal_target(healer_ai_target))
+		var heal_target := _resolve_heal_target(healer_ai_target)
+		var wave_attack_target := _find_healer_attack_target()
+		if _should_prepare_tidal_wave(wave_attack_target):
+			desired_position = _compute_tidal_wave_attack_position(wave_attack_target)
+		else:
+			desired_position = _compute_heal_approach_position(heal_target)
 	elif healer_ai_state == HealerAIState.ATTACKING:
 		var attack_target := _resolve_attack_target(healer_ai_target)
 		if attack_target != null and is_instance_valid(attack_target):
@@ -1181,13 +1265,12 @@ func _next_heal_interval() -> float:
 	return maxf(0.9, heal_interval)
 
 
-func _spawn_tidal_wave() -> void:
+func _spawn_tidal_wave(target: Node2D = null) -> void:
 	var scene_root := get_tree().current_scene
 	if scene_root == null:
-		_apply_heal()
 		return
 
-	var wave_direction := _get_horizontal_facing_direction()
+	var wave_direction := _get_tidal_wave_direction(target)
 
 	var wave_node := Node2D.new()
 	wave_node.top_level = true
@@ -1201,7 +1284,6 @@ func _spawn_tidal_wave() -> void:
 	if sprite_frames.get_animation_names().is_empty():
 		if is_instance_valid(wave_node):
 			wave_node.queue_free()
-		_apply_heal()
 		return
 	var base_scale := Vector2(
 		maxf(0.2, tidal_wave_sprite_scale.x) * (0.85 + ((height_scale - 1.0) * 0.55)),
@@ -1210,28 +1292,14 @@ func _spawn_tidal_wave() -> void:
 
 	var wave_sprite := AnimatedSprite2D.new()
 	wave_sprite.sprite_frames = sprite_frames
-	wave_sprite.animation = "wave"
+	wave_sprite.animation = "startup"
 	wave_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	wave_sprite.centered = true
-	wave_sprite.position = Vector2(2.0, 2.0)
+	wave_sprite.position = Vector2(0.0, -2.0)
 	wave_sprite.scale = base_scale
-	wave_sprite.modulate = Color(0.9, 0.98, 1.0, 0.9)
+	wave_sprite.modulate = Color(0.92, 0.98, 1.0, 0.92)
 	wave_node.add_child(wave_sprite)
-	wave_sprite.play("wave")
-
-	var wave_overlay := AnimatedSprite2D.new()
-	wave_overlay.sprite_frames = sprite_frames
-	wave_overlay.animation = "wave"
-	wave_overlay.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	wave_overlay.centered = true
-	wave_overlay.position = Vector2(-9.0, -10.0)
-	wave_overlay.scale = base_scale * Vector2(0.8, 0.76)
-	wave_overlay.modulate = Color(0.7, 0.97, 1.0, 0.38)
-	var additive_material := CanvasItemMaterial.new()
-	additive_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
-	wave_overlay.material = additive_material
-	wave_node.add_child(wave_overlay)
-	wave_overlay.play("wave")
+	wave_sprite.play("startup")
 
 	active_tidal_waves.append({
 		"node": wave_node,
@@ -1241,7 +1309,7 @@ func _spawn_tidal_wave() -> void:
 		"height_scale": height_scale,
 		"base_scale": base_scale,
 		"sprite": wave_sprite,
-		"overlay": wave_overlay,
+		"startup_finished": false,
 		"droplet_timer": 0.0,
 		"healed_ids": {},
 		"hit_ids": {}
@@ -1252,6 +1320,15 @@ func _get_horizontal_facing_direction() -> Vector2:
 	if is_instance_valid(sprite) and sprite.flip_h:
 		return Vector2.LEFT
 	return Vector2.RIGHT
+
+
+func _get_tidal_wave_direction(target: Node2D = null) -> Vector2:
+	var attack_target := _resolve_attack_target(target)
+	if attack_target != null and is_instance_valid(attack_target):
+		var delta_x := attack_target.global_position.x - global_position.x
+		if absf(delta_x) > 4.0:
+			return Vector2.LEFT if delta_x < 0.0 else Vector2.RIGHT
+	return _get_horizontal_facing_direction()
 
 
 func _update_tidal_waves(delta: float) -> void:
@@ -1272,19 +1349,18 @@ func _update_tidal_waves(delta: float) -> void:
 		var base_scale: Vector2 = wave_state.get("base_scale", Vector2.ONE)
 		var droplet_timer := maxf(0.0, float(wave_state.get("droplet_timer", 0.0)) - delta)
 		var wave_sprite := wave_state.get("sprite") as AnimatedSprite2D
-		var wave_overlay := wave_state.get("overlay") as AnimatedSprite2D
+		var startup_finished := bool(wave_state.get("startup_finished", false))
 
 		wave_node.global_position += wave_direction * tidal_wave_speed * delta
 		var body_pulse := sin(travel_phase * 10.5)
 		var ripple_x := 1.0 + (sin(travel_phase * 8.8) * 0.06)
 		var ripple_y := 1.0 + (cos(travel_phase * 7.1) * 0.07)
 		if is_instance_valid(wave_sprite):
+			if not startup_finished and wave_sprite.animation == "startup" and wave_sprite.frame >= maxi(0, TIDAL_WAVE_STARTUP_FRAME_COUNT - 1):
+				startup_finished = true
+				wave_sprite.play("loop")
 			wave_sprite.scale = Vector2(base_scale.x * ripple_x, base_scale.y * ripple_y)
-			wave_sprite.modulate = Color(0.88 + (body_pulse * 0.04), 0.98, 1.0, 0.88)
-		if is_instance_valid(wave_overlay):
-			wave_overlay.scale = Vector2(base_scale.x * 0.8 * (1.0 + (sin(travel_phase * 11.6) * 0.08)), base_scale.y * 0.76 * (1.0 + (cos(travel_phase * 9.4) * 0.08)))
-			wave_overlay.position = Vector2(-9.0 + (sin(travel_phase * 8.0) * 2.0), -10.0 + (cos(travel_phase * 6.6) * 1.6))
-			wave_overlay.modulate = Color(0.7, 0.97, 1.0, 0.3 + ((body_pulse + 1.0) * 0.12))
+			wave_sprite.modulate = Color(0.9 + (body_pulse * 0.03), 0.98, 1.0, 0.84 + ((body_pulse + 1.0) * 0.04))
 		if time_left < 0.2:
 			wave_node.modulate.a = clampf(time_left / 0.2, 0.0, 1.0)
 		else:
@@ -1299,6 +1375,7 @@ func _update_tidal_waves(delta: float) -> void:
 		_process_tidal_wave_hits(wave_state, wave_node.global_position, wave_direction)
 
 		if time_left <= 0.0:
+			_spawn_tidal_wave_end_effect(wave_node.global_position, base_scale, wave_direction)
 			if is_instance_valid(wave_node):
 				wave_node.queue_free()
 			active_tidal_waves.remove_at(wave_index)
@@ -1307,19 +1384,47 @@ func _update_tidal_waves(delta: float) -> void:
 		wave_state["time_left"] = time_left
 		wave_state["travel_phase"] = travel_phase
 		wave_state["droplet_timer"] = droplet_timer
+		wave_state["startup_finished"] = startup_finished
 		active_tidal_waves[wave_index] = wave_state
 
 
 func _get_tidal_wave_sprite_frames() -> SpriteFrames:
 	if tidal_wave_sprite_frames != null:
 		return tidal_wave_sprite_frames
-	var sheet_texture := _get_tidal_wave_sheet_texture()
-	if sheet_texture == null:
+	var startup_texture := _get_tidal_wave_startup_sheet_texture()
+	var end_texture := _get_tidal_wave_end_sheet_texture()
+	if startup_texture == null:
 		return SpriteFrames.new()
 	var frames := SpriteFrames.new()
-	frames.add_animation("wave")
-	frames.set_animation_speed("wave", 15.0)
-	frames.set_animation_loop("wave", true)
+	frames.add_animation("startup")
+	frames.set_animation_speed("startup", 12.0)
+	frames.set_animation_loop("startup", false)
+	frames.add_animation("loop")
+	frames.set_animation_speed("loop", 10.0)
+	frames.set_animation_loop("loop", true)
+	frames.add_animation("end")
+	frames.set_animation_speed("end", 12.0)
+	frames.set_animation_loop("end", false)
+	var startup_frames := _build_tidal_wave_sheet_frames(startup_texture, TIDAL_WAVE_STARTUP_FRAME_COUNT)
+	for frame_texture in startup_frames:
+		frames.add_frame("startup", frame_texture)
+	for loop_index in range(TIDAL_WAVE_LOOP_FRAME_START, mini(TIDAL_WAVE_LOOP_FRAME_END + 1, startup_frames.size())):
+		frames.add_frame("loop", startup_frames[loop_index])
+	if frames.get_frame_count("loop") <= 0:
+		for frame_texture in startup_frames:
+			frames.add_frame("loop", frame_texture)
+	if end_texture != null:
+		var end_frames := _build_tidal_wave_sheet_frames(end_texture, TIDAL_WAVE_END_FRAME_COUNT)
+		for frame_texture in end_frames:
+			frames.add_frame("end", frame_texture)
+	tidal_wave_sprite_frames = frames
+	return tidal_wave_sprite_frames
+
+
+func _build_tidal_wave_sheet_frames(sheet_texture: Texture2D, max_frames: int) -> Array[AtlasTexture]:
+	var frames: Array[AtlasTexture] = []
+	if sheet_texture == null:
+		return frames
 	var frame_width := maxi(1, TIDAL_WAVE_FRAME_SIZE.x)
 	var frame_height := maxi(1, TIDAL_WAVE_FRAME_SIZE.y)
 	var sheet_width := maxi(frame_width, sheet_texture.get_width())
@@ -1329,29 +1434,68 @@ func _get_tidal_wave_sprite_frames() -> SpriteFrames:
 	var frames_added := 0
 	for row in range(rows):
 		for col in range(columns):
-			if frames_added >= TIDAL_WAVE_FRAME_COUNT:
-				break
+			if frames_added >= max_frames:
+				return frames
 			var atlas := AtlasTexture.new()
 			atlas.atlas = sheet_texture
 			atlas.region = Rect2i(col * frame_width, row * frame_height, frame_width, frame_height)
-			frames.add_frame("wave", atlas)
+			frames.append(atlas)
 			frames_added += 1
-		if frames_added >= TIDAL_WAVE_FRAME_COUNT:
-			break
-	tidal_wave_sprite_frames = frames
-	return tidal_wave_sprite_frames
+	return frames
 
 
-func _get_tidal_wave_sheet_texture() -> Texture2D:
-	if tidal_wave_sheet_texture != null:
-		return tidal_wave_sheet_texture
+func _get_tidal_wave_startup_sheet_texture() -> Texture2D:
+	if tidal_wave_startup_sheet_texture != null:
+		return tidal_wave_startup_sheet_texture
 	var image := Image.new()
-	var err := image.load(TIDAL_WAVE_SHEET_PATH)
+	var err := image.load(ProjectSettings.globalize_path(TIDAL_WAVE_STARTUP_SHEET_PATH))
 	if err != OK:
-		push_warning("Failed to load tidal wave sprite sheet at %s (error %s)." % [TIDAL_WAVE_SHEET_PATH, err])
+		push_warning("Failed to load tidal wave startup sprite sheet at %s (error %s)." % [TIDAL_WAVE_STARTUP_SHEET_PATH, err])
 		return null
-	tidal_wave_sheet_texture = ImageTexture.create_from_image(image)
-	return tidal_wave_sheet_texture
+	tidal_wave_startup_sheet_texture = ImageTexture.create_from_image(image)
+	return tidal_wave_startup_sheet_texture
+
+
+func _get_tidal_wave_end_sheet_texture() -> Texture2D:
+	if tidal_wave_end_sheet_texture != null:
+		return tidal_wave_end_sheet_texture
+	var image := Image.new()
+	var err := image.load(ProjectSettings.globalize_path(TIDAL_WAVE_END_SHEET_PATH))
+	if err != OK:
+		push_warning("Failed to load tidal wave end sprite sheet at %s (error %s)." % [TIDAL_WAVE_END_SHEET_PATH, err])
+		return null
+	tidal_wave_end_sheet_texture = ImageTexture.create_from_image(image)
+	return tidal_wave_end_sheet_texture
+
+
+func _spawn_tidal_wave_end_effect(world_position: Vector2, base_scale: Vector2, wave_direction: Vector2) -> void:
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		return
+	var sprite_frames := _get_tidal_wave_sprite_frames()
+	if sprite_frames == null or not sprite_frames.has_animation("end") or sprite_frames.get_frame_count("end") <= 0:
+		return
+	var end_sprite := AnimatedSprite2D.new()
+	end_sprite.top_level = true
+	end_sprite.global_position = world_position
+	end_sprite.rotation = 0.0 if wave_direction.x >= 0.0 else PI
+	end_sprite.z_index = 236
+	end_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	end_sprite.centered = true
+	end_sprite.sprite_frames = sprite_frames
+	end_sprite.animation = "end"
+	end_sprite.scale = base_scale
+	end_sprite.modulate = Color(0.92, 0.98, 1.0, 0.95)
+	scene_root.add_child(end_sprite)
+	end_sprite.play("end")
+	var total_frames: int = maxi(1, sprite_frames.get_frame_count("end"))
+	var lifetime := float(total_frames) / 12.0
+	var cleanup := create_tween()
+	cleanup.tween_interval(maxf(0.1, lifetime))
+	cleanup.finished.connect(func() -> void:
+		if is_instance_valid(end_sprite):
+			end_sprite.queue_free()
+	)
 
 
 func _process_tidal_wave_hits(wave_state: Dictionary, wave_center: Vector2, wave_direction: Vector2) -> void:
@@ -1360,25 +1504,47 @@ func _process_tidal_wave_hits(wave_state: Dictionary, wave_center: Vector2, wave
 	var healed_ids: Dictionary = wave_state.get("healed_ids", {}) as Dictionary
 	var hit_ids: Dictionary = wave_state.get("hit_ids", {}) as Dictionary
 
-	for friendly in get_tree().get_nodes_in_group("player"):
-		var friendly_player := friendly as Player
-		if friendly_player == null or not is_instance_valid(friendly_player):
+	var friendly_targets: Array[Node2D] = []
+	if is_instance_valid(player):
+		friendly_targets.append(player)
+	for friendly in get_tree().get_nodes_in_group("friendly_npcs"):
+		var friendly_actor := friendly as Node2D
+		if friendly_actor == null or not is_instance_valid(friendly_actor):
 			continue
-		var friendly_id := friendly_player.get_instance_id()
+		if friendly_actor == self:
+			friendly_targets.append(friendly_actor)
+			continue
+		if not _is_valid_support_target(friendly_actor):
+			continue
+		friendly_targets.append(friendly_actor)
+
+	var seen_friendly_ids: Dictionary = {}
+	for friendly_target in friendly_targets:
+		if friendly_target == null or not is_instance_valid(friendly_target):
+			continue
+		var friendly_id := friendly_target.get_instance_id()
+		if seen_friendly_ids.has(friendly_id):
+			continue
+		seen_friendly_ids[friendly_id] = true
 		if healed_ids.has(friendly_id):
 			continue
-		var friendly_distance := _distance_to_segment(friendly_player.global_position, sweep_start, sweep_end)
+		var friendly_distance := _distance_to_segment(friendly_target.global_position, sweep_start, sweep_end)
 		if friendly_distance > tidal_wave_hit_half_width:
 			continue
-		var healed := friendly_player.receive_heal(tidal_wave_heal_amount)
+		if not friendly_target.has_method("receive_heal"):
+			continue
+		var healed := bool(friendly_target.call("receive_heal", tidal_wave_heal_amount))
 		healed_ids[friendly_id] = true
-		var burst_position := friendly_player.global_position + Vector2(0.0, -16.0)
-		_spawn_heal_burst(burst_position, healed)
-		_spawn_heal_beam(wave_center, burst_position, healed)
+		if healed:
+			var burst_position := friendly_target.global_position + Vector2(0.0, -16.0)
+			_spawn_heal_burst(burst_position, true)
+			_spawn_heal_beam(wave_center, burst_position, true)
 
 	for enemy_node in get_tree().get_nodes_in_group("enemies"):
 		var enemy := enemy_node as EnemyBase
-		if enemy == null or not is_instance_valid(enemy):
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if _is_enemy_shadow_feared(enemy):
 			continue
 		var enemy_id := enemy.get_instance_id()
 		if hit_ids.has(enemy_id):
@@ -1388,9 +1554,10 @@ func _process_tidal_wave_hits(wave_state: Dictionary, wave_center: Vector2, wave
 			continue
 		hit_ids[enemy_id] = true
 		var landed := enemy.receive_hit(tidal_wave_damage, wave_center, tidal_wave_stun_duration, true, tidal_wave_knockback_scale)
-		if landed and enemy.has_method("apply_hitstop"):
-			enemy.apply_hitstop(maxf(0.0, tidal_wave_hitstop_duration))
-		_spawn_heal_burst(enemy.global_position + Vector2(0.0, -12.0), false)
+		if landed:
+			if enemy.has_method("apply_hitstop"):
+				enemy.apply_hitstop(maxf(0.0, tidal_wave_hitstop_duration))
+			_spawn_heal_burst(enemy.global_position + Vector2(0.0, -12.0), false)
 
 	wave_state["healed_ids"] = healed_ids
 	wave_state["hit_ids"] = hit_ids
@@ -1404,6 +1571,134 @@ func _distance_to_segment(point: Vector2, segment_start: Vector2, segment_end: V
 	var segment_t := clampf((point - segment_start).dot(segment) / segment_length_sq, 0.0, 1.0)
 	var closest_point := segment_start + (segment * segment_t)
 	return point.distance_to(closest_point)
+
+
+func _find_best_tidal_wave_heal_target(attack_target: Node2D = null) -> Node2D:
+	var target_position := attack_target.global_position if attack_target != null and is_instance_valid(attack_target) else Vector2.ZERO
+	var has_attack_target := attack_target != null and is_instance_valid(attack_target)
+	var missing_health_threshold := maxf(0.01, min_missing_health_to_heal)
+	var best_target: Node2D = null
+	var best_lane_delta := INF
+	var best_missing_health := -1.0
+	var best_id := INF
+	var candidates: Array[Node2D] = []
+	if is_instance_valid(player):
+		candidates.append(player)
+	for node in get_tree().get_nodes_in_group("friendly_npcs"):
+		var candidate := node as Node2D
+		if candidate == null or not is_instance_valid(candidate):
+			continue
+		if candidate != self and not _is_valid_support_target(candidate):
+			continue
+		candidates.append(candidate)
+	for candidate in candidates:
+		if candidate == null or not is_instance_valid(candidate):
+			continue
+		if not candidate.has_method("receive_heal"):
+			continue
+		var missing_health := _get_missing_health(candidate)
+		if missing_health < missing_health_threshold:
+			continue
+		if _is_marked_target_waiting_for_damage(candidate):
+			continue
+		var lane_delta := 0.0
+		if has_attack_target:
+			lane_delta = absf(candidate.global_position.y - target_position.y)
+		var candidate_id := candidate.get_instance_id()
+		if best_target == null \
+			or lane_delta < best_lane_delta - 0.0001 \
+			or (is_equal_approx(lane_delta, best_lane_delta) and missing_health > best_missing_health + 0.0001) \
+			or (is_equal_approx(lane_delta, best_lane_delta) and is_equal_approx(missing_health, best_missing_health) and candidate_id < best_id):
+			best_target = candidate
+			best_lane_delta = lane_delta
+			best_missing_health = missing_health
+			best_id = candidate_id
+	return best_target
+
+
+func _is_enemy_shadow_feared(target: EnemyBase) -> bool:
+	if target == null or not is_instance_valid(target):
+		return false
+	if not target.has_method("is_shadow_fear_active"):
+		return false
+	return bool(target.call("is_shadow_fear_active"))
+
+
+func _evaluate_tidal_wave_targets(target: Node2D = null) -> Dictionary:
+	var wave_direction := _get_tidal_wave_direction(target)
+	var wave_origin := global_position + Vector2(0.0, -14.0) + (wave_direction * 18.0)
+	var projected_distance := maxf(32.0, tidal_wave_speed * maxf(0.25, tidal_wave_duration))
+	var sweep_start := wave_origin - (wave_direction * (tidal_wave_hit_length * 0.3))
+	var sweep_end := wave_origin + (wave_direction * (projected_distance + (tidal_wave_hit_length * 0.7)))
+	var ally_hits := 0
+	var injured_allies := 0
+	var enemy_hits := 0
+	var target_in_lane := false
+	var seen_friendly_ids: Dictionary = {}
+	var ally_candidates: Array[Node2D] = []
+	if is_instance_valid(player):
+		ally_candidates.append(player)
+	for node in get_tree().get_nodes_in_group("friendly_npcs"):
+		var candidate := node as Node2D
+		if candidate == null or not is_instance_valid(candidate):
+			continue
+		if candidate != self and not _is_valid_support_target(candidate):
+			continue
+		ally_candidates.append(candidate)
+	for ally in ally_candidates:
+		if ally == null or not is_instance_valid(ally):
+			continue
+		var ally_id := ally.get_instance_id()
+		if seen_friendly_ids.has(ally_id):
+			continue
+		seen_friendly_ids[ally_id] = true
+		var ally_distance := _distance_to_segment(ally.global_position, sweep_start, sweep_end)
+		if ally_distance > tidal_wave_hit_half_width:
+			continue
+		ally_hits += 1
+		if ally.has_method("receive_heal") and _get_missing_health(ally) >= maxf(0.01, min_missing_health_to_heal):
+			injured_allies += 1
+	for enemy_node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := enemy_node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if _is_enemy_shadow_feared(enemy):
+			continue
+		var enemy_distance := _distance_to_segment(enemy.global_position, sweep_start, sweep_end)
+		if enemy_distance > tidal_wave_hit_half_width:
+			continue
+		enemy_hits += 1
+		if target != null and is_instance_valid(target) and enemy.get_instance_id() == target.get_instance_id():
+			target_in_lane = true
+	return {
+		"ally_hits": ally_hits,
+		"injured_allies": injured_allies,
+		"enemy_hits": enemy_hits,
+		"target_in_lane": target_in_lane,
+		"direction": wave_direction
+	}
+
+
+func _compute_tidal_wave_attack_position(target: Node2D) -> Vector2:
+	var attack_target := _resolve_attack_target(target)
+	if attack_target == null:
+		return _compute_desired_position()
+	var target_position := _get_position_in_actor_space(attack_target)
+	var wave_direction := _get_tidal_wave_direction(attack_target)
+	var desired_standoff := clampf(maxf(56.0, light_bolt_range * 0.46), 56.0, maxf(84.0, light_bolt_range * 0.64))
+	var desired_position := target_position - (wave_direction * desired_standoff)
+	var heal_target := _find_best_tidal_wave_heal_target(attack_target)
+	if heal_target != null and is_instance_valid(heal_target):
+		var heal_target_position := _get_position_in_actor_space(heal_target)
+		var lane_y := (target_position.y + heal_target_position.y) * 0.5
+		if wave_direction.x >= 0.0:
+			desired_position.x = minf(target_position.x, heal_target_position.x) - desired_standoff
+		else:
+			desired_position.x = maxf(target_position.x, heal_target_position.x) + desired_standoff
+		desired_position.y = lane_y
+	else:
+		desired_position.y = target_position.y + clampf(follow_vertical_bias * 0.4, -8.0, 8.0)
+	return _clamp_to_bounds(desired_position)
 
 
 func _build_tidal_wave_body_points(height_scale: float, stretch: float) -> PackedVector2Array:
@@ -1830,6 +2125,8 @@ func _cast_action_name(action: CastAction) -> String:
 			return "QUICK_HEAL"
 		CastAction.PROTECTIVE_SHIELD:
 			return "PROTECTIVE_SHIELD"
+		CastAction.TIDAL_WAVE:
+			return "TIDAL_WAVE"
 		CastAction.LIGHT_BOLT:
 			return "LIGHT_BOLT"
 		_:
