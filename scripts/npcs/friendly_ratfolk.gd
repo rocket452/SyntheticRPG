@@ -10,7 +10,8 @@ enum DPSAIState {
 	DASHING,
 	MARKING,
 	ATTACKING,
-	ASSAULT_CAST
+	ASSAULT_CAST,
+	BREATH_STACK
 }
 
 const DPS_AI_STATE_NAMES: Dictionary = {
@@ -19,17 +20,26 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 	DPSAIState.DASHING: "DASHING",
 	DPSAIState.MARKING: "MARKING",
 	DPSAIState.ATTACKING: "ATTACKING",
-	DPSAIState.ASSAULT_CAST: "ASSAULT_CAST"
+	DPSAIState.ASSAULT_CAST: "ASSAULT_CAST",
+	DPSAIState.BREATH_STACK: "BREATH_STACK"
 }
 
 # Pacing experiment knobs (slow-RPG cadence).
 @export var max_health: float = 86.0
 @export var move_speed: float = 127.5
+@export var breath_stack_move_speed_multiplier: float = 1.75
+@export var use_player_like_movement: bool = true
+@export_range(4, 16, 1) var player_like_direction_steps: int = 8
+@export_range(0.0, 1.0, 0.01) var player_like_move_deadzone_ratio: float = 0.24
 @export var ai_decision_interval: float = 0.1
 @export var attack_damage: float = 8.5
-@export var attack_range: float = 68.0
+@export var attack_range: float = 82.0
 @export var attack_arc_degrees: float = 95.0
 @export var attack_depth_tolerance: float = 58.0
+@export var preferred_attack_spacing: float = 48.0
+@export var preferred_attack_spacing_tolerance: float = 8.0
+@export var attack_range_indicator_duration: float = 0.14
+@export var attack_range_indicator_width: float = 2.6
 @export var run_anim_start_speed: float = 28.0
 @export var run_anim_stop_speed: float = 16.0
 @export var run_anim_displacement_deadzone: float = 0.42
@@ -37,6 +47,8 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var attack_recovery: float = 0.3
 @export var attack_cooldown: float = 1.1
 @export var attack_knockback_scale: float = 0.82
+@export var attack_hitstop_duration: float = 0.045
+@export var attack_impact_vfx_scale: float = 1.15
 @export var outgoing_hit_stun_duration: float = 0.16
 @export var hit_stun_duration: float = 0.2
 @export var hit_knockback_speed: float = 170.0
@@ -58,6 +70,15 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var health_bar_thickness: float = 5.0
 @export var health_bar_y_offset: float = -62.0
 @export var hit_effect_duration: float = 0.12
+@export var shadow_fear_enabled: bool = true
+@export var shadow_fear_duration: float = 5.0
+@export var shadow_fear_cooldown: float = 20.0
+@export var shadow_fear_trigger_delay_min: float = 0.25
+@export var shadow_fear_trigger_delay_max: float = 0.5
+@export var shadow_fear_retry_delay: float = 0.38
+@export var shadow_fear_consideration_distance: float = 420.0
+@export var shadow_fear_projectile_speed: float = 340.0
+@export var shadow_fear_projectile_max_distance: float = 980.0
 @export var shadow_clone_enabled: bool = true
 @export var shadow_clone_count: int = 2
 @export var shadow_clone_cast_duration: float = 0.5
@@ -74,7 +95,7 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var shadow_clone_speed_scale: float = 1.05
 @export var shadow_clone_health_scale: float = 0.52
 @export var shadow_clone_attack_cooldown_scale: float = 0.78
-@export var shadow_clone_tint: Color = Color(0.62, 0.56, 0.98, 0.82)
+@export var shadow_clone_tint: Color = Color(0.72, 0.44, 1.0, 0.82)
 @export var backstab_dash_enabled: bool = true
 @export var backstab_dash_cooldown: float = 2.05
 @export var backstab_dash_speed: float = 285.0
@@ -88,6 +109,8 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 
 const RATFOLK_SHEET_PATH: String = "res://assets/external/ElthenAssets/ratfolk/Ratfolk Rogue Sprite Sheet.png"
 const RATFOLK_SCENE_PATH: String = "res://scenes/npcs/FriendlyRatfolk.tscn"
+const SHADOW_FEAR_PROJECTILE_SCENE_PATH: String = "res://scenes/projectiles/ShadowFearProjectile.tscn"
+const COMPANION_BREATH_RESPONSE_SCRIPT := preload("res://ai/CompanionBreathResponse.gd")
 const RATFOLK_HFRAMES: int = 8
 const RATFOLK_VFRAMES: int = 5
 const ANIM_ROWS: Dictionary = {
@@ -119,6 +142,8 @@ var dead: bool = false
 var attack_windup_left: float = 0.0
 var attack_recovery_left: float = 0.0
 var attack_cooldown_left: float = 0.0
+var shadow_fear_cooldown_left: float = 0.0
+var shadow_fear_pending_left: float = -1.0
 var shadow_clone_cast_left: float = 0.0
 var shadow_clone_cast_active: bool = false
 var shadow_clone_cooldown_left: float = 0.0
@@ -150,7 +175,16 @@ var health_bar_background: Line2D = null
 var health_bar_fill: Line2D = null
 var ratfolk_sheet_texture: Texture2D = null
 var ratfolk_scene_cache: PackedScene = null
+var shadow_fear_projectile_scene_cache: PackedScene = null
+var tracked_enemy_ids: Dictionary = {}
+var shadow_fear_focus_target: EnemyBase = null
+var shadow_fear_resume_target: EnemyBase = null
+var shadow_fear_focus_requires_close: bool = true
 var sprite_base_scale: Vector2 = Vector2.ONE
+var breath_threat_snapshot: Dictionary = {}
+var breath_safe_indicator_left: float = 0.0
+var breath_safe_indicator: Line2D = null
+var breath_was_safe: bool = false
 var rng := RandomNumberGenerator.new()
 
 @onready var sprite: Sprite2D = $Sprite2D
@@ -172,6 +206,12 @@ func _ready() -> void:
 	_apply_shadow_clone_setup()
 	current_health = maxf(1.0, max_health)
 	attack_cooldown_left = attack_cooldown * 0.35
+	shadow_fear_cooldown_left = 0.0
+	shadow_fear_pending_left = -1.0
+	tracked_enemy_ids.clear()
+	shadow_fear_focus_target = null
+	shadow_fear_resume_target = null
+	shadow_fear_focus_requires_close = true
 	boss_mark_cooldown_left = 0.0
 	dps_ai_state = DPSAIState.FOLLOWING
 	dps_ai_state_name = String(DPS_AI_STATE_NAMES.get(dps_ai_state, "FOLLOWING"))
@@ -181,6 +221,7 @@ func _ready() -> void:
 		_setup_health_bar()
 	else:
 		shadow_clone_lifetime_left = maxf(0.2, shadow_clone_lifetime)
+	_setup_breath_safe_indicator()
 	_update_health_bar()
 	health_changed.emit(current_health, max_health)
 
@@ -196,6 +237,13 @@ func set_player(target_player: Player) -> void:
 
 func setup_as_shadow_clone(owner_player: Player = null) -> void:
 	is_shadow_clone = true
+	shadow_fear_enabled = false
+	shadow_fear_cooldown_left = 0.0
+	shadow_fear_pending_left = -1.0
+	tracked_enemy_ids.clear()
+	shadow_fear_focus_target = null
+	shadow_fear_resume_target = null
+	shadow_fear_focus_requires_close = true
 	shadow_clone_enabled = false
 	shadow_clone_cast_left = 0.0
 	shadow_clone_cast_active = false
@@ -257,6 +305,7 @@ func _physics_process(delta: float) -> void:
 		velocity = knockback_velocity
 	else:
 		_tick_combat_logic(delta)
+		velocity = _apply_player_like_movement_velocity(velocity)
 		velocity += knockback_velocity
 
 	move_and_slide()
@@ -268,11 +317,45 @@ func _physics_process(delta: float) -> void:
 	else:
 		visual_motion_velocity = frame_displacement / maxf(0.0001, delta)
 	_update_animation(delta)
+	_update_breath_safe_indicator()
 	_update_health_bar()
+
+
+func _apply_player_like_movement_velocity(raw_velocity: Vector2) -> Vector2:
+	if not use_player_like_movement:
+		return raw_velocity
+	if raw_velocity.length_squared() <= 0.0001:
+		return Vector2.ZERO
+	if backstab_dash_left > 0.0:
+		return raw_velocity
+	if is_shadow_clone and shadow_clone_scatter_left > 0.0:
+		return raw_velocity
+	var speed_cap := maxf(1.0, move_speed)
+	if raw_velocity.length() > speed_cap * 1.15:
+		return raw_velocity
+	if raw_velocity.length() <= speed_cap * clampf(player_like_move_deadzone_ratio, 0.0, 0.95):
+		return Vector2.ZERO
+	var quantized_direction := _quantize_player_like_direction(raw_velocity, player_like_direction_steps)
+	if quantized_direction.length_squared() <= 0.0001:
+		return Vector2.ZERO
+	return quantized_direction * speed_cap
+
+
+func _quantize_player_like_direction(direction: Vector2, steps: int) -> Vector2:
+	if direction.length_squared() <= 0.0001:
+		return Vector2.ZERO
+	var normalized_direction := direction.normalized()
+	var quant_steps := maxi(4, steps)
+	var step_angle := TAU / float(quant_steps)
+	var snapped_angle: float = round(normalized_direction.angle() / step_angle) * step_angle
+	return Vector2.RIGHT.rotated(snapped_angle)
 
 
 func _tick_timers(delta: float) -> void:
 	attack_cooldown_left = maxf(0.0, attack_cooldown_left - delta)
+	shadow_fear_cooldown_left = maxf(0.0, shadow_fear_cooldown_left - delta)
+	if shadow_fear_pending_left >= 0.0:
+		shadow_fear_pending_left = maxf(0.0, shadow_fear_pending_left - delta)
 	if shadow_clone_cast_active:
 		shadow_clone_cast_left = maxf(0.0, shadow_clone_cast_left - delta)
 	shadow_clone_cooldown_left = maxf(0.0, shadow_clone_cooldown_left - delta)
@@ -283,6 +366,7 @@ func _tick_timers(delta: float) -> void:
 	stun_left = maxf(0.0, stun_left - delta)
 	hurt_anim_left = maxf(0.0, hurt_anim_left - delta)
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
+	breath_safe_indicator_left = maxf(0.0, breath_safe_indicator_left - delta)
 	knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, maxf(0.0, hit_knockback_decay) * delta)
 	if is_instance_valid(sprite):
 		var base_modulate := shadow_clone_tint if is_shadow_clone else Color(1.0, 1.0, 1.0, 1.0)
@@ -304,6 +388,41 @@ func _tick_timers(delta: float) -> void:
 			_die()
 
 
+func _handle_breath_threat() -> bool:
+	if is_shadow_clone:
+		breath_threat_snapshot.clear()
+		breath_was_safe = false
+		return false
+	breath_threat_snapshot = COMPANION_BREATH_RESPONSE_SCRIPT.get_active_threat(get_tree())
+	if not bool(breath_threat_snapshot.get("active", false)):
+		breath_was_safe = false
+		return false
+	_interrupt_attack()
+	backstab_dash_left = 0.0
+	backstab_dash_target_enemy = null
+	shadow_fear_pending_left = -1.0
+	shadow_fear_focus_target = null
+	_set_dps_ai_state(DPSAIState.BREATH_STACK, player)
+	var pocket_valid := bool(breath_threat_snapshot.get("safe_pocket_valid", false))
+	var in_safe_pocket: bool = bool(COMPANION_BREATH_RESPONSE_SCRIPT.is_position_safe(global_position, breath_threat_snapshot))
+	if pocket_valid and in_safe_pocket:
+		velocity = Vector2.ZERO
+		_update_facing((breath_threat_snapshot.get("boss_position", global_position) as Vector2) - global_position)
+		if not breath_was_safe:
+			breath_safe_indicator_left = maxf(breath_safe_indicator_left, 0.6)
+		breath_was_safe = true
+		return true
+	breath_was_safe = false
+	var destination: Vector2 = COMPANION_BREATH_RESPONSE_SCRIPT.compute_cover_position(breath_threat_snapshot, 1, 2) if pocket_valid else COMPANION_BREATH_RESPONSE_SCRIPT.compute_scatter_position(breath_threat_snapshot, global_position, 1)
+	var to_destination: Vector2 = destination - global_position
+	if to_destination.length_squared() <= 4.0:
+		velocity = Vector2.ZERO
+	else:
+		velocity = to_destination.normalized() * (move_speed * maxf(1.0, breath_stack_move_speed_multiplier))
+	_update_facing((breath_threat_snapshot.get("boss_position", destination) as Vector2) - global_position)
+	return true
+
+
 func _tick_combat_logic(delta: float) -> void:
 	if shadow_clone_cast_active:
 		velocity = Vector2.ZERO
@@ -313,9 +432,15 @@ func _tick_combat_logic(delta: float) -> void:
 			shadow_clone_cooldown_left = maxf(0.01, shadow_clone_cooldown)
 		return
 
+	if _handle_breath_threat():
+		return
+
+	if _is_enemy_shadow_feared(target_enemy) or _is_enemy_shadow_feared(backstab_dash_target_enemy):
+		_interrupt_attack()
+
 	if attack_windup_left > 0.0:
 		attack_windup_left = maxf(0.0, attack_windup_left - delta)
-		velocity = Vector2.ZERO
+		velocity = _compute_attack_hold_spacing_velocity(target_enemy)
 		if attack_windup_left <= 0.0:
 			_perform_attack()
 			attack_recovery_left = maxf(0.01, attack_recovery)
@@ -323,7 +448,7 @@ func _tick_combat_logic(delta: float) -> void:
 
 	if attack_recovery_left > 0.0:
 		attack_recovery_left = maxf(0.0, attack_recovery_left - delta)
-		velocity = Vector2.ZERO
+		velocity = _compute_attack_hold_spacing_velocity(target_enemy)
 		return
 
 	if is_shadow_clone and shadow_clone_scatter_left > 0.0:
@@ -350,6 +475,10 @@ func _tick_combat_logic(delta: float) -> void:
 		backstab_dash_left = 0.0
 		backstab_dash_target_enemy = null
 
+	_update_shadow_fear_trigger()
+	if _try_cast_shadow_fear():
+		return
+
 	target_enemy = _find_target_enemy()
 	if target_enemy == null:
 		_set_dps_ai_state(DPSAIState.FOLLOWING, player)
@@ -360,12 +489,14 @@ func _tick_combat_logic(delta: float) -> void:
 	var distance_to_enemy := to_enemy.length()
 	var attack_depth_aligned := absf(to_enemy.y) <= (attack_depth_tolerance * 1.75)
 	var attack_connect_window := _is_attack_connect_window(to_enemy)
+	var attack_spacing_ready := _is_attack_spacing_ready(distance_to_enemy)
 	var close_attack_ready := attack_cooldown_left <= 0.0 \
 		and attack_windup_left <= 0.0 \
 		and attack_recovery_left <= 0.0 \
 		and not shadow_clone_cast_active \
 		and backstab_dash_left <= 0.0 \
-		and attack_connect_window
+		and attack_connect_window \
+		and attack_spacing_ready
 	if close_attack_ready:
 		_update_facing(to_enemy)
 		_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
@@ -376,12 +507,14 @@ func _tick_combat_logic(delta: float) -> void:
 	if not is_shadow_clone and target_enemy.is_miniboss:
 		var behind_target := _clamp_world_position_to_bounds(_get_backstab_target_position(target_enemy))
 		var behind_now := _is_position_behind_enemy(target_enemy, global_position)
+		var boss_vulnerable := _is_boss_vulnerable(target_enemy)
+		var hold_flank := not behind_now and not boss_vulnerable
 		if _can_start_shadow_clone_cast(target_enemy, distance_to_enemy, behind_now):
 			_set_dps_ai_state(DPSAIState.ASSAULT_CAST, target_enemy)
 			_start_shadow_clone_cast()
 			velocity = Vector2.ZERO
 			return
-		var close_boss_attack_window := attack_connect_window
+		var close_boss_attack_window := attack_connect_window and attack_spacing_ready and not hold_flank
 		if close_boss_attack_window:
 			_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
 			_update_facing(to_enemy)
@@ -389,7 +522,8 @@ func _tick_combat_logic(delta: float) -> void:
 				_start_attack_windup("boss_close")
 			velocity = Vector2.ZERO
 			return
-		var miniboss_commit_attack_window := absf(to_enemy.y) <= (attack_depth_tolerance * 2.1) \
+		var miniboss_commit_attack_window := not hold_flank \
+			and absf(to_enemy.y) <= (attack_depth_tolerance * 2.1) \
 			and distance_to_enemy <= attack_range * 2.1
 		if miniboss_commit_attack_window:
 			_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
@@ -398,15 +532,25 @@ func _tick_combat_logic(delta: float) -> void:
 				_start_attack_windup("boss_commit")
 				velocity = Vector2.ZERO
 				return
-			velocity = to_enemy.normalized() * move_speed * 0.72
+			velocity = _compute_reposition_velocity(target_enemy, to_enemy, distance_to_enemy)
 			return
 		if _can_start_backstab_dash(target_enemy, distance_to_enemy) and (not behind_now or distance_to_enemy > attack_range * 1.2):
 			_start_backstab_dash(target_enemy)
 			return
 		if not behind_now:
+			if hold_flank:
+				var to_behind_hold := behind_target - global_position
+				_set_dps_ai_state(DPSAIState.REPOSITIONING, target_enemy)
+				if to_behind_hold.length() > maxf(4.0, backstab_dash_stop_distance * 0.8):
+					velocity = to_behind_hold.normalized() * move_speed * 0.94
+				else:
+					velocity = _compute_reposition_velocity(target_enemy, to_enemy, distance_to_enemy)
+				_update_facing(target_enemy.global_position - global_position)
+				return
 			var close_frontline_window := attack_cooldown_left <= 0.0 \
 				and absf(to_enemy.y) <= (attack_depth_tolerance * 1.4) \
-				and distance_to_enemy <= attack_range * 1.3
+				and distance_to_enemy <= attack_range * 1.3 \
+				and attack_spacing_ready
 			if close_frontline_window:
 				_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
 				_start_attack_windup("frontline_close")
@@ -416,7 +560,8 @@ func _tick_combat_logic(delta: float) -> void:
 			if to_behind.length() > maxf(6.0, backstab_dash_stop_distance) and distance_to_enemy > attack_range * 1.15:
 				var frontline_attack_window := attack_cooldown_left <= 0.0 \
 					and absf(to_enemy.y) <= (attack_depth_tolerance * 1.35) \
-					and distance_to_enemy <= attack_range * 1.08
+					and distance_to_enemy <= attack_range * 1.08 \
+					and attack_spacing_ready
 				if frontline_attack_window:
 					_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
 					_start_attack_windup("frontline_window")
@@ -430,7 +575,7 @@ func _tick_combat_logic(delta: float) -> void:
 		_start_backstab_dash(target_enemy)
 		return
 	_update_facing(to_enemy)
-	var melee_engage := attack_connect_window
+	var melee_engage := attack_connect_window and attack_spacing_ready
 	if melee_engage and not shadow_clone_cast_active and backstab_dash_left <= 0.0:
 		_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
 		if attack_cooldown_left <= 0.0 and attack_windup_left <= 0.0 and attack_recovery_left <= 0.0:
@@ -455,6 +600,9 @@ func _tick_combat_logic(delta: float) -> void:
 		DPSAIState.DASHING:
 			velocity = Vector2.ZERO
 		DPSAIState.ATTACKING:
+			if not _is_attack_spacing_ready(distance_to_enemy):
+				velocity = _compute_reposition_velocity(target_enemy, to_enemy, distance_to_enemy)
+				return
 			if attack_cooldown_left <= 0.0 and _is_attack_connect_window(to_enemy):
 				_start_attack_windup("state_attack")
 				velocity = Vector2.ZERO
@@ -462,16 +610,15 @@ func _tick_combat_logic(delta: float) -> void:
 			if _is_attack_connect_window(to_enemy):
 				velocity = Vector2.ZERO
 			else:
-				var move_direction := to_enemy.normalized() if distance_to_enemy > 0.0001 else Vector2.ZERO
-				velocity = move_direction * move_speed
+				velocity = _compute_reposition_velocity(target_enemy, to_enemy, distance_to_enemy)
 		DPSAIState.REPOSITIONING:
-			if _is_attack_connect_window(to_enemy):
+			if _is_attack_connect_window(to_enemy) and _is_attack_spacing_ready(distance_to_enemy):
 				_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
 				if attack_cooldown_left <= 0.0 and attack_windup_left <= 0.0 and attack_recovery_left <= 0.0:
 					_start_attack_windup("reposition_close")
 				velocity = Vector2.ZERO
 				return
-			velocity = _compute_reposition_velocity(to_enemy, distance_to_enemy)
+			velocity = _compute_reposition_velocity(target_enemy, to_enemy, distance_to_enemy)
 		_:
 			_follow_player_when_idle()
 
@@ -497,11 +644,15 @@ func _update_dps_ai_state(delta: float, distance_to_enemy: float, depth_aligned:
 	if _can_apply_boss_mark(target_enemy, distance_to_enemy) and not _has_boss_mark(target_enemy):
 		_set_dps_ai_state(DPSAIState.MARKING, target_enemy)
 		return
+	var boss_vulnerable := _is_boss_vulnerable(target_enemy)
+	if not behind_now and not boss_vulnerable:
+		_set_dps_ai_state(DPSAIState.REPOSITIONING, target_enemy)
+		return
 	var tank_front_blocking := _is_in_front_of_tank(target_enemy) and not behind_now
 	var tank_engaged := _is_tank_engaged_with_enemy(target_enemy)
 	var avoid_frontline := tank_front_blocking \
 		and distance_to_enemy > attack_range * 1.85 \
-		and not _is_boss_vulnerable(target_enemy)
+		and not boss_vulnerable
 	var need_realign := (not depth_aligned) and distance_to_enemy > attack_range * 0.95
 	var need_close_distance := distance_to_enemy > attack_range * 2.45 and not tank_engaged
 	if avoid_frontline or need_realign or need_close_distance:
@@ -537,7 +688,7 @@ func _should_reposition_for_target(distance_to_enemy: float, depth_aligned: bool
 	var to_player := player.global_position - global_position
 	if to_player.length() > maxf(follow_player_distance * 1.35, follow_player_min_distance + 28.0):
 		return true
-	return distance_to_enemy < maxf(attack_range * 0.55, 24.0)
+	return distance_to_enemy < _get_attack_spacing_min()
 
 
 func _is_in_front_of_tank(enemy: EnemyBase) -> bool:
@@ -601,36 +752,90 @@ func _apply_boss_mark(enemy: EnemyBase) -> void:
 	_spawn_hit_effect(enemy.global_position + Vector2(0.0, -20.0), Color(0.48, 0.86, 1.0, 0.95), 7.2)
 
 
-func _compute_reposition_velocity(to_enemy: Vector2, distance_to_enemy: float) -> Vector2:
-	if not is_instance_valid(player):
+func _compute_reposition_velocity(enemy: EnemyBase, to_enemy: Vector2, distance_to_enemy: float) -> Vector2:
+	var has_valid_enemy := enemy != null and is_instance_valid(enemy) and not enemy.dead
+	if not has_valid_enemy:
+		if not is_instance_valid(player):
+			return Vector2.ZERO
+		var fallback_to_player := player.global_position - global_position
+		if fallback_to_player.length_squared() <= 0.0001:
+			return Vector2.ZERO
+		return fallback_to_player.normalized() * move_speed * 0.92
+
+	var to_player := player.global_position - global_position if is_instance_valid(player) else Vector2.ZERO
+	if to_player.length() > maxf(follow_player_distance * 1.75, follow_player_min_distance + 52.0) and distance_to_enemy > attack_range * 2.6:
+		return to_player.normalized() * move_speed * 0.9
+
+	var preferred_attack_position := _get_preferred_attack_position(enemy)
+	var to_preferred := preferred_attack_position - global_position
+	var anchor_tolerance := maxf(6.0, preferred_attack_spacing_tolerance + 2.0)
+	if distance_to_enemy < _get_attack_spacing_min():
+		if to_preferred.length() > 4.0:
+			return to_preferred.normalized() * move_speed * 0.86
+		var retreat_direction := -to_enemy
+		if retreat_direction.length_squared() <= 0.0001:
+			retreat_direction = Vector2.LEFT if facing_left else Vector2.RIGHT
+		return retreat_direction.normalized() * move_speed * 0.82
+
+	var depth_misaligned := absf(to_enemy.y) > attack_depth_tolerance
+	var too_far := distance_to_enemy > attack_range * 1.16
+	if too_far or depth_misaligned or to_preferred.length() > anchor_tolerance:
+		var move_direction := to_preferred
+		if move_direction.length_squared() <= 0.0001:
+			move_direction = to_enemy
+		if move_direction.length_squared() <= 0.0001:
+			move_direction = Vector2.LEFT if facing_left else Vector2.RIGHT
+		return move_direction.normalized() * move_speed * 0.9
+
+	var orbit_sign := 1.0 if (int(get_instance_id()) % 2) == 0 else -1.0
+	var orbit_direction := Vector2(-to_enemy.y, to_enemy.x)
+	if orbit_direction.length_squared() <= 0.0001:
+		orbit_direction = Vector2(0.0, orbit_sign)
+	elif orbit_direction.y * orbit_sign < 0.0:
+		orbit_direction = -orbit_direction
+	return orbit_direction.normalized() * move_speed * 0.34
+
+
+func _compute_attack_hold_spacing_velocity(enemy: EnemyBase) -> Vector2:
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
 		return Vector2.ZERO
-	var to_player := player.global_position - global_position
-	if to_player.length() > maxf(follow_player_distance * 1.5, follow_player_min_distance + 36.0):
-		return to_player.normalized() * move_speed * 0.92
-	var depth_misaligned := absf(to_enemy.y) > (attack_depth_tolerance * 1.05)
-	var too_far := distance_to_enemy > attack_range * 1.22
-	if too_far or depth_misaligned:
-		var chase_direction := to_enemy
-		if chase_direction.length_squared() <= 0.0001:
-			chase_direction = Vector2.LEFT if facing_left else Vector2.RIGHT
-		var close_vector := chase_direction.normalized()
-		var flank_sign := -signf(close_vector.x)
-		if absf(flank_sign) <= 0.01:
-			flank_sign = -signf(player.facing_direction.x)
-		if absf(flank_sign) <= 0.01:
-			flank_sign = -1.0
-		var flank_bias := Vector2(flank_sign * 0.12, signf(to_enemy.y) * 0.06)
-		var approach := (close_vector + flank_bias).normalized()
-		return approach * move_speed * 0.96
-	var side := -signf(to_enemy.x)
-	if absf(side) <= 0.01:
-		side = -signf(player.facing_direction.x)
-	if absf(side) <= 0.01:
-		side = -1.0
-	var strafe_direction := Vector2(side, signf(to_enemy.y) * 0.22)
-	if strafe_direction.length_squared() <= 0.0001:
-		strafe_direction = Vector2(side, 0.0)
-	return strafe_direction.normalized() * move_speed * 0.5
+	var to_enemy := enemy.global_position - global_position
+	var distance_to_enemy := to_enemy.length()
+	var too_close := distance_to_enemy < (_get_attack_spacing_min() + 2.0)
+	var depth_misaligned := absf(to_enemy.y) > (attack_depth_tolerance * 1.15)
+	if too_close or depth_misaligned:
+		return _compute_reposition_velocity(enemy, to_enemy, distance_to_enemy)
+	return Vector2.ZERO
+
+
+func _get_preferred_attack_position(enemy: EnemyBase) -> Vector2:
+	if enemy == null or not is_instance_valid(enemy):
+		return global_position
+	var horizontal_sign := 0.0
+	if is_instance_valid(player):
+		horizontal_sign = -signf(player.global_position.x - enemy.global_position.x)
+	if absf(horizontal_sign) <= 0.01:
+		horizontal_sign = signf(global_position.x - enemy.global_position.x)
+	if absf(horizontal_sign) <= 0.01:
+		horizontal_sign = 1.0 if facing_left else -1.0
+	var depth_sign := 1.0 if (int(get_instance_id()) % 2) == 0 else -1.0
+	var depth_offset := depth_sign * minf(maxf(8.0, backstab_dash_depth_offset * 0.7), attack_depth_tolerance * 0.32)
+	var desired_position := enemy.global_position + Vector2(horizontal_sign * _get_attack_spacing_target(), depth_offset)
+	return _clamp_world_position_to_bounds(desired_position)
+
+
+func _get_attack_spacing_target() -> float:
+	return minf(maxf(20.0, preferred_attack_spacing), maxf(24.0, attack_range * 0.92))
+
+
+func _get_attack_spacing_min() -> float:
+	var target_spacing := _get_attack_spacing_target()
+	var tolerance := maxf(2.0, preferred_attack_spacing_tolerance)
+	return maxf(16.0, target_spacing - tolerance)
+
+
+func _is_attack_spacing_ready(distance_to_enemy: float) -> bool:
+	return distance_to_enemy >= _get_attack_spacing_min()
 
 
 func _follow_player_when_idle() -> void:
@@ -652,6 +857,11 @@ func _follow_player_when_idle() -> void:
 
 
 func _find_target_enemy() -> EnemyBase:
+	if not _is_valid_shadow_fear_resume_target(shadow_fear_resume_target):
+		shadow_fear_resume_target = null
+	if shadow_fear_resume_target != null:
+		return shadow_fear_resume_target
+
 	var nearest_minion: EnemyBase = null
 	var nearest_minion_distance_sq := INF
 	var nearest_minion_id := INF
@@ -668,6 +878,9 @@ func _find_target_enemy() -> EnemyBase:
 			continue
 		var distance_sq := enemy.global_position.distance_squared_to(global_position)
 		var enemy_id := enemy.get_instance_id()
+		var enemy_feared := _is_enemy_shadow_feared(enemy)
+		if enemy_feared:
+			continue
 		if enemy.is_miniboss:
 			if nearest_boss == null or distance_sq < nearest_boss_distance_sq or (is_equal_approx(distance_sq, nearest_boss_distance_sq) and enemy_id < nearest_boss_id):
 				nearest_boss = enemy
@@ -680,7 +893,358 @@ func _find_target_enemy() -> EnemyBase:
 			nearest_minion_id = enemy_id
 	if nearest_minion != null:
 		return nearest_minion
-	return nearest_boss
+	if nearest_boss != null:
+		return nearest_boss
+	return null
+
+
+func _update_shadow_fear_trigger() -> void:
+	if is_shadow_clone or not shadow_fear_enabled:
+		tracked_enemy_ids.clear()
+		shadow_fear_focus_target = null
+		shadow_fear_pending_left = -1.0
+		shadow_fear_focus_requires_close = true
+		return
+	var current_enemy_ids: Dictionary = {}
+	var living_enemies: Array[EnemyBase] = []
+	var had_seen_snapshot := not tracked_enemy_ids.is_empty()
+	var newest_enemy: EnemyBase = null
+	var newest_enemy_id := -1
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		var enemy_id := enemy.get_instance_id()
+		current_enemy_ids[enemy_id] = true
+		living_enemies.append(enemy)
+		if had_seen_snapshot and tracked_enemy_ids.has(enemy_id):
+			continue
+		if shadow_fear_cooldown_left > 0.0:
+			continue
+		if _is_enemy_shadow_feared(enemy):
+			continue
+		if _enemy_has_hard_cc(enemy):
+			continue
+		if newest_enemy == null or enemy_id > newest_enemy_id:
+			newest_enemy = enemy
+			newest_enemy_id = enemy_id
+	tracked_enemy_ids = current_enemy_ids
+	if shadow_fear_focus_target != null:
+		return
+	if living_enemies.size() < 2:
+		return
+	if shadow_fear_cooldown_left > 0.0:
+		return
+	var focus_requires_close := true
+	if newest_enemy == null:
+		newest_enemy = _select_shadow_fear_focus_target_from_living_enemies(living_enemies)
+	else:
+		focus_requires_close = false
+	if newest_enemy == null:
+		return
+	shadow_fear_focus_target = newest_enemy
+	shadow_fear_resume_target = _select_shadow_fear_resume_target(newest_enemy)
+	shadow_fear_focus_requires_close = focus_requires_close
+	shadow_fear_pending_left = _roll_shadow_fear_delay()
+	attack_windup_left = 0.0
+	attack_recovery_left = 0.0
+	if backstab_dash_left > 0.0:
+		backstab_dash_left = 0.0
+		backstab_dash_target_enemy = null
+	var resume_name: String = String(shadow_fear_resume_target.name) if shadow_fear_resume_target != null else "None"
+	_log_shadow_fear("QUEUE rat=%s fear=%s resume=%s" % [name, newest_enemy.name, resume_name])
+	_spawn_hit_effect(global_position + Vector2(0.0, -16.0), Color(0.34, 0.14, 0.52, 0.86), 5.8)
+
+
+func _try_cast_shadow_fear() -> bool:
+	if is_shadow_clone or not shadow_fear_enabled:
+		shadow_fear_focus_target = null
+		shadow_fear_focus_requires_close = true
+		return false
+	if shadow_fear_focus_target == null or not is_instance_valid(shadow_fear_focus_target) or shadow_fear_focus_target.dead:
+		shadow_fear_focus_target = null
+		shadow_fear_pending_left = -1.0
+		shadow_fear_focus_requires_close = true
+		return false
+	if shadow_fear_cooldown_left > 0.0:
+		shadow_fear_focus_target = null
+		shadow_fear_pending_left = -1.0
+		shadow_fear_focus_requires_close = true
+		return false
+	if shadow_fear_focus_requires_close and not _is_enemy_in_shadow_fear_consideration_range(shadow_fear_focus_target):
+		shadow_fear_focus_target = null
+		shadow_fear_pending_left = -1.0
+		shadow_fear_focus_requires_close = true
+		return false
+	if _is_enemy_shadow_feared(shadow_fear_focus_target):
+		shadow_fear_focus_target = null
+		shadow_fear_pending_left = -1.0
+		shadow_fear_focus_requires_close = true
+		return false
+	var focus_enemy := shadow_fear_focus_target
+	var to_focus_enemy := focus_enemy.global_position - global_position
+	_update_facing(to_focus_enemy)
+	if not _is_shadow_fear_cast_aligned(focus_enemy):
+		var cast_position := _get_shadow_fear_cast_position(focus_enemy)
+		var to_cast_position := cast_position - global_position
+		_set_dps_ai_state(DPSAIState.REPOSITIONING, focus_enemy)
+		if to_cast_position.length() > 6.0:
+			velocity = to_cast_position.normalized() * move_speed * 0.92
+		else:
+			velocity = Vector2.ZERO
+		return true
+	if shadow_fear_pending_left > 0.0:
+		_set_dps_ai_state(DPSAIState.REPOSITIONING, focus_enemy)
+		velocity = Vector2.ZERO
+		return true
+	if stun_left > 0.0 or shadow_clone_cast_active:
+		velocity = Vector2.ZERO
+		return true
+	if attack_windup_left > 0.0 or attack_recovery_left > 0.0:
+		attack_windup_left = 0.0
+		attack_recovery_left = 0.0
+	if backstab_dash_left > 0.0:
+		backstab_dash_left = 0.0
+		backstab_dash_target_enemy = null
+	if not _spawn_shadow_fear_projectile(focus_enemy):
+		shadow_fear_focus_target = null
+		shadow_fear_pending_left = -1.0
+		shadow_fear_focus_requires_close = true
+		return false
+	shadow_fear_cooldown_left = maxf(0.1, shadow_fear_cooldown)
+	velocity = Vector2.ZERO
+	shadow_fear_pending_left = -1.0
+	shadow_fear_focus_target = null
+	shadow_fear_focus_requires_close = true
+	if shadow_fear_resume_target != null and _is_valid_shadow_fear_resume_target(shadow_fear_resume_target):
+		target_enemy = shadow_fear_resume_target
+		_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
+	return true
+
+
+func _is_valid_shadow_fear_resume_target(enemy: EnemyBase) -> bool:
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+		return false
+	if enemy == shadow_fear_focus_target:
+		return false
+	if _is_enemy_shadow_feared(enemy):
+		return false
+	return true
+
+
+func _select_shadow_fear_resume_target(new_enemy: EnemyBase) -> EnemyBase:
+	if target_enemy != null and target_enemy != new_enemy and _is_valid_shadow_fear_resume_target(target_enemy):
+		return target_enemy
+	var preferred_boss: EnemyBase = null
+	var preferred_boss_id := INF
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if enemy == new_enemy:
+			continue
+		if not enemy.is_miniboss:
+			continue
+		if _is_enemy_shadow_feared(enemy):
+			continue
+		var enemy_id := enemy.get_instance_id()
+		if preferred_boss == null or enemy_id < preferred_boss_id:
+			preferred_boss = enemy
+			preferred_boss_id = enemy_id
+	return preferred_boss
+
+
+func _select_shadow_fear_focus_target_from_living_enemies(living_enemies: Array[EnemyBase]) -> EnemyBase:
+	var preferred_non_boss: EnemyBase = null
+	var preferred_non_boss_id := -1
+	var preferred_boss: EnemyBase = null
+	var preferred_boss_id := -1
+	for enemy in living_enemies:
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if not _is_enemy_in_shadow_fear_consideration_range(enemy):
+			continue
+		if _enemy_has_hard_cc(enemy):
+			continue
+		var enemy_id := enemy.get_instance_id()
+		if enemy.is_miniboss:
+			if preferred_boss == null or enemy_id > preferred_boss_id:
+				preferred_boss = enemy
+				preferred_boss_id = enemy_id
+			continue
+		if preferred_non_boss == null or enemy_id > preferred_non_boss_id:
+			preferred_non_boss = enemy
+			preferred_non_boss_id = enemy_id
+	if preferred_non_boss != null:
+		return preferred_non_boss
+	return preferred_boss
+
+
+func _is_shadow_fear_cast_aligned(enemy: EnemyBase) -> bool:
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+		return false
+	var max_vertical_delta := maxf(44.0, attack_depth_tolerance * 0.85)
+	var min_horizontal_delta := 24.0
+	var max_horizontal_delta := maxf(48.0, shadow_fear_projectile_max_distance - 8.0)
+	var delta_to_enemy := enemy.global_position - global_position
+	return absf(delta_to_enemy.y) <= max_vertical_delta \
+		and absf(delta_to_enemy.x) >= min_horizontal_delta \
+		and absf(delta_to_enemy.x) <= max_horizontal_delta
+
+
+func _get_shadow_fear_cast_position(enemy: EnemyBase) -> Vector2:
+	if enemy == null or not is_instance_valid(enemy):
+		return global_position
+	var direction_sign := _get_shadow_fear_projectile_direction(enemy)
+	var desired_position := global_position
+	var delta_to_enemy := enemy.global_position - global_position
+	var max_vertical_delta := maxf(44.0, attack_depth_tolerance * 0.85)
+	var min_horizontal_delta := 24.0
+	var max_horizontal_delta := maxf(48.0, shadow_fear_projectile_max_distance - 8.0)
+	if absf(delta_to_enemy.y) > max_vertical_delta:
+		desired_position.y = enemy.global_position.y
+	if absf(delta_to_enemy.x) < min_horizontal_delta or absf(delta_to_enemy.x) > max_horizontal_delta:
+		desired_position.x = enemy.global_position.x - (direction_sign * _get_shadow_fear_cast_offset())
+	return _clamp_world_position_to_bounds(desired_position)
+
+
+func _get_shadow_fear_projectile_direction(enemy: EnemyBase) -> float:
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+		return -1.0 if facing_left else 1.0
+	if is_instance_valid(player):
+		var player_delta_x := enemy.global_position.x - player.global_position.x
+		if absf(player_delta_x) > 6.0:
+			return -1.0 if player_delta_x < 0.0 else 1.0
+	var enemy_delta_x := enemy.global_position.x - global_position.x
+	if absf(enemy_delta_x) > 6.0:
+		return -1.0 if enemy_delta_x < 0.0 else 1.0
+	return -1.0 if facing_left else 1.0
+
+
+func _get_shadow_fear_cast_offset() -> float:
+	return clampf(shadow_fear_projectile_max_distance * 0.08, 72.0, 112.0)
+
+
+func _get_shadow_fear_projectile_spawn_position(enemy: EnemyBase, direction_sign: float) -> Vector2:
+	var spawn_position := global_position + Vector2(0.0, -12.0)
+	if is_instance_valid(sprite):
+		spawn_position = sprite.global_position
+	return spawn_position
+
+
+func _count_active_hostile_enemies() -> int:
+	var count := 0
+	var player_position := player.global_position if is_instance_valid(player) else global_position
+	var max_chase_distance_sq := maxf(1.0, max_chase_distance_from_player) * maxf(1.0, max_chase_distance_from_player)
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if enemy.global_position.distance_squared_to(player_position) > max_chase_distance_sq:
+			continue
+		count += 1
+	return count
+
+
+func _select_shadow_fear_target() -> EnemyBase:
+	var preferred_target: EnemyBase = null
+	var preferred_id := -1
+	var player_position := player.global_position if is_instance_valid(player) else global_position
+	var max_chase_distance_sq := maxf(1.0, max_chase_distance_from_player) * maxf(1.0, max_chase_distance_from_player)
+	var max_vertical_delta := maxf(18.0, attack_depth_tolerance * 0.75)
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if enemy.is_miniboss:
+			continue
+		if enemy.global_position.distance_squared_to(player_position) > max_chase_distance_sq:
+			continue
+		if absf(enemy.global_position.y - global_position.y) > max_vertical_delta:
+			continue
+		if not _is_enemy_in_shadow_fear_consideration_range(enemy):
+			continue
+		if _enemy_has_hard_cc(enemy):
+			continue
+		var enemy_id := enemy.get_instance_id()
+		if preferred_target == null or enemy_id > preferred_id:
+			preferred_target = enemy
+			preferred_id = enemy_id
+	return preferred_target
+
+
+func _spawn_shadow_fear_projectile(enemy: EnemyBase) -> bool:
+	var projectile_scene := _get_shadow_fear_projectile_scene()
+	if projectile_scene == null:
+		return false
+	var scene_root := get_parent()
+	if scene_root == null:
+		return false
+	var projectile := projectile_scene.instantiate()
+	if projectile == null:
+		return false
+	var direction_sign := _get_shadow_fear_projectile_direction(enemy)
+	var spawn_position := _get_shadow_fear_projectile_spawn_position(enemy, direction_sign)
+	_update_facing(Vector2(direction_sign, 0.0))
+	scene_root.add_child(projectile)
+	if projectile.has_method("setup"):
+		projectile.call(
+			"setup",
+			self,
+			spawn_position,
+			direction_sign,
+			maxf(0.1, shadow_fear_projectile_speed),
+			maxf(24.0, shadow_fear_projectile_max_distance),
+			maxf(0.1, shadow_fear_duration),
+			enemy
+		)
+	_log_shadow_fear("CAST rat=%s target=%s active=%d dir=%.0f" % [name, enemy.name, _count_active_hostile_enemies(), direction_sign])
+	_spawn_hit_effect(global_position + Vector2(12.0 * direction_sign, -14.0), Color(0.42, 0.2, 0.62, 0.92), 6.4)
+	return true
+
+
+func _get_shadow_fear_projectile_scene() -> PackedScene:
+	if is_instance_valid(shadow_fear_projectile_scene_cache):
+		return shadow_fear_projectile_scene_cache
+	var loaded_scene := load(SHADOW_FEAR_PROJECTILE_SCENE_PATH)
+	if loaded_scene is PackedScene:
+		shadow_fear_projectile_scene_cache = loaded_scene as PackedScene
+	return shadow_fear_projectile_scene_cache
+
+
+func _roll_shadow_fear_delay() -> float:
+	var min_delay := maxf(0.0, shadow_fear_trigger_delay_min)
+	var max_delay := maxf(min_delay, shadow_fear_trigger_delay_max)
+	return rng.randf_range(min_delay, max_delay)
+
+
+func _is_enemy_in_shadow_fear_consideration_range(enemy: EnemyBase) -> bool:
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+		return false
+	var max_distance := maxf(24.0, shadow_fear_consideration_distance)
+	return enemy.global_position.distance_squared_to(global_position) <= max_distance * max_distance
+
+
+func _is_enemy_shadow_feared(enemy: EnemyBase) -> bool:
+	if enemy == null or not is_instance_valid(enemy):
+		return false
+	if enemy.has_method("is_shadow_fear_active"):
+		return bool(enemy.call("is_shadow_fear_active"))
+	return false
+
+
+func _enemy_has_hard_cc(enemy: EnemyBase) -> bool:
+	if enemy == null or not is_instance_valid(enemy):
+		return false
+	if enemy.has_method("has_hard_cc_active"):
+		return bool(enemy.call("has_hard_cc_active"))
+	return _is_enemy_shadow_feared(enemy)
+
+
+func _log_shadow_fear(message: String) -> void:
+	if is_shadow_clone:
+		return
+	print("[SHADOW_FEAR] %s" % message)
 
 
 func _can_start_shadow_clone_cast(enemy: EnemyBase, distance_to_enemy: float, behind_now: bool = false) -> bool:
@@ -795,6 +1359,8 @@ func _try_start_attack_after_dash(enemy: EnemyBase) -> void:
 	backstab_dash_target_enemy = null
 	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
 		return
+	if _is_enemy_shadow_feared(enemy):
+		return
 	var to_enemy := enemy.global_position - global_position
 	if not _is_attack_connect_window(to_enemy):
 		return
@@ -814,6 +1380,7 @@ func _is_attack_connect_window(to_enemy: Vector2) -> bool:
 
 func _start_attack_windup(reason: String, windup_scale: float = 1.0) -> void:
 	attack_windup_left = maxf(0.01, attack_windup * maxf(0.1, windup_scale))
+	_spawn_attack_range_indicator()
 
 
 func _start_shadow_clone_cast() -> void:
@@ -873,14 +1440,19 @@ func _get_ratfolk_scene() -> PackedScene:
 
 
 func _clamp_world_position_to_bounds(world_position: Vector2) -> Vector2:
-	var clamped := world_position
+	var parent_node := get_parent() as Node2D
+	var clamped_local := world_position
+	if parent_node != null:
+		clamped_local = parent_node.to_local(world_position)
 	var min_x := minf(lane_min_x, lane_max_x) + arena_padding
 	var max_x := maxf(lane_min_x, lane_max_x) - arena_padding
 	var min_y := minf(lane_min_y, lane_max_y) + arena_padding
 	var max_y := maxf(lane_min_y, lane_max_y) - arena_padding
-	clamped.x = clampf(clamped.x, min_x, max_x)
-	clamped.y = clampf(clamped.y, min_y, max_y)
-	return clamped
+	clamped_local.x = clampf(clamped_local.x, min_x, max_x)
+	clamped_local.y = clampf(clamped_local.y, min_y, max_y)
+	if parent_node != null:
+		return parent_node.to_global(clamped_local)
+	return clamped_local
 
 
 func _perform_attack() -> void:
@@ -899,6 +1471,8 @@ func _perform_attack() -> void:
 		var enemy := node as EnemyBase
 		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
 			continue
+		if _is_enemy_shadow_feared(enemy):
+			continue
 		var to_enemy := enemy.global_position - global_position
 		if absf(to_enemy.y) > effective_depth_tolerance:
 			continue
@@ -912,9 +1486,14 @@ func _perform_attack() -> void:
 		var landed := bool(enemy.call("receive_hit", attack_damage, global_position, outgoing_hit_stun_duration, true, attack_knockback_scale))
 		if landed:
 			hit_any = true
+			if enemy.has_method("apply_hitstop"):
+				enemy.apply_hitstop(maxf(0.0, attack_hitstop_duration))
+			var impact_scale := maxf(0.6, attack_impact_vfx_scale)
+			_spawn_hit_effect(enemy.global_position + Vector2(0.0, -12.0), Color(1.0, 0.8, 0.42, 0.95), 7.2 * impact_scale)
 
 	if hit_any:
-		_spawn_hit_effect(global_position + (facing_direction * 14.0) + Vector2(0.0, -10.0), Color(0.9, 0.74, 0.34, 0.95), 8.0)
+		var swing_scale := maxf(0.6, attack_impact_vfx_scale)
+		_spawn_hit_effect(global_position + (facing_direction * 14.0) + Vector2(0.0, -10.0), Color(0.94, 0.78, 0.36, 0.95), 8.0 * swing_scale)
 
 
 func needs_healing(threshold_ratio: float = 0.999) -> bool:
@@ -939,7 +1518,7 @@ func receive_heal(amount: float) -> bool:
 	return true
 
 
-func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = false, stun_duration: float = 0.0) -> bool:
+func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = false, stun_duration: float = 0.0, knockback_scale: float = 1.0) -> bool:
 	if dead:
 		return false
 	if amount <= 0.0:
@@ -950,7 +1529,7 @@ func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = f
 	var knockback_direction := (global_position - source_position).normalized()
 	if knockback_direction == Vector2.ZERO:
 		knockback_direction = Vector2.RIGHT if facing_left else Vector2.LEFT
-	knockback_velocity = knockback_direction * hit_knockback_speed
+	knockback_velocity = knockback_direction * hit_knockback_speed * maxf(0.1, knockback_scale)
 	current_health = maxf(0.0, current_health - amount)
 	health_changed.emit(current_health, max_health)
 	hit_flash_left = 0.12
@@ -1185,6 +1764,41 @@ func _update_health_bar() -> void:
 	health_bar_fill.visible = health_ratio > 0.0
 
 
+func _setup_breath_safe_indicator() -> void:
+	if breath_safe_indicator != null and is_instance_valid(breath_safe_indicator):
+		return
+	var icon := Line2D.new()
+	icon.name = "BreathSafeIndicator"
+	icon.width = 2.2
+	icon.default_color = Color(0.46, 0.92, 1.0, 0.0)
+	icon.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	icon.end_cap_mode = Line2D.LINE_CAP_ROUND
+	icon.joint_mode = Line2D.LINE_JOINT_ROUND
+	icon.closed = true
+	icon.points = PackedVector2Array([
+		Vector2(0.0, -6.0),
+		Vector2(6.0, 0.0),
+		Vector2(0.0, 6.0),
+		Vector2(-6.0, 0.0)
+	])
+	icon.visible = false
+	add_child(icon)
+	breath_safe_indicator = icon
+
+
+func _update_breath_safe_indicator() -> void:
+	if breath_safe_indicator == null or not is_instance_valid(breath_safe_indicator):
+		return
+	if breath_safe_indicator_left <= 0.0:
+		breath_safe_indicator.visible = false
+		return
+	var pulse := 0.5 + (sin(Time.get_ticks_msec() * 0.014) * 0.5)
+	breath_safe_indicator.visible = true
+	breath_safe_indicator.position = Vector2(0.0, -42.0)
+	breath_safe_indicator.scale = Vector2.ONE * lerpf(0.96, 1.14, pulse)
+	breath_safe_indicator.default_color = Color(0.46, 0.92, 1.0, lerpf(0.24, 0.78, clampf(breath_safe_indicator_left / 0.6, 0.0, 1.0)))
+
+
 func _spawn_hit_effect(world_position: Vector2, effect_color: Color, effect_size: float) -> void:
 	var scene_root := get_tree().current_scene
 	if scene_root == null:
@@ -1210,6 +1824,53 @@ func _spawn_hit_effect(world_position: Vector2, effect_color: Color, effect_size
 	)
 
 
+func _spawn_attack_range_indicator() -> void:
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		scene_root = get_parent()
+	if scene_root == null:
+		return
+
+	var facing_direction := Vector2.LEFT if facing_left else Vector2.RIGHT
+	if target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead:
+		var to_target := target_enemy.global_position - global_position
+		if to_target.length_squared() > 0.0001:
+			facing_direction = to_target.normalized()
+
+	var indicator := Node2D.new()
+	indicator.top_level = true
+	indicator.global_position = global_position + Vector2(0.0, -12.0)
+	indicator.rotation = facing_direction.angle()
+	indicator.z_index = 229
+	scene_root.add_child(indicator)
+
+	var attack_radius := attack_range * 0.28
+	var arc := Line2D.new()
+	arc.default_color = Color(1.0, 0.82, 0.42, 0.84)
+	arc.width = maxf(1.4, attack_range_indicator_width)
+	arc.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	arc.end_cap_mode = Line2D.LINE_CAP_ROUND
+	arc.points = _build_attack_arc_points(attack_radius, attack_arc_degrees, 13)
+	indicator.add_child(arc)
+
+	var guide := Line2D.new()
+	guide.default_color = Color(1.0, 0.92, 0.58, 0.62)
+	guide.width = maxf(1.0, attack_range_indicator_width * 0.45)
+	guide.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	guide.end_cap_mode = Line2D.LINE_CAP_ROUND
+	guide.points = PackedVector2Array([Vector2.ZERO, Vector2(attack_radius, 0.0)])
+	indicator.add_child(guide)
+
+	var duration := maxf(0.06, attack_range_indicator_duration)
+	var tween := create_tween()
+	tween.tween_property(indicator, "scale", Vector2(1.08, 1.08), duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(indicator, "modulate:a", 0.0, duration)
+	tween.finished.connect(func() -> void:
+		if is_instance_valid(indicator):
+			indicator.queue_free()
+	)
+
+
 func _spawn_shadow_clone_focus_effect() -> void:
 	var scene_root := get_tree().current_scene
 	if scene_root == null:
@@ -1224,7 +1885,7 @@ func _spawn_shadow_clone_focus_effect() -> void:
 	scene_root.add_child(burst)
 
 	var ring := Line2D.new()
-	ring.default_color = Color(0.72, 0.68, 1.0, 0.9)
+	ring.default_color = Color(0.72, 0.44, 1.0, 0.9)
 	ring.width = 2.4
 	ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	ring.end_cap_mode = Line2D.LINE_CAP_ROUND
@@ -1233,7 +1894,7 @@ func _spawn_shadow_clone_focus_effect() -> void:
 	burst.add_child(ring)
 
 	var inner_ring := Line2D.new()
-	inner_ring.default_color = Color(0.5, 0.84, 1.0, 0.72)
+	inner_ring.default_color = Color(0.72, 0.44, 1.0, 0.72)
 	inner_ring.width = 1.7
 	inner_ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	inner_ring.end_cap_mode = Line2D.LINE_CAP_ROUND
@@ -1242,7 +1903,7 @@ func _spawn_shadow_clone_focus_effect() -> void:
 	burst.add_child(inner_ring)
 
 	var cross := Line2D.new()
-	cross.default_color = Color(0.68, 0.96, 1.0, 0.85)
+	cross.default_color = Color(0.72, 0.44, 1.0, 0.85)
 	cross.width = 1.8
 	cross.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	cross.end_cap_mode = Line2D.LINE_CAP_ROUND
@@ -1250,7 +1911,7 @@ func _spawn_shadow_clone_focus_effect() -> void:
 	burst.add_child(cross)
 
 	var cross_v := Line2D.new()
-	cross_v.default_color = Color(0.68, 0.96, 1.0, 0.85)
+	cross_v.default_color = Color(0.72, 0.44, 1.0, 0.85)
 	cross_v.width = 1.8
 	cross_v.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	cross_v.end_cap_mode = Line2D.LINE_CAP_ROUND
@@ -1282,7 +1943,7 @@ func _spawn_shadow_clone_birth_effect(world_position: Vector2) -> void:
 	scene_root.add_child(pulse)
 
 	var ring := Line2D.new()
-	ring.default_color = Color(0.62, 0.92, 1.0, 0.92)
+	ring.default_color = Color(0.72, 0.44, 1.0, 0.92)
 	ring.width = 2.6
 	ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	ring.end_cap_mode = Line2D.LINE_CAP_ROUND
@@ -1290,7 +1951,7 @@ func _spawn_shadow_clone_birth_effect(world_position: Vector2) -> void:
 	ring.points = _build_ring_points(8.0, 16)
 	pulse.add_child(ring)
 
-	var shards_color := Color(0.78, 0.74, 1.0, 0.85)
+	var shards_color := Color(0.72, 0.44, 1.0, 0.85)
 	for i in range(3):
 		var shard := Polygon2D.new()
 		shard.color = shards_color
@@ -1319,6 +1980,18 @@ func _build_ring_points(radius: float, segments: int) -> PackedVector2Array:
 	for i in range(safe_segments):
 		var angle := (TAU * float(i)) / float(safe_segments)
 		points.append(Vector2.RIGHT.rotated(angle) * radius)
+	return points
+
+
+func _build_attack_arc_points(radius: float, arc_degrees: float, points_count: int) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	var safe_radius := maxf(8.0, radius)
+	var safe_points := maxi(3, points_count)
+	var half_arc := deg_to_rad(clampf(arc_degrees, 10.0, 179.0) * 0.5)
+	for i in range(safe_points):
+		var t := float(i) / float(safe_points - 1)
+		var angle := lerpf(-half_arc, half_arc, t)
+		points.append(Vector2.RIGHT.rotated(angle) * safe_radius)
 	return points
 
 

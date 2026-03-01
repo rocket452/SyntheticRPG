@@ -105,6 +105,9 @@ signal item_looted(item_name: String, total_owned: int)
 @export var hit_confirm_cancel_enabled: bool = true
 @export var camera_shake_duration: float = 0.14
 @export var camera_shake_strength: float = 5.0
+@export var impact_hitstop_multiplier: float = 1.22
+@export var impact_camera_shake_multiplier: float = 1.18
+@export var impact_vfx_scale_multiplier: float = 1.15
 
 @export var pickup_radius: float = 34.0
 @export var health_bar_width: float = 74.0
@@ -171,6 +174,10 @@ const PLAYER_ACTION_FRAME_COLUMNS: Dictionary = {
 	"death": [0, 1, 2, 3]
 }
 const PLAYER_BLOCK_HOLD_FRAME_INDEX: int = 3
+const BLOCK_SHIELD_EFFECT_SHEET_PATH: String = "res://assets/external/shieldeffect/shieldEffectSpriteSheet.png"
+const BLOCK_SHIELD_EFFECT_FRAME_SIZE: Vector2i = Vector2i(32, 32)
+const BLOCK_SHIELD_EFFECT_FRAME_ROWS: int = 3
+const BLOCK_SHIELD_EFFECT_ANIM_FPS: float = 9.0
 const BASIC_COMBO_MAX_HITS: int = 3
 const BASIC_COMBO_DAMAGE_MULTIPLIERS: Array = [1.0, 1.14, 1.34]
 const BASIC_COMBO_RANGE_MULTIPLIERS: Array = [1.0, 1.08, 1.18]
@@ -198,6 +205,7 @@ var inventory: Dictionary = {}
 
 var facing_direction: Vector2 = Vector2.RIGHT
 var is_blocking: bool = false
+var debug_auto_block_enabled: bool = false
 var is_rolling: bool = false
 var is_invulnerable: bool = false
 var is_dead: bool = false
@@ -255,6 +263,9 @@ var last_step_phase_sign: int = 1
 var player_sprite_anim_key: String = ""
 var player_sprite_anim_time: float = 0.0
 var using_external_player_sprite: bool = false
+var block_shield_effect_sprite: AnimatedSprite2D = null
+var block_shield_effect_frames: SpriteFrames = null
+var block_shield_effect_texture: Texture2D = null
 var character_sprite_base_position: Vector2 = Vector2.ZERO
 var light_attack_recovery_left: float = 0.0
 var combat_state: CombatState = CombatState.IDLE_MOVE
@@ -412,6 +423,7 @@ func _ready() -> void:
 	block_indicator.round_precision = 8
 	block_indicator.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	block_indicator.end_cap_mode = Line2D.LINE_CAP_ROUND
+	_setup_block_shield_effect_sprite()
 	_setup_health_bar()
 	_update_health_bar()
 	emit_initial_state()
@@ -551,7 +563,7 @@ func receive_heal(amount: float) -> bool:
 	return true
 
 
-func receive_hit(amount: float, source_position: Vector2, guard_break: bool = false, stun_duration: float = 0.0) -> bool:
+func receive_hit(amount: float, source_position: Vector2, guard_break: bool = false, stun_duration: float = 0.0, knockback_scale: float = 1.0) -> bool:
 	if is_dead:
 		return false
 	if is_invulnerable:
@@ -576,7 +588,7 @@ func receive_hit(amount: float, source_position: Vector2, guard_break: bool = fa
 		knockback_direction = Vector2.LEFT if facing_direction.x >= 0.0 else Vector2.RIGHT
 	var can_super_armor := _has_super_armor() and not blocked and not guard_break
 	var super_armor_active := can_super_armor and damage_to_apply < armor_break_threshold
-	var knockback_strength := hit_knockback_speed * (0.45 if blocked else 1.0)
+	var knockback_strength := hit_knockback_speed * (0.45 if blocked else 1.0) * maxf(0.1, knockback_scale)
 	if super_armor_active:
 		knockback_strength *= 0.45
 	knockback_velocity = knockback_direction * knockback_strength
@@ -986,7 +998,7 @@ func _handle_actions() -> void:
 		_start_roll()
 		return
 
-	var wants_block := Input.is_action_pressed("block")
+	var wants_block := Input.is_action_pressed("block") or debug_auto_block_enabled
 	if not wants_block:
 		instant_dash_block_latched = false
 	if wants_block and _can_enter_instant_dash_block():
@@ -1624,6 +1636,9 @@ func _apply_melee_strike(
 	var facing := facing_direction.normalized()
 	if facing == Vector2.ZERO:
 		facing = Vector2.RIGHT
+	var hitstop_scale := maxf(0.4, impact_hitstop_multiplier)
+	var shake_scale := maxf(0.4, impact_camera_shake_multiplier)
+	var impact_vfx_scale := maxf(0.5, impact_vfx_scale_multiplier)
 	var arc_threshold := cos(deg_to_rad(arc_degrees * 0.5))
 	var hit_ids: Dictionary = {}
 	var hit_confirmed := false
@@ -1649,18 +1664,19 @@ func _apply_melee_strike(
 		if enemy.receive_hit(damage, global_position, stun_duration, true, knockback_scale):
 			hit_confirmed = true
 			var hit_world_position := enemy.global_position + Vector2(0.0, -12.0)
-			strongest_hitstop = maxf(strongest_hitstop, hitstop_duration)
-			strongest_vfx_scale = maxf(strongest_vfx_scale, vfx_scale)
+			var applied_hitstop := hitstop_duration * hitstop_scale
+			strongest_hitstop = maxf(strongest_hitstop, applied_hitstop)
+			strongest_vfx_scale = maxf(strongest_vfx_scale, vfx_scale * impact_vfx_scale)
 			if enemy.has_method("apply_hitstop"):
-				enemy.apply_hitstop(hitstop_duration)
-			_spawn_hit_effect(hit_world_position, Color(1.0, 0.8, 0.44, 0.95), 9.0 * maxf(0.6, vfx_scale))
+				enemy.apply_hitstop(applied_hitstop)
+			_spawn_hit_effect(hit_world_position, Color(1.0, 0.82, 0.46, 0.95), 9.0 * maxf(0.6, vfx_scale * impact_vfx_scale))
 			if not is_dead and enemy.can_trade_melee_with(self):
 				receive_hit(enemy.get_trade_damage(), enemy.global_position, false, enemy.get_trade_stun_duration())
 				if is_dead:
 					return true
 	if hit_confirmed:
 		_start_hitstop(strongest_hitstop)
-		_start_camera_shake(camera_shake_duration, camera_shake_strength * maxf(0.7, strongest_vfx_scale))
+		_start_camera_shake(camera_shake_duration * shake_scale, (camera_shake_strength * shake_scale) * maxf(0.7, strongest_vfx_scale))
 	return hit_confirmed
 
 
@@ -1830,6 +1846,11 @@ func get_block_shield_center_global() -> Vector2:
 	return global_position + Vector2(0.0, block_shield_y_offset)
 
 
+func toggle_debug_auto_block() -> bool:
+	debug_auto_block_enabled = not debug_auto_block_enabled
+	return debug_auto_block_enabled
+
+
 func is_point_inside_block_shield(world_point: Vector2) -> bool:
 	if not is_block_shield_active():
 		return false
@@ -1846,19 +1867,78 @@ func _build_circle_line_points(center: Vector2, radius: float, segments: int) ->
 	return points
 
 
+func _setup_block_shield_effect_sprite() -> void:
+	if block_shield_effect_sprite != null and is_instance_valid(block_shield_effect_sprite):
+		return
+	var effect_sprite := AnimatedSprite2D.new()
+	effect_sprite.name = "BlockShieldEffect"
+	effect_sprite.centered = true
+	effect_sprite.z_index = block_indicator.z_index
+	effect_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	effect_sprite.visible = false
+	effect_sprite.sprite_frames = _get_block_shield_effect_frames()
+	add_child(effect_sprite)
+	block_shield_effect_sprite = effect_sprite
+
+
+func _get_block_shield_effect_frames() -> SpriteFrames:
+	if block_shield_effect_frames != null:
+		return block_shield_effect_frames
+	var sheet_texture := _get_block_shield_effect_texture()
+	var frames := SpriteFrames.new()
+	frames.add_animation("shield")
+	frames.set_animation_speed("shield", BLOCK_SHIELD_EFFECT_ANIM_FPS)
+	frames.set_animation_loop("shield", true)
+	if sheet_texture == null:
+		block_shield_effect_frames = frames
+		return block_shield_effect_frames
+	for row in range(BLOCK_SHIELD_EFFECT_FRAME_ROWS):
+		var atlas := AtlasTexture.new()
+		atlas.atlas = sheet_texture
+		atlas.region = Rect2i(0, row * BLOCK_SHIELD_EFFECT_FRAME_SIZE.y, BLOCK_SHIELD_EFFECT_FRAME_SIZE.x, BLOCK_SHIELD_EFFECT_FRAME_SIZE.y)
+		frames.add_frame("shield", atlas)
+	block_shield_effect_frames = frames
+	return block_shield_effect_frames
+
+
+func _get_block_shield_effect_texture() -> Texture2D:
+	if block_shield_effect_texture != null:
+		return block_shield_effect_texture
+	var image := Image.new()
+	var err := image.load(ProjectSettings.globalize_path(BLOCK_SHIELD_EFFECT_SHEET_PATH))
+	if err != OK:
+		push_warning("Failed to load block shield effect sprite sheet at %s (error %s)." % [BLOCK_SHIELD_EFFECT_SHEET_PATH, err])
+		return null
+	block_shield_effect_texture = ImageTexture.create_from_image(image)
+	return block_shield_effect_texture
+
+
 func _update_block_indicator_visual() -> void:
 	block_indicator.rotation = 0.0
+	block_indicator.visible = false
 	if not _is_block_pose_ready():
-		block_indicator.visible = false
+		if block_shield_effect_sprite != null and is_instance_valid(block_shield_effect_sprite):
+			block_shield_effect_sprite.visible = false
+			block_shield_effect_sprite.stop()
 		return
 
 	var pulse := 0.5 + (sin(anim_time * maxf(0.1, block_shield_pulse_speed)) * 0.5)
 	var radius := maxf(8.0, block_shield_radius * lerpf(0.96, 1.04, pulse))
 	var center_local := Vector2(0.0, block_shield_y_offset)
-	block_indicator.visible = true
-	block_indicator.points = _build_circle_line_points(center_local, radius, block_shield_segments)
-	block_indicator.width = lerpf(block_shield_line_width * 0.9, block_shield_line_width * 1.15, pulse)
-	block_indicator.default_color = Color(0.48, 0.86, 1.0, lerpf(0.42, 0.74, pulse))
+	if block_shield_effect_sprite == null or not is_instance_valid(block_shield_effect_sprite):
+		_setup_block_shield_effect_sprite()
+	if block_shield_effect_sprite == null or not is_instance_valid(block_shield_effect_sprite):
+		return
+	var frame_extent := float(maxi(BLOCK_SHIELD_EFFECT_FRAME_SIZE.x, BLOCK_SHIELD_EFFECT_FRAME_SIZE.y))
+	var base_scale := (radius * 2.0) / maxf(1.0, frame_extent)
+	block_shield_effect_sprite.visible = true
+	block_shield_effect_sprite.position = center_local
+	block_shield_effect_sprite.flip_h = facing_direction.x < 0.0
+	block_shield_effect_sprite.scale = Vector2.ONE * (base_scale * 1.3)
+	block_shield_effect_sprite.modulate = Color(0.48, 0.86, 1.0, lerpf(0.42, 0.74, pulse))
+	if block_shield_effect_sprite.sprite_frames != null and block_shield_effect_sprite.sprite_frames.has_animation("shield"):
+		if block_shield_effect_sprite.animation != "shield" or not block_shield_effect_sprite.is_playing():
+			block_shield_effect_sprite.play("shield")
 
 
 func _emit_cooldown_state() -> void:
@@ -1893,6 +1973,9 @@ func _die() -> void:
 	weapon_trail.visible = false
 	slash_effect.visible = false
 	block_indicator.visible = false
+	if block_shield_effect_sprite != null and is_instance_valid(block_shield_effect_sprite):
+		block_shield_effect_sprite.visible = false
+		block_shield_effect_sprite.stop()
 	gem_visual.scale = gem_base_scale
 	blade_rune_visual.scale = blade_rune_base_scale
 	blade_pommel_visual.scale = Vector2.ONE

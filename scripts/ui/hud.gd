@@ -22,7 +22,7 @@ func _ready() -> void:
 	combat_debug_label.position = Vector2(990.0, 20.0)
 	combat_debug_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	combat_debug_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-	combat_debug_label.size = Vector2(620.0, 172.0)
+	combat_debug_label.size = Vector2(620.0, 230.0)
 	combat_debug_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	combat_debug_label.modulate = Color(0.88, 0.97, 1.0, 0.94)
 	combat_debug_label.text = ""
@@ -63,7 +63,14 @@ func update_combat_debug(values: Dictionary) -> void:
 	var tank_basic_cd_left := float(values.get("tank_basic_cd_left", 0.0))
 	var boss_windup_duration := float(values.get("boss_windup_duration", 0.0))
 	var boss_lunge_cycle_left := float(values.get("boss_lunge_cycle_left", 0.0))
-	combat_debug_label.text = "HealerAI: %s -> %s\nDPSAI: %s -> %s\nMarked Ally: %s\nBoss: %s  VulnerableTimer: %.2fs\nPACING_DEBUG: TankSwingCD %.2fs | BossWindup %.2fs | BossLungeCD %.2fs" % [
+	var minion_count := int(values.get("minion_count", 0))
+	var clone_count := int(values.get("clone_count", 0))
+	var breath_state := String(values.get("breath_state", "Idle"))
+	var breath_time_left := float(values.get("breath_time_left", 0.0))
+	var tank_blocking := bool(values.get("tank_blocking", false))
+	var pocket_valid := bool(values.get("pocket_valid", false))
+	var companions_safe := int(values.get("companions_safe", 0))
+	combat_debug_label.text = "HealerAI: %s -> %s\nDPSAI: %s -> %s\nMarked Ally: %s\nBoss: %s  VulnerableTimer: %.2fs\nBreath: %s %.2fs | TankBlocking: %s | Pocket: %s | SafeCount: %d\nMinions: %d  Clones: %d\nPACING_DEBUG: TankSwingCD %.2fs | BossWindup %.2fs | BossLungeCD %.2fs" % [
 		healer_state,
 		healer_target,
 		dps_state,
@@ -71,6 +78,13 @@ func update_combat_debug(values: Dictionary) -> void:
 		marked_ally,
 		boss_state,
 		vulnerable_left,
+		breath_state,
+		breath_time_left,
+		"yes" if tank_blocking else "no",
+		"valid" if pocket_valid else "none",
+		companions_safe,
+		minion_count,
+		clone_count,
 		tank_basic_cd_left,
 		boss_windup_duration,
 		boss_lunge_cycle_left
@@ -79,8 +93,12 @@ func update_combat_debug(values: Dictionary) -> void:
 
 func show_item_pickup(item_name: String, total_owned: int) -> void:
 	items_label.text = "Inventory: %s x%d" % [item_name, total_owned]
-	status_label.text = "Picked up %s" % item_name
-	status_timer.start(2.2)
+	show_status_message("Picked up %s" % item_name, 2.2)
+
+
+func show_status_message(text: String, duration: float = 1.6) -> void:
+	status_label.text = text
+	status_timer.start(maxf(0.1, duration))
 
 
 func show_victory() -> void:

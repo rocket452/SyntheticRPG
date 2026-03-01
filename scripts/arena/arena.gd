@@ -1,6 +1,11 @@
 extends Node2D
 class_name Arena
 
+enum EncounterType {
+	MINOTAUR,
+	CACODEMON
+}
+
 signal player_health_changed(current: float, maximum: float)
 signal player_xp_changed(current: int, needed: int, level: int)
 signal cooldowns_changed(values: Dictionary)
@@ -9,15 +14,20 @@ signal item_collected(item_name: String, total_owned: int)
 signal player_died
 signal demo_won
 signal combat_debug_changed(values: Dictionary)
+signal status_message(text: String, duration: float)
 
 const PLAYER_SCENE: PackedScene = preload("res://scenes/player/Player.tscn")
 const FRIENDLY_HEALER_SCENE: PackedScene = preload("res://scenes/npcs/FriendlyHealer.tscn")
 const FRIENDLY_RATFOLK_SCENE: PackedScene = preload("res://scenes/npcs/FriendlyRatfolk.tscn")
 const MELEE_ENEMY_SCENE: PackedScene = preload("res://scenes/enemies/MeleeEnemy.tscn")
 const ITEM_SCENE: PackedScene = preload("res://scenes/items/ItemPickup.tscn")
+const COMPANION_BREATH_RESPONSE_SCRIPT := preload("res://ai/CompanionBreathResponse.gd")
 
 @export var regular_enemy_count: int = 1
-@export var allow_multiple_minotaurs: bool = false
+@export var allow_multiple_minotaurs: bool = true
+@export var max_active_minotaurs: int = 2
+@export var timed_extra_minotaur_enabled: bool = true
+@export var timed_extra_minotaur_delay: float = 12.0
 @export var spawn_jitter: float = 18.0
 @export var arena_min_x: float = -760.0
 @export var arena_max_x: float = 760.0
@@ -45,6 +55,11 @@ var ratfolk: Node2D = null
 var alive_regular_enemies: int = 0
 var demo_started: bool = false
 var spawn_next_debug_enemy_on_left: bool = true
+var demo_elapsed: float = 0.0
+var timed_extra_minotaur_spawned: bool = false
+var initial_minotaur_spawn_on_left: bool = false
+var spawned_minotaurs_total: int = 0
+var selected_encounter: int = EncounterType.MINOTAUR
 var rng := RandomNumberGenerator.new()
 
 
@@ -55,16 +70,34 @@ func _ready() -> void:
 		rng.randomize()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if not demo_started:
 		return
+	demo_elapsed += maxf(0.0, delta)
+	_try_spawn_timed_extra_minotaur()
 	_emit_combat_debug()
+
+
+func start_demo_with_encounter(encounter_type: int) -> void:
+	set_encounter_type(encounter_type)
+	start_demo()
+
+
+func set_encounter_type(encounter_type: int) -> void:
+	if encounter_type == EncounterType.CACODEMON:
+		selected_encounter = EncounterType.CACODEMON
+	else:
+		selected_encounter = EncounterType.MINOTAUR
 
 
 func start_demo() -> void:
 	if demo_started:
 		return
 	demo_started = true
+	demo_elapsed = 0.0
+	timed_extra_minotaur_spawned = false
+	initial_minotaur_spawn_on_left = false
+	spawned_minotaurs_total = 0
 	_spawn_player()
 	_spawn_friendly_healer()
 	_spawn_friendly_ratfolk()
@@ -125,12 +158,21 @@ func _spawn_friendly_ratfolk() -> void:
 
 func _spawn_regular_enemies() -> void:
 	alive_regular_enemies = 0
+	if selected_encounter == EncounterType.CACODEMON:
+		_spawn_cacodemon_encounter()
+		return
+	var spawn_count := regular_enemy_count
+	var minotaur_cap := _get_minotaur_spawn_cap()
+	spawn_count = mini(spawn_count, minotaur_cap)
+	if spawn_count >= 2:
+		_spawn_edge_minotaur_on_side(false, -24.0)
+		_spawn_edge_minotaur_on_side(false, 24.0)
+		spawn_count -= 2
+	if spawn_count <= 0:
+		return
 	if spawn_points.is_empty():
 		push_error("No spawn points configured in Arena scene.")
 		return
-	var spawn_count := regular_enemy_count
-	if not allow_multiple_minotaurs:
-		spawn_count = mini(1, regular_enemy_count)
 	for i in spawn_count:
 		var spawn_marker := spawn_points[rng.randi_range(0, spawn_points.size() - 1)] as Marker2D
 		if spawn_marker == null:
@@ -142,36 +184,127 @@ func _spawn_regular_enemies() -> void:
 		var enemy := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position)
 		if enemy == null:
 			continue
-		enemy.is_miniboss = true
-		enemy.max_health = maxf(10.0, enemy.max_health * miniboss_health_scale)
-		enemy.current_health = enemy.max_health
+		_configure_miniboss(enemy)
+		if alive_regular_enemies <= 0:
+			initial_minotaur_spawn_on_left = spawn_position.x < _get_arena_center_x()
 		alive_regular_enemies += 1
+		spawned_minotaurs_total += 1
 
 
 func spawn_debug_minotaur_alternating() -> void:
 	if not demo_started:
 		return
-	if not allow_multiple_minotaurs and _has_any_alive_enemy():
+	if selected_encounter != EncounterType.MINOTAUR:
+		return
+	if not _can_spawn_additional_minotaur():
+		return
+	_spawn_edge_minotaur()
+
+
+func _try_spawn_timed_extra_minotaur() -> void:
+	if selected_encounter != EncounterType.MINOTAUR:
+		return
+	if not timed_extra_minotaur_enabled:
+		return
+	if timed_extra_minotaur_spawned:
+		return
+	if not _can_spawn_additional_minotaur():
+		return
+	if alive_regular_enemies <= 0:
+		return
+	if demo_elapsed < maxf(0.0, timed_extra_minotaur_delay):
+		return
+	timed_extra_minotaur_spawned = true
+	_spawn_edge_minotaur_on_side(initial_minotaur_spawn_on_left)
+
+
+func _spawn_cacodemon_encounter() -> void:
+	var min_x := minf(arena_min_x, arena_max_x)
+	var max_x := maxf(arena_min_x, arena_max_x)
+	var min_y := minf(arena_min_y, arena_max_y)
+	var max_y := maxf(arena_min_y, arena_max_y)
+	var spawn_x := max_x - 42.0
+	var spawn_y := lerpf(min_y, max_y, 0.5)
+	if is_instance_valid(player):
+		spawn_y = clampf(player.position.y, min_y + 10.0, max_y - 10.0)
+	var spawn_position := to_global(Vector2(spawn_x, spawn_y))
+	var enemy := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position)
+	if enemy == null:
+		return
+	_configure_miniboss(enemy)
+	if enemy.has_method("set_monster_visual_profile"):
+		enemy.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.CACODEMON))
+	alive_regular_enemies = 1
+
+
+func _configure_miniboss(enemy: EnemyBase) -> void:
+	if enemy == null:
+		return
+	enemy.is_miniboss = true
+	enemy.boss_can_summon_minions = false
+	enemy.boss_summon_count = 0
+	enemy.max_health = maxf(10.0, enemy.max_health * miniboss_health_scale)
+	enemy.current_health = enemy.max_health
+
+
+func _spawn_edge_minotaur() -> void:
+	_spawn_edge_minotaur_on_side(spawn_next_debug_enemy_on_left)
+	spawn_next_debug_enemy_on_left = not spawn_next_debug_enemy_on_left
+
+
+func _spawn_edge_minotaur_on_side(spawn_on_left: bool, vertical_offset: float = 0.0) -> void:
+	if not _can_spawn_additional_minotaur():
 		return
 	var min_x := minf(arena_min_x, arena_max_x)
 	var max_x := maxf(arena_min_x, arena_max_x)
 	var min_y := minf(arena_min_y, arena_max_y)
 	var max_y := maxf(arena_min_y, arena_max_y)
 	var edge_inset := 26.0
-	var spawn_x := min_x + edge_inset if spawn_next_debug_enemy_on_left else max_x - edge_inset
-	spawn_next_debug_enemy_on_left = not spawn_next_debug_enemy_on_left
+	var spawn_x := min_x + edge_inset if spawn_on_left else max_x - edge_inset
 	var spawn_y := lerpf(min_y, max_y, 0.5)
 	if is_instance_valid(player):
 		spawn_y = clampf(player.position.y, min_y + 8.0, max_y - 8.0)
+	spawn_y = clampf(spawn_y + vertical_offset, min_y + 8.0, max_y - 8.0)
 	var spawn_position := to_global(Vector2(spawn_x, spawn_y))
 	var enemy := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position)
 	if enemy == null:
 		return
-	enemy.is_miniboss = true
-	enemy.max_health = maxf(10.0, enemy.max_health * miniboss_health_scale)
-	enemy.current_health = enemy.max_health
+	_configure_miniboss(enemy)
+	if alive_regular_enemies <= 0:
+		initial_minotaur_spawn_on_left = spawn_on_left
 	alive_regular_enemies += 1
+	spawned_minotaurs_total += 1
 	_update_objective()
+
+
+func _can_spawn_additional_minotaur() -> bool:
+	var minotaur_cap := _get_minotaur_spawn_cap()
+	if spawned_minotaurs_total >= minotaur_cap:
+		return false
+	return _count_alive_minotaurs() < minotaur_cap
+
+
+func _get_minotaur_spawn_cap() -> int:
+	var minotaur_cap := maxi(1, max_active_minotaurs)
+	if not allow_multiple_minotaurs:
+		minotaur_cap = 1
+	return minotaur_cap
+
+
+func _count_alive_minotaurs() -> int:
+	var count := 0
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if not enemy.is_miniboss:
+			continue
+		count += 1
+	return count
+
+
+func _get_arena_center_x() -> float:
+	return (minf(arena_min_x, arena_max_x) + maxf(arena_min_x, arena_max_x)) * 0.5
 
 
 func _spawn_enemy(scene: PackedScene, spawn_position: Vector2) -> EnemyBase:
@@ -185,13 +318,13 @@ func _spawn_enemy(scene: PackedScene, spawn_position: Vector2) -> EnemyBase:
 	enemy.died.connect(_on_enemy_died)
 	if not enemy.summon_minions_requested.is_connected(_on_enemy_summon_minions_requested):
 		enemy.summon_minions_requested.connect(_on_enemy_summon_minions_requested)
+	if not enemy.breath_threat.is_connected(_on_enemy_breath_threat):
+		enemy.breath_threat.connect(_on_enemy_breath_threat.bind(enemy))
 	return enemy
 
 
 func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> void:
 	if not demo_started:
-		return
-	if not allow_multiple_minotaurs:
 		return
 	var total_to_spawn := maxi(1, count)
 	var min_x := minf(arena_min_x, arena_max_x)
@@ -221,6 +354,22 @@ func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> 
 		alive_regular_enemies += 1
 		spawn_next_debug_enemy_on_left = not spawn_next_debug_enemy_on_left
 	_update_objective()
+
+
+func _on_enemy_breath_threat(active: bool, boss_pos: Vector2, dir: Vector2, time_remaining: float, source_enemy: EnemyBase) -> void:
+	if not active:
+		return
+	if source_enemy == null or not is_instance_valid(source_enemy):
+		return
+	if not source_enemy.has_method("get_breath_threat_snapshot"):
+		return
+	var snapshot_variant: Variant = source_enemy.call("get_breath_threat_snapshot")
+	if not (snapshot_variant is Dictionary):
+		return
+	var snapshot := snapshot_variant as Dictionary
+	if not bool(snapshot.get("charge_active", false)):
+		return
+	status_message.emit("BREATH INCOMING!", 0.85)
 
 
 func _has_any_alive_enemy() -> bool:
@@ -306,6 +455,9 @@ func _update_objective() -> void:
 	if alive_regular_enemies <= 0:
 		objective_changed.emit("Objective: Victory")
 		return
+	if selected_encounter == EncounterType.CACODEMON:
+		objective_changed.emit("Objective: Defeat the Cacodemon")
+		return
 	objective_changed.emit("Objective: Defeat enemies (%d remaining)" % alive_regular_enemies)
 
 
@@ -334,6 +486,14 @@ func _emit_combat_debug() -> void:
 	var vulnerable_left := 0.0
 	var boss_windup_duration := 0.0
 	var boss_lunge_cycle_left := 0.0
+	var minion_count := 0
+	var clone_count := 0
+	var breath_state := "Idle"
+	var breath_time_left := 0.0
+	var tank_blocking := is_instance_valid(player) and player.is_blocking
+	var pocket_valid := false
+	var companions_safe := 0
+
 	var debug_boss := _get_debug_boss()
 	if debug_boss != null:
 		if debug_boss.has_method("get_boss_marked_ally_name"):
@@ -346,8 +506,30 @@ func _emit_combat_debug() -> void:
 				vulnerable_left = vulnerable_variant
 			elif vulnerable_variant is int:
 				vulnerable_left = float(vulnerable_variant)
+		if debug_boss.has_method("get_breath_threat_snapshot"):
+			var breath_variant: Variant = debug_boss.call("get_breath_threat_snapshot")
+			if breath_variant is Dictionary:
+				var breath_snapshot := breath_variant as Dictionary
+				breath_state = String(breath_snapshot.get("state_name", "Idle"))
+				breath_time_left = float(breath_snapshot.get("time_remaining", 0.0))
+				tank_blocking = bool(breath_snapshot.get("tank_blocking", tank_blocking))
+				pocket_valid = bool(breath_snapshot.get("safe_pocket_valid", false))
+				companions_safe = COMPANION_BREATH_RESPONSE_SCRIPT.count_friendlies_in_pocket(get_tree(), breath_snapshot)
 		boss_windup_duration = debug_boss.boss_windup_duration
 		boss_lunge_cycle_left = debug_boss.boss_mark_cycle_left
+
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if not enemy.is_miniboss:
+			minion_count += 1
+
+	for clone_node in get_tree().get_nodes_in_group("shadow_clones"):
+		var clone := clone_node as Node2D
+		if clone == null or not is_instance_valid(clone):
+			continue
+		clone_count += 1
 
 	combat_debug_changed.emit({
 		"healer_state": healer_state,
@@ -359,7 +541,14 @@ func _emit_combat_debug() -> void:
 		"boss_vulnerable_left": vulnerable_left,
 		"tank_basic_cd_left": tank_basic_cd_left,
 		"boss_windup_duration": boss_windup_duration,
-		"boss_lunge_cycle_left": boss_lunge_cycle_left
+		"boss_lunge_cycle_left": boss_lunge_cycle_left,
+		"minion_count": minion_count,
+		"clone_count": clone_count,
+		"breath_state": breath_state,
+		"breath_time_left": breath_time_left,
+		"tank_blocking": tank_blocking,
+		"pocket_valid": pocket_valid,
+		"companions_safe": companions_safe
 	})
 
 
@@ -376,6 +565,31 @@ func _get_debug_boss() -> EnemyBase:
 			nearest_enemy = enemy
 			nearest_dist_sq = dist_sq
 	return nearest_enemy
+
+
+func force_debug_boss_breath() -> void:
+	var debug_boss := _get_debug_boss()
+	if debug_boss == null or not is_instance_valid(debug_boss):
+		return
+	if debug_boss.has_method("debug_force_cacodemon_breath"):
+		debug_boss.call("debug_force_cacodemon_breath")
+
+
+func cycle_debug_breath_vfx_mode() -> int:
+	var debug_boss := _get_debug_boss()
+	if debug_boss == null or not is_instance_valid(debug_boss):
+		return -1
+	if debug_boss.has_method("cycle_cacodemon_breath_visual_mode"):
+		return int(debug_boss.call("cycle_cacodemon_breath_visual_mode"))
+	return -1
+
+
+func toggle_player_auto_block() -> bool:
+	if not is_instance_valid(player):
+		return false
+	if player.has_method("toggle_debug_auto_block"):
+		return bool(player.call("toggle_debug_auto_block"))
+	return false
 
 
 func _on_player_health_changed(current: float, maximum: float) -> void:

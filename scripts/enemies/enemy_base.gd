@@ -1,8 +1,20 @@
 extends CharacterBody2D
 class_name EnemyBase
 
+const BREATH_ATTACK_SCRIPT := preload("res://combat/boss/BreathAttack.gd")
+const BREATH_VFX_SCRIPT := preload("res://vfx/breath/BreathVFX.gd")
+
+const SHADOW_FEAR_DEBUFF_TEXTURE_PATH: String = "res://assets/external/DarkEffects/Dark VFX 2 (48x64).png"
+const SHADOW_FEAR_DEBUFF_FRAME_SIZE: Vector2i = Vector2i(48, 64)
+const SHADOW_FEAR_DEBUFF_FRAME_COUNT: int = 16
+const SHADOW_FEAR_DEBUFF_SPRITE_SCALE: Vector2 = Vector2(1.7, 1.7)
+
+static var shadow_fear_debuff_texture_cache: Texture2D = null
+static var shadow_fear_debuff_frames_cache: SpriteFrames = null
+
 signal died(enemy: EnemyBase)
 signal summon_minions_requested(enemy: EnemyBase, count: int)
+signal breath_threat(active: bool, boss_pos: Vector2, dir: Vector2, time_remaining: float)
 
 enum BossLoopState {
 	IDLE,
@@ -11,6 +23,11 @@ enum BossLoopState {
 	LUNGE,
 	VULNERABLE,
 	SUMMON
+}
+
+enum MonsterVisualProfile {
+	MINOTAUR,
+	CACODEMON
 }
 
 const BOSS_LOOP_STATE_NAMES: Dictionary = {
@@ -45,10 +62,19 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var boss_lunge_speed: float = 420.0
 @export var boss_lunge_damage_multiplier: float = 1.35
 @export var boss_lunge_stun_bonus: float = 0.08
+@export var boss_lunge_max_duration: float = 0.72
+@export var boss_lunge_distance_padding: float = 14.0
+@export var boss_lunge_steer_rate: float = 9.0
 @export var boss_lunge_hit_start_offset: float = 12.0
 @export var boss_lunge_hit_length: float = 112.0
 @export var boss_lunge_hit_half_width: float = 26.0
 @export var boss_lunge_tip_radius: float = 22.0
+@export var boss_lunge_collateral_trigger_travel: float = 18.0
+@export var boss_lunge_knockback_scale: float = 2.35
+@export var boss_lunge_impact_effect_size: float = 22.0
+@export var boss_lunge_block_effect_size: float = 28.0
+@export var boss_lunge_block_hitstop: float = 0.09
+@export var basic_block_success_fx_delay: float = 0.08
 @export var boss_vulnerable_duration: float = 3.0
 @export var boss_mark_cycle_interval: float = 12.5
 @export var boss_summon_interval: float = 25.0
@@ -59,6 +85,22 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var boss_summon_duration: float = 0.75
 @export var boss_summon_every_cycles: int = 3
 @export var boss_summon_count: int = 2
+@export var cacodemon_breath_enabled: bool = true
+@export var cacodemon_breath_range: float = 248.0
+@export var cacodemon_breath_duration: float = 2.7
+@export var cacodemon_breath_cooldown: float = 4.8
+@export var cacodemon_breath_charge_duration: float = 1.15
+@export var cacodemon_breath_tick_interval: float = 0.16
+@export var cacodemon_breath_damage_scale: float = 0.32
+@export var cacodemon_breath_half_width: float = 24.0
+@export var cacodemon_breath_telegraph_half_width_scale: float = 3.8
+@export var cacodemon_breath_block_fx_interval: float = 0.24
+@export var cacodemon_breath_hit_stun_scale: float = 0.45
+@export var cacodemon_breath_knockback_scale: float = 0.32
+@export var cacodemon_breath_pocket_back_offset: float = 58.0
+@export var cacodemon_breath_pocket_half_width: float = 42.0
+@export var cacodemon_breath_pocket_half_depth: float = 32.0
+@export_enum("Mode A - Torrent Split:0", "Mode B - Inferno Wall:1", "Mode C - Braided Ribbons:2") var cacodemon_breath_visual_style: int = 0
 @export var boss_mark_warning_radius_x: float = 72.0
 @export var boss_mark_warning_radius_y: float = 40.0
 @export var prioritize_companion_targets: bool = false
@@ -106,13 +148,18 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var health_bar_width: float = 58.0
 @export var health_bar_thickness: float = 5.0
 @export var health_bar_y_offset: float = -62.0
+@export var shadow_fear_break_duration: float = 5.0
 @export var is_miniboss: bool = false
 @export var debug_orientation_overlay: bool = false
 @export var debug_focus_nearest_enemy_only: bool = true
+@export var monster_visual_profile: MonsterVisualProfile = MonsterVisualProfile.MINOTAUR
 
 const MONSTER_HD_HFRAMES: int = 10
 const MONSTER_HD_VFRAMES: int = 20
 const MONSTER_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/mintotaur/Minotaur - Sprite Sheet Cropped.png")
+const CACODEMON_HD_HFRAMES: int = 8
+const CACODEMON_HD_VFRAMES: int = 4
+const CACODEMON_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/cacodemon/Cacodaemon Sprite Sheet.png")
 const MONSTER_TEXTURES: Dictionary = {
 	"idle": MONSTER_SHEET,
 	"run": MONSTER_SHEET,
@@ -129,6 +176,14 @@ const MONSTER_FPS: Dictionary = {
 	"hurt": 11.0,
 	"death": 8.0
 }
+const CACODEMON_FPS: Dictionary = {
+	"idle": 8.0,
+	"run": 8.4,
+	"attack": 10.0,
+	"spin": 10.0,
+	"hurt": 9.5,
+	"death": 7.2
+}
 const MONSTER_ACTION_ROWS: Dictionary = {
 	"idle": 0,
 	"run": 1,
@@ -136,6 +191,14 @@ const MONSTER_ACTION_ROWS: Dictionary = {
 	"spin": 6,
 	"hurt": 4,
 	"death": 9
+}
+const CACODEMON_ACTION_ROWS: Dictionary = {
+	"idle": 0,
+	"run": 0,
+	"attack": 1,
+	"spin": 1,
+	"hurt": 2,
+	"death": 3
 }
 const MONSTER_ACTION_FRAME_COUNTS: Dictionary = {
 	"idle": 5,
@@ -145,9 +208,21 @@ const MONSTER_ACTION_FRAME_COUNTS: Dictionary = {
 	"hurt": 5,
 	"death": 6
 }
+const CACODEMON_ACTION_FRAME_COUNTS: Dictionary = {
+	"idle": 6,
+	"run": 6,
+	"attack": 6,
+	"spin": 6,
+	"hurt": 4,
+	"death": 7
+}
 const MONSTER_ACTION_FRAME_COLUMNS: Dictionary = {
 	"spin": [0, 1, 2, 3, 4, 5, 6, 7],
 	"hurt": [1, 2, 3, 4]
+}
+const CACODEMON_ACTION_FRAME_COLUMNS: Dictionary = {
+	"hurt": [0, 1, 2, 3],
+	"death": [0, 1, 2, 3, 4, 5, 6]
 }
 const MONSTER_HD_ROW_DIRECTIONS: Array[Vector2] = [
 	Vector2(-0.70710677, -0.70710677),
@@ -190,6 +265,8 @@ var monster_anim_name: String = ""
 var monster_anim_time: float = 0.0
 var using_external_monster_sprite: bool = false
 var monster_sprite_base_position: Vector2 = Vector2.ZERO
+var monster_sprite_default_position: Vector2 = Vector2.ZERO
+var monster_sprite_default_scale: Vector2 = Vector2.ONE
 var external_sprite_facing_direction: Vector2 = Vector2.RIGHT
 var committed_attack_facing_direction: Vector2 = Vector2.RIGHT
 var debug_overlay_root: Node2D = null
@@ -216,13 +293,31 @@ var boss_marked_ally: Node2D = null
 var boss_lunge_direction: Vector2 = Vector2.RIGHT
 var boss_lunge_hit_landed: bool = false
 var boss_lunge_intercepted: bool = false
+var boss_lunge_impact_triggered: bool = false
+var boss_lunge_travel_distance: float = 0.0
+var boss_lunge_last_impact_reason: String = ""
 var boss_lunge_hit_ids: Dictionary = {}
+var block_success_fx_count: int = 0
+var pending_basic_block_success_fx: Array[Dictionary] = []
 var boss_completed_lunge_cycles: int = 0
 var boss_summon_emitted: bool = false
+var boss_lunge_debug_logging_enabled: bool = false
 var boss_mark_cycle_left: float = 0.0
 var boss_summon_cycle_left: float = 0.0
 var companion_target_refresh_left: float = 0.0
 var boss_dps_mark_left: float = 0.0
+var cacodemon_breath_left: float = 0.0
+var cacodemon_breath_tick_left: float = 0.0
+var cacodemon_breath_block_fx_left: float = 0.0
+var cacodemon_breath_charge_left: float = 0.0
+var shadow_fear_left: float = 0.0
+var shadow_fear_apply_count: int = 0
+var shadow_fear_vfx_time: float = 0.0
+var shadow_fear_vfx_root: Node2D = null
+var shadow_fear_vfx_sprite: AnimatedSprite2D = null
+var cacodemon_breath_vfx: Node2D = null
+var breath_attack: RefCounted = null
+var breath_threat_was_active: bool = false
 
 @onready var shadow_visual: Polygon2D = $Shadow
 @onready var body_visual: Polygon2D = $Body
@@ -267,6 +362,7 @@ var cloth_back_base_rotation: float = 0.0
 
 
 func _ready() -> void:
+	boss_lunge_debug_logging_enabled = _is_env_flag_enabled("BOSS_LUNGE_DEBUG")
 	add_to_group("enemies")
 	current_health = max_health
 	attack_cooldown_left = randf_range(0.1, attack_cooldown)
@@ -276,6 +372,9 @@ func _ready() -> void:
 		body_visual.visible = false
 		monster_sprite.visible = true
 		monster_sprite_base_position = monster_sprite.position
+		monster_sprite_default_position = monster_sprite.position
+		monster_sprite_default_scale = monster_sprite.scale
+		_apply_monster_visual_profile()
 	base_body_color = body_visual.color
 	base_head_color = head_visual.color
 	base_arm_color = left_arm_visual.color
@@ -308,6 +407,7 @@ func _ready() -> void:
 	_setup_health_bar()
 	_update_health_bar()
 	_reacquire_player()
+	_configure_cacodemon_breath_controller()
 	_setup_debug_overlay()
 	boss_mark_cycle_left = 0.0
 	boss_summon_cycle_left = maxf(1.0, boss_summon_interval)
@@ -316,8 +416,205 @@ func _ready() -> void:
 	_set_boss_loop_state(BossLoopState.IDLE, 0.0)
 
 
+func _configure_cacodemon_breath_controller() -> void:
+	if BREATH_ATTACK_SCRIPT == null:
+		return
+	var controller := BREATH_ATTACK_SCRIPT.new()
+	if controller == null:
+		return
+	breath_attack = controller
+	breath_attack.configure({
+		"charge_duration": cacodemon_breath_charge_duration,
+		"fire_duration": cacodemon_breath_duration,
+		"cooldown_duration": cacodemon_breath_cooldown,
+		"damage_tick_interval": cacodemon_breath_tick_interval,
+		"range": cacodemon_breath_range,
+		"half_width": cacodemon_breath_half_width,
+		"telegraph_half_width_scale": cacodemon_breath_telegraph_half_width_scale,
+		"pocket_back_offset": cacodemon_breath_pocket_back_offset,
+		"pocket_half_width": cacodemon_breath_pocket_half_width,
+		"pocket_half_depth": cacodemon_breath_pocket_half_depth
+	})
+
+
+func _is_env_flag_enabled(env_key: String) -> bool:
+	var raw := OS.get_environment(env_key).strip_edges().to_lower()
+	return not raw.is_empty() and raw not in ["0", "false", "off", "no"]
+
+
+func _log_boss_lunge(message: String) -> void:
+	if not boss_lunge_debug_logging_enabled:
+		return
+	if not is_miniboss:
+		return
+	print("[BOSS_LUNGE] %s" % message)
+
+
+func _get_boss_lunge_marked_distance() -> float:
+	if not _is_valid_mark_target(boss_marked_ally):
+		return -1.0
+	return global_position.distance_to(boss_marked_ally.global_position)
+
+
+func _log_shadow_fear(message: String) -> void:
+	print("[SHADOW_FEAR] %s" % message)
+
+
+func _get_shadow_fear_debuff_texture() -> Texture2D:
+	if shadow_fear_debuff_texture_cache != null:
+		return shadow_fear_debuff_texture_cache
+	var texture_path := ProjectSettings.globalize_path(SHADOW_FEAR_DEBUFF_TEXTURE_PATH)
+	var image := Image.new()
+	var error := image.load(texture_path)
+	if error != OK:
+		push_warning("Failed to load Shadow Fear debuff texture: %s (%s)" % [texture_path, error_string(error)])
+		return null
+	shadow_fear_debuff_texture_cache = ImageTexture.create_from_image(image)
+	return shadow_fear_debuff_texture_cache
+
+
+func _get_shadow_fear_debuff_frames() -> SpriteFrames:
+	if shadow_fear_debuff_frames_cache != null:
+		return shadow_fear_debuff_frames_cache
+	var sheet_texture := _get_shadow_fear_debuff_texture()
+	if sheet_texture == null:
+		return null
+	var frames := SpriteFrames.new()
+	frames.add_animation("loop")
+	frames.set_animation_speed("loop", 16.0)
+	frames.set_animation_loop("loop", true)
+	var frame_width := maxi(1, SHADOW_FEAR_DEBUFF_FRAME_SIZE.x)
+	var frame_height := maxi(1, SHADOW_FEAR_DEBUFF_FRAME_SIZE.y)
+	for frame_index in range(SHADOW_FEAR_DEBUFF_FRAME_COUNT):
+		var atlas := AtlasTexture.new()
+		atlas.atlas = sheet_texture
+		atlas.region = Rect2i(frame_index * frame_width, 0, frame_width, frame_height)
+		frames.add_frame("loop", atlas)
+	shadow_fear_debuff_frames_cache = frames
+	return shadow_fear_debuff_frames_cache
+
+
+func is_shadow_fear_active() -> bool:
+	return shadow_fear_left > 0.0
+
+
+func has_hard_cc_active() -> bool:
+	return shadow_fear_left > 0.0 or stun_left > 0.0
+
+
+func apply_shadow_fear(duration: float) -> bool:
+	if dead:
+		return false
+	var applied_duration := maxf(0.0, duration)
+	if applied_duration <= 0.0:
+		applied_duration = maxf(0.0, shadow_fear_break_duration)
+	if applied_duration <= 0.0:
+		return false
+	if has_hard_cc_active():
+		return false
+	shadow_fear_left = applied_duration
+	shadow_fear_apply_count += 1
+	shadow_fear_vfx_time = 0.0
+	_cancel_spin_attack()
+	pending_attack = false
+	attack_windup_left = 0.0
+	attack_prestrike_hold_left = 0.0
+	attack_recovery_hold_left = 0.0
+	attack_anim_left = 0.0
+	attack_flash_left = 0.0
+	attack_telegraph.visible = false
+	weapon_trail_alpha = 0.0
+	weapon_trail.visible = false
+	slash_effect.visible = false
+	velocity = Vector2.ZERO
+	knockback_velocity = Vector2.ZERO
+	_spawn_shadow_fear_vfx()
+	_log_shadow_fear("APPLIED enemy=%s duration=%.2f" % [name, applied_duration])
+	return true
+
+
+func _clear_shadow_fear(broken_by_damage: bool) -> void:
+	if shadow_fear_left <= 0.0 and (shadow_fear_vfx_root == null or not is_instance_valid(shadow_fear_vfx_root)):
+		return
+	shadow_fear_left = 0.0
+	_shadow_fear_teardown_vfx()
+	if broken_by_damage:
+		_log_shadow_fear("BROKEN enemy=%s reason=damage" % name)
+	else:
+		_log_shadow_fear("EXPIRED enemy=%s" % name)
+
+
+func _tick_shadow_fear_status(delta: float) -> void:
+	if shadow_fear_left <= 0.0:
+		return
+	shadow_fear_left = maxf(0.0, shadow_fear_left - maxf(0.0, delta))
+	_update_shadow_fear_vfx(delta)
+	if shadow_fear_left <= 0.0:
+		_clear_shadow_fear(false)
+
+
+func _hold_shadow_fear_state(delta: float, to_player: Vector2) -> void:
+	velocity = Vector2.ZERO
+	knockback_velocity = Vector2.ZERO
+	attack_telegraph.visible = false
+	weapon_trail.visible = false
+	slash_effect.visible = false
+	move_and_slide()
+	_clamp_to_arena()
+	_update_visuals(delta, to_player)
+	_update_health_bar()
+
+
+func _spawn_shadow_fear_vfx() -> void:
+	_shadow_fear_teardown_vfx()
+	shadow_fear_vfx_root = Node2D.new()
+	shadow_fear_vfx_root.name = "ShadowFearVfx"
+	shadow_fear_vfx_root.z_index = 5
+	add_child(shadow_fear_vfx_root)
+	shadow_fear_vfx_sprite = AnimatedSprite2D.new()
+	shadow_fear_vfx_sprite.name = "FearLoop"
+	shadow_fear_vfx_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	shadow_fear_vfx_sprite.centered = true
+	shadow_fear_vfx_sprite.sprite_frames = _get_shadow_fear_debuff_frames()
+	if shadow_fear_vfx_sprite.sprite_frames != null and shadow_fear_vfx_sprite.sprite_frames.has_animation("loop"):
+		shadow_fear_vfx_sprite.animation = "loop"
+		shadow_fear_vfx_sprite.play("loop")
+	shadow_fear_vfx_sprite.position = Vector2.ZERO
+	shadow_fear_vfx_sprite.scale = SHADOW_FEAR_DEBUFF_SPRITE_SCALE
+	shadow_fear_vfx_sprite.modulate = Color(1, 1, 1, 0.96)
+	shadow_fear_vfx_root.add_child(shadow_fear_vfx_sprite)
+
+	_update_shadow_fear_vfx(0.0)
+
+
+func _update_shadow_fear_vfx(delta: float) -> void:
+	if shadow_fear_vfx_root == null or not is_instance_valid(shadow_fear_vfx_root):
+		return
+	shadow_fear_vfx_time += maxf(0.0, delta)
+	var pulse := 0.5 + (sin(shadow_fear_vfx_time * 6.8) * 0.5)
+	var sway := sin(shadow_fear_vfx_time * 8.2)
+	shadow_fear_vfx_root.position = Vector2(sway * 1.8, -28.0 + (sin(shadow_fear_vfx_time * 3.2) * 3.2))
+	if shadow_fear_vfx_sprite != null and is_instance_valid(shadow_fear_vfx_sprite):
+		var sprite_scale := lerpf(SHADOW_FEAR_DEBUFF_SPRITE_SCALE.x * 0.9, SHADOW_FEAR_DEBUFF_SPRITE_SCALE.x * 1.15, pulse)
+		shadow_fear_vfx_sprite.scale = Vector2(sprite_scale, sprite_scale)
+		shadow_fear_vfx_sprite.rotation = sway * 0.08
+		shadow_fear_vfx_sprite.modulate = Color(1, 1, 1, lerpf(0.86, 1.0, pulse))
+
+
+func _shadow_fear_teardown_vfx() -> void:
+	if is_instance_valid(shadow_fear_vfx_root):
+		shadow_fear_vfx_root.queue_free()
+	shadow_fear_vfx_root = null
+	shadow_fear_vfx_sprite = null
+
+
 func _exit_tree() -> void:
 	_teardown_debug_overlay()
+	_shadow_fear_teardown_vfx()
+	_end_cacodemon_breath_attack()
+	if is_instance_valid(cacodemon_breath_vfx):
+		cacodemon_breath_vfx.queue_free()
+	cacodemon_breath_vfx = null
 	if is_instance_valid(spin_warning_area):
 		spin_warning_area.queue_free()
 
@@ -330,6 +627,7 @@ func _physics_process(delta: float) -> void:
 		return
 	if hitstop_left > 0.0:
 		hitstop_left = maxf(0.0, hitstop_left - delta)
+		_tick_shadow_fear_status(delta)
 		if not is_instance_valid(player):
 			_reacquire_player()
 		var freeze_to_player := Vector2.RIGHT
@@ -352,6 +650,8 @@ func _physics_process(delta: float) -> void:
 	attack_recovery_hold_left = maxf(0.0, attack_recovery_hold_left - delta)
 	slash_effect_left = maxf(0.0, slash_effect_left - delta)
 	spin_attack_cooldown_left = maxf(0.0, spin_attack_cooldown_left - delta)
+	_tick_pending_basic_block_success_fx(delta)
+	_tick_shadow_fear_status(delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.45))
 	if previous_attack_anim_left > 0.0 and attack_anim_left <= 0.0:
 		attack_recovery_hold_left = maxf(attack_recovery_hold_left, attack_recovery_hold_duration)
@@ -397,6 +697,10 @@ func _physics_process(delta: float) -> void:
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
 		_update_health_bar()
+		return
+
+	if shadow_fear_left > 0.0:
+		_hold_shadow_fear_state(delta, to_player)
 		return
 
 	if spin_charge_left > 0.0:
@@ -496,6 +800,7 @@ func _physics_process(delta: float) -> void:
 func _physics_process_single_phase(delta: float) -> void:
 	if hitstop_left > 0.0:
 		hitstop_left = maxf(0.0, hitstop_left - delta)
+		_tick_shadow_fear_status(delta)
 		if not is_instance_valid(player):
 			_reacquire_player()
 		var freeze_to_player := Vector2.RIGHT
@@ -531,6 +836,20 @@ func _physics_process_single_phase(delta: float) -> void:
 		move_and_slide()
 		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
+		_update_visuals(delta, to_player)
+		_update_health_bar()
+		return
+
+	if shadow_fear_left > 0.0:
+		_hold_shadow_fear_state(delta, to_player)
+		return
+
+	if _is_cacodemon_visual_profile() and is_miniboss:
+		_tick_cacodemon_breath_loop(delta, to_player)
+		move_and_slide()
+		_apply_soft_enemy_separation(delta)
+		_clamp_to_arena()
+		knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
 		_update_visuals(delta, to_player)
 		_update_health_bar()
 		return
@@ -615,6 +934,8 @@ func _tick_enemy_runtime_timers(delta: float) -> void:
 	boss_dps_mark_left = maxf(0.0, boss_dps_mark_left - delta)
 	companion_target_refresh_left = maxf(0.0, companion_target_refresh_left - delta)
 	periodic_hurt_anim_cooldown_left = maxf(0.0, periodic_hurt_anim_cooldown_left - delta)
+	_tick_pending_basic_block_success_fx(delta)
+	_tick_shadow_fear_status(delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.45))
 	if previous_attack_anim_left > 0.0 and attack_anim_left <= 0.0:
 		attack_recovery_hold_left = maxf(attack_recovery_hold_left, attack_recovery_hold_duration)
@@ -637,7 +958,7 @@ func _tick_periodic_hurt_animation() -> void:
 
 
 func _is_combat_action_active_for_periodic_hurt() -> bool:
-	if stun_left > 0.0 or hitstop_left > 0.0:
+	if stun_left > 0.0 or hitstop_left > 0.0 or shadow_fear_left > 0.0:
 		return true
 	if pending_attack \
 		or attack_windup_left > 0.0 \
@@ -648,6 +969,13 @@ func _is_combat_action_active_for_periodic_hurt() -> bool:
 		or spin_active_left > 0.0:
 		return true
 	return boss_loop_state != BossLoopState.IDLE
+
+
+func _is_lunge_charge_visual_active() -> bool:
+	return use_single_phase_loop \
+		and boss_loop_state == BossLoopState.LUNGE \
+		and not boss_lunge_impact_triggered \
+		and not boss_lunge_intercepted
 
 
 func _reset_periodic_hurt_anim_cooldown() -> void:
@@ -763,15 +1091,256 @@ func _tick_boss_idle_basic_pressure(to_player: Vector2) -> void:
 		velocity = Vector2.ZERO
 
 
+func _tick_cacodemon_breath_loop(delta: float, to_player: Vector2) -> void:
+	pending_attack = false
+	attack_windup_left = 0.0
+	attack_prestrike_hold_left = 0.0
+	attack_recovery_hold_left = 0.0
+	attack_telegraph.visible = false
+	if breath_attack == null:
+		_configure_cacodemon_breath_controller()
+	if not cacodemon_breath_enabled or breath_attack == null:
+		_end_cacodemon_breath_attack()
+		_tick_boss_idle_basic_pressure(to_player)
+		return
+	var player_target := player as Player
+	var tank_position := player_target.global_position if player_target != null and is_instance_valid(player_target) else global_position + Vector2.RIGHT * 48.0
+	var aim_to_tank := tank_position - global_position
+	var breath_direction_sign := _get_cacodemon_breath_direction_sign(aim_to_tank)
+	var desired_breath_direction := Vector2(breath_direction_sign, 0.0)
+	committed_attack_facing_direction = breath_attack.get_direction() if breath_attack.is_threat_active() else desired_breath_direction
+	external_sprite_facing_direction = committed_attack_facing_direction
+	cacodemon_breath_block_fx_left = maxf(0.0, cacodemon_breath_block_fx_left - maxf(0.0, delta))
+	var step_result: Dictionary = breath_attack.update(delta, global_position, tank_position, committed_attack_facing_direction, _is_target_blocking_attack(player_target))
+	cacodemon_breath_charge_left = breath_attack.get_time_remaining() if breath_attack.is_charge_active() else 0.0
+	cacodemon_breath_left = breath_attack.get_time_remaining() if breath_attack.is_fire_active() else 0.0
+	cacodemon_breath_tick_left = breath_attack.damage_tick_left if breath_attack.is_fire_active() else 0.0
+	if bool(step_result.get("entered_fire", false)):
+		_spawn_hit_effect(_get_cacodemon_breath_origin(), Color(1.0, 0.48, 0.24, 0.92), 9.0)
+	if bool(step_result.get("fire_tick", false)):
+		_attempt_cacodemon_breath_hits()
+	_emit_cacodemon_breath_threat_signal()
+	_update_cacodemon_breath_vfx()
+	if breath_attack.is_threat_active():
+		velocity = Vector2.ZERO
+		return
+	if breath_attack.is_cooldown_active():
+		velocity = _compute_cacodemon_breath_reposition_velocity(aim_to_tank)
+		return
+	var distance_to_player := aim_to_tank.length()
+	var alignment_ready := absf(aim_to_tank.y) <= maxf(16.0, cacodemon_breath_half_width * 0.9)
+	var in_range := distance_to_player <= maxf(48.0, cacodemon_breath_range)
+	if breath_attack.can_begin() and in_range and alignment_ready:
+		_start_cacodemon_breath_attack(breath_direction_sign)
+		return
+	velocity = _compute_cacodemon_breath_reposition_velocity(aim_to_tank)
+
+
+func _start_cacodemon_breath_attack(direction_sign: float) -> void:
+	if breath_attack == null:
+		_configure_cacodemon_breath_controller()
+	if breath_attack == null:
+		return
+	var player_target := player as Player
+	var tank_position := player_target.global_position if player_target != null and is_instance_valid(player_target) else global_position + Vector2(direction_sign * 48.0, 0.0)
+	breath_attack.force_start(global_position, tank_position, Vector2(direction_sign, 0.0))
+	cacodemon_breath_left = 0.0
+	cacodemon_breath_charge_left = breath_attack.get_time_remaining()
+	cacodemon_breath_tick_left = 0.0
+	cacodemon_breath_block_fx_left = 0.0
+	velocity = Vector2.ZERO
+	committed_attack_facing_direction = Vector2(direction_sign, 0.0)
+	external_sprite_facing_direction = committed_attack_facing_direction
+	_emit_cacodemon_breath_threat_signal(true)
+	_update_cacodemon_breath_vfx()
+
+
+func _end_cacodemon_breath_attack() -> void:
+	cacodemon_breath_left = 0.0
+	cacodemon_breath_tick_left = 0.0
+	cacodemon_breath_charge_left = 0.0
+	cacodemon_breath_block_fx_left = 0.0
+	if breath_attack != null:
+		breath_attack.cancel()
+	_emit_cacodemon_breath_threat_signal(true)
+	_update_cacodemon_breath_vfx()
+
+
+func _compute_cacodemon_breath_reposition_velocity(to_tank: Vector2) -> Vector2:
+	var distance_to_player := to_tank.length()
+	var breath_direction_sign := _get_cacodemon_breath_direction_sign(to_tank)
+	var desired_velocity := Vector2.ZERO
+	if distance_to_player > maxf(64.0, cacodemon_breath_range * 0.84):
+		desired_velocity.x = breath_direction_sign
+	elif distance_to_player < maxf(44.0, cacodemon_breath_range * 0.36):
+		desired_velocity.x = -breath_direction_sign
+	if absf(to_tank.y) > maxf(12.0, cacodemon_breath_half_width * 0.6):
+		desired_velocity.y = signf(to_tank.y)
+	if desired_velocity.length_squared() <= 0.0001:
+		return Vector2.ZERO
+	return desired_velocity.normalized() * (move_speed * 0.52)
+
+
+func _ensure_cacodemon_breath_vfx() -> void:
+	if not is_instance_valid(cacodemon_breath_vfx):
+		var scene_root := get_tree().current_scene
+		if scene_root == null:
+			scene_root = get_parent()
+		if scene_root == null:
+			return
+		var vfx := BREATH_VFX_SCRIPT.new()
+		if vfx == null:
+			return
+		scene_root.add_child(vfx)
+		cacodemon_breath_vfx = vfx
+		if cacodemon_breath_vfx.has_method("configure"):
+			cacodemon_breath_vfx.call("configure", self, player as Player)
+
+
+func _update_cacodemon_breath_vfx() -> void:
+	if breath_attack == null:
+		return
+	if not breath_attack.is_threat_active() and not is_instance_valid(cacodemon_breath_vfx):
+		return
+	_ensure_cacodemon_breath_vfx()
+	if not is_instance_valid(cacodemon_breath_vfx):
+		return
+	if cacodemon_breath_vfx.has_method("set_mode"):
+		cacodemon_breath_vfx.call("set_mode", clampi(cacodemon_breath_visual_style, 0, 2))
+	if cacodemon_breath_vfx.has_method("update_state"):
+		cacodemon_breath_vfx.call("update_state", get_breath_threat_snapshot())
+
+
+func _emit_cacodemon_breath_threat_signal(force_emit: bool = false) -> void:
+	var snapshot := get_breath_threat_snapshot()
+	var active := bool(snapshot.get("active", false))
+	if force_emit or active or breath_threat_was_active != active:
+		breath_threat.emit(
+			active,
+			global_position,
+			snapshot.get("dir", Vector2.RIGHT),
+			float(snapshot.get("time_remaining", 0.0))
+		)
+	breath_threat_was_active = active
+
+
+func get_breath_threat_snapshot() -> Dictionary:
+	if breath_attack == null or not _is_cacodemon_visual_profile():
+		return {
+			"active": false,
+			"charge_active": false,
+			"fire_active": false,
+			"cooldown_active": false,
+			"state_name": "Idle",
+			"time_remaining": 0.0,
+			"dir": committed_attack_facing_direction.normalized() if committed_attack_facing_direction.length_squared() > 0.0001 else Vector2.RIGHT,
+			"boss_position": global_position
+		}
+	return breath_attack.build_threat_snapshot(_get_cacodemon_breath_origin())
+
+
+func is_position_in_breath_safe_pocket(world_position: Vector2) -> bool:
+	return breath_attack != null and breath_attack.is_in_safe_pocket(world_position)
+
+
+func _attempt_cacodemon_breath_hits() -> void:
+	if breath_attack == null or not breath_attack.is_fire_active():
+		return
+	var segment_start := _get_cacodemon_breath_origin()
+	var segment_end: Vector2 = segment_start + (breath_attack.get_direction() * maxf(48.0, cacodemon_breath_range))
+	var half_width := maxf(10.0, cacodemon_breath_half_width)
+	var blocking_player := _get_cacodemon_breath_blocking_player(segment_start, segment_end, half_width)
+	if blocking_player != null:
+		_spawn_cacodemon_breath_block_effect(blocking_player)
+	var hit_damage := maxf(1.0, attack_damage * maxf(0.1, cacodemon_breath_damage_scale))
+	var hit_stun := maxf(0.0, outgoing_hit_stun_duration * maxf(0.0, cacodemon_breath_hit_stun_scale))
+	var hit_knockback := maxf(0.1, cacodemon_breath_knockback_scale)
+	for target in _get_attackable_friendly_targets():
+		if _distance_to_segment(target.global_position, segment_start, segment_end) > half_width:
+			continue
+		if is_position_in_breath_safe_pocket(target.global_position):
+			continue
+		if target == blocking_player:
+			continue
+		_attempt_friendly_hit(target, hit_damage, false, hit_stun, hit_knockback, false)
+
+
+func debug_force_cacodemon_breath() -> void:
+	if not _is_cacodemon_visual_profile():
+		return
+	var player_target := player as Player
+	var tank_position := player_target.global_position if player_target != null and is_instance_valid(player_target) else global_position + Vector2.RIGHT * 48.0
+	var direction_sign := _get_cacodemon_breath_direction_sign(tank_position - global_position)
+	_start_cacodemon_breath_attack(direction_sign)
+
+
+func cycle_cacodemon_breath_visual_mode() -> int:
+	cacodemon_breath_visual_style = wrapi(cacodemon_breath_visual_style + 1, 0, 3)
+	_update_cacodemon_breath_vfx()
+	return cacodemon_breath_visual_style
+
+
+func _get_cacodemon_breath_direction_sign(to_player: Vector2) -> float:
+	if absf(to_player.x) > 4.0:
+		return -1.0 if to_player.x < 0.0 else 1.0
+	if committed_attack_facing_direction.length_squared() > 0.0001:
+		return -1.0 if committed_attack_facing_direction.x < 0.0 else 1.0
+	return 1.0
+
+
+func _get_cacodemon_breath_origin() -> Vector2:
+	var direction := committed_attack_facing_direction
+	if breath_attack != null and breath_attack.is_threat_active():
+		direction = breath_attack.get_direction()
+	if direction.length_squared() <= 0.0001:
+		direction = Vector2.RIGHT
+	direction = Vector2.RIGHT if direction.x >= 0.0 else Vector2.LEFT
+	return global_position + Vector2(direction.x * 24.0, -18.0)
+
+
+func _get_cacodemon_breath_blocking_player(segment_start: Vector2, segment_end: Vector2, half_width: float) -> Player:
+	var player_target := player as Player
+	if player_target == null or not is_instance_valid(player_target):
+		return null
+	if not _is_friendly_target_alive(player_target):
+		return null
+	if not _is_target_blocking_attack(player_target):
+		return null
+	var shield_center := player_target.global_position + Vector2(0.0, -10.0)
+	if player_target.has_method("get_block_shield_center_global"):
+		var center_variant: Variant = player_target.call("get_block_shield_center_global")
+		if center_variant is Vector2:
+			shield_center = center_variant
+	var shield_radius := maxf(8.0, player_target.block_shield_radius)
+	return player_target if _distance_to_segment(shield_center, segment_start, segment_end) <= (shield_radius + half_width) else null
+
+
+func _spawn_cacodemon_breath_block_effect(blocking_player: Player) -> void:
+	if blocking_player == null or not is_instance_valid(blocking_player):
+		return
+	if cacodemon_breath_block_fx_left > 0.0:
+		return
+	cacodemon_breath_block_fx_left = maxf(0.04, cacodemon_breath_block_fx_interval)
+	var shield_center := blocking_player.global_position + Vector2(0.0, -10.0)
+	if blocking_player.has_method("get_block_shield_center_global"):
+		var center_variant: Variant = blocking_player.call("get_block_shield_center_global")
+		if center_variant is Vector2:
+			shield_center = center_variant
+	var forward := committed_attack_facing_direction.normalized()
+	if breath_attack != null and breath_attack.is_threat_active():
+		forward = breath_attack.get_direction()
+	if forward.length_squared() <= 0.0001:
+		forward = Vector2.RIGHT
+	_spawn_hit_effect(shield_center, Color(1.0, 0.72, 0.34, 0.92), 10.0)
+	_spawn_hit_effect(shield_center + (forward * 7.0), Color(1.0, 1.0, 1.0, 0.84), 7.0)
+
+
 func _tick_boss_mark_state(delta: float) -> void:
 	velocity = Vector2.ZERO
 	var mark_target := _get_or_reacquire_mark_target()
 	if mark_target == null:
 		_set_boss_loop_state(BossLoopState.IDLE, 0.0)
 		return
-	var to_marked := mark_target.global_position - global_position
-	if to_marked.length_squared() > 0.0001:
-		committed_attack_facing_direction = to_marked.normalized()
 	_tick_boss_state_timer(delta)
 	if boss_state_time_left <= 0.0:
 		_set_boss_loop_state(BossLoopState.WINDUP, boss_windup_duration)
@@ -783,9 +1352,6 @@ func _tick_boss_windup_state(delta: float) -> void:
 	if mark_target == null:
 		_set_boss_loop_state(BossLoopState.IDLE, 0.0)
 		return
-	var to_marked := mark_target.global_position - global_position
-	if to_marked.length_squared() > 0.0001:
-		committed_attack_facing_direction = to_marked.normalized()
 	_tick_boss_state_timer(delta)
 	if boss_state_time_left > 0.0:
 		return
@@ -794,6 +1360,7 @@ func _tick_boss_windup_state(delta: float) -> void:
 
 func _begin_boss_lunge(marked_position: Vector2) -> void:
 	var lunge_direction := marked_position - global_position
+	var marked_distance := lunge_direction.length()
 	if lunge_direction.length_squared() <= 0.0001:
 		lunge_direction = committed_attack_facing_direction
 	if lunge_direction.length_squared() <= 0.0001:
@@ -802,37 +1369,221 @@ func _begin_boss_lunge(marked_position: Vector2) -> void:
 	committed_attack_facing_direction = boss_lunge_direction
 	boss_lunge_hit_landed = false
 	boss_lunge_intercepted = false
+	boss_lunge_impact_triggered = false
+	boss_lunge_travel_distance = 0.0
+	boss_lunge_last_impact_reason = ""
 	boss_lunge_hit_ids.clear()
+	var base_lunge_duration := maxf(0.12, boss_lunge_duration)
+	var max_lunge_duration := maxf(base_lunge_duration, boss_lunge_max_duration)
+	var lunge_speed := maxf(40.0, boss_lunge_speed)
+	var required_duration := (marked_distance + maxf(0.0, boss_lunge_distance_padding)) / lunge_speed
+	var resolved_lunge_duration := clampf(maxf(base_lunge_duration, required_duration), base_lunge_duration, max_lunge_duration)
+	var target_name: String = String(boss_marked_ally.name) if _is_valid_mark_target(boss_marked_ally) else "None"
+	_log_boss_lunge("BEGIN target=%s marked_distance=%.2f duration=%.3f direction=(%.2f, %.2f)" % [
+		target_name,
+		_get_boss_lunge_marked_distance(),
+		resolved_lunge_duration,
+		boss_lunge_direction.x,
+		boss_lunge_direction.y
+	])
+	_set_boss_loop_state(BossLoopState.LUNGE, resolved_lunge_duration)
+
+
+func _trigger_boss_lunge_impact(trigger_reason: String = "unknown") -> void:
+	if boss_lunge_impact_triggered:
+		return
+	boss_lunge_impact_triggered = true
+	boss_lunge_last_impact_reason = trigger_reason
+	_log_boss_lunge("IMPACT reason=%s travel=%.2f marked_distance=%.2f" % [
+		trigger_reason,
+		boss_lunge_travel_distance,
+		_get_boss_lunge_marked_distance()
+	])
 	attack_flash_left = maxf(attack_flash_left, 0.18)
 	_start_attack_animation(maxf(0.16, boss_lunge_duration * 0.92), 1.48)
 	_trigger_slash_effect(maxf(26.0, boss_lunge_hit_length), 72.0, Color(0.98, 0.42, 0.26, 0.9), 0.2, 4.8)
-	_set_boss_loop_state(BossLoopState.LUNGE, boss_lunge_duration)
+
+
+func _is_boss_lunge_contact_with_target(target: Node2D) -> bool:
+	if target == null or not is_instance_valid(target):
+		return false
+	var lunge_direction := boss_lunge_direction
+	if lunge_direction.length_squared() <= 0.0001:
+		lunge_direction = committed_attack_facing_direction
+	if lunge_direction.length_squared() <= 0.0001:
+		lunge_direction = Vector2.RIGHT
+	lunge_direction = lunge_direction.normalized()
+	# Use current-position overlap only so impact cannot fire early.
+	var contact_radius := maxf(7.0, boss_lunge_tip_radius * 0.28)
+	var to_target := target.global_position - global_position
+	var forward_distance := to_target.dot(lunge_direction)
+	if forward_distance < -contact_radius:
+		return false
+	return to_target.length_squared() <= contact_radius * contact_radius
+
+
+func _is_boss_lunge_contact_with_any_friendly() -> bool:
+	for candidate in _get_attackable_friendly_targets():
+		if _is_boss_lunge_contact_with_target(candidate):
+			return true
+	return false
+
+
+func _get_boss_lunge_blocking_player() -> Player:
+	var lunge_direction := boss_lunge_direction
+	if lunge_direction.length_squared() <= 0.0001:
+		lunge_direction = committed_attack_facing_direction
+	if lunge_direction.length_squared() <= 0.0001:
+		lunge_direction = Vector2.RIGHT
+	lunge_direction = lunge_direction.normalized()
+	var shield_check_length := maxf(32.0, boss_lunge_hit_length)
+	var segment_start := global_position + (lunge_direction * boss_lunge_hit_start_offset)
+	var segment_end := segment_start + (lunge_direction * shield_check_length)
+	var half_width := maxf(12.0, boss_lunge_hit_half_width)
+	var tip_radius := maxf(10.0, boss_lunge_tip_radius)
+	for player_node in get_tree().get_nodes_in_group("player"):
+		var player_target := player_node as Player
+		if player_target == null or not is_instance_valid(player_target) or player_target.is_dead:
+			continue
+		if _is_lunge_intersecting_player_block_shield(player_target, segment_start, segment_end, half_width, tip_radius):
+			return player_target
+	return null
+
+
+func _spawn_lunge_block_success_effect(blocking_player: Player) -> void:
+	if blocking_player == null or not is_instance_valid(blocking_player):
+		return
+	block_success_fx_count += 1
+	var shield_center := blocking_player.global_position + Vector2(0.0, -10.0)
+	if blocking_player.has_method("get_block_shield_center_global"):
+		var center_variant: Variant = blocking_player.call("get_block_shield_center_global")
+		if center_variant is Vector2:
+			shield_center = center_variant
+	_spawn_hit_effect(shield_center, Color(0.62, 0.96, 1.0, 0.96), maxf(14.0, boss_lunge_block_effect_size))
+	_spawn_hit_effect(shield_center + (boss_lunge_direction.normalized() * 8.0), Color(1.0, 1.0, 1.0, 0.9), maxf(10.0, boss_lunge_block_effect_size * 0.78))
+	_trigger_slash_effect(maxf(36.0, boss_lunge_hit_length * 0.62), 138.0, Color(0.62, 0.95, 1.0, 0.9), 0.24, 7.2)
+	attack_flash_left = maxf(attack_flash_left, 0.24)
+	apply_hitstop(maxf(0.0, boss_lunge_block_hitstop))
+
+
+func _queue_basic_block_success_effect(blocked_player: Player) -> void:
+	if blocked_player == null or not is_instance_valid(blocked_player):
+		return
+	var delay := maxf(0.0, basic_block_success_fx_delay)
+	if delay <= 0.0:
+		_spawn_lunge_block_success_effect(blocked_player)
+		_log_boss_lunge("BASIC_BLOCK_FX target=%s delay=0.00" % blocked_player.name)
+		return
+	pending_basic_block_success_fx.append({
+		"player": blocked_player,
+		"time_left": delay
+	})
+
+
+func _tick_pending_basic_block_success_fx(delta: float) -> void:
+	if pending_basic_block_success_fx.is_empty():
+		return
+	var active_entries: Array[Dictionary] = []
+	var step := maxf(0.0, delta)
+	for pending in pending_basic_block_success_fx:
+		var blocked_player := pending.get("player") as Player
+		if blocked_player == null or not is_instance_valid(blocked_player):
+			continue
+		var time_left := maxf(0.0, float(pending.get("time_left", 0.0)) - step)
+		if time_left > 0.0:
+			pending["time_left"] = time_left
+			active_entries.append(pending)
+			continue
+		_spawn_lunge_block_success_effect(blocked_player)
+		_log_boss_lunge("BASIC_BLOCK_FX target=%s delay=%.2f" % [blocked_player.name, basic_block_success_fx_delay])
+	pending_basic_block_success_fx = active_entries
 
 
 func _tick_boss_lunge_state(delta: float) -> void:
-	_attempt_boss_lunge_hits()
+	var lunge_step_distance := maxf(0.0, boss_lunge_speed) * maxf(0.0, delta)
+	if not boss_lunge_impact_triggered:
+		if boss_lunge_direction.length_squared() > 0.0001:
+			committed_attack_facing_direction = boss_lunge_direction.normalized()
+		var collateral_unlock_distance := maxf(0.0, boss_lunge_collateral_trigger_travel)
+		var allow_collateral_impact := boss_lunge_travel_distance >= collateral_unlock_distance
+		var shield_unlock_distance := minf(collateral_unlock_distance, maxf(8.0, boss_lunge_collateral_trigger_travel * 0.5))
+		var allow_shield_intercept := boss_lunge_travel_distance >= shield_unlock_distance
+		var blocking_player := _get_boss_lunge_blocking_player()
+		if allow_shield_intercept and blocking_player != null:
+			_spawn_lunge_block_success_effect(blocking_player)
+			_apply_blocked_counter_stun()
+			boss_lunge_intercepted = true
+			_trigger_boss_lunge_impact("shield_intercept")
+		elif _is_boss_lunge_contact_with_target(boss_marked_ally):
+			_trigger_boss_lunge_impact("marked_contact")
+		elif allow_collateral_impact and _is_boss_lunge_contact_with_any_friendly():
+			_trigger_boss_lunge_impact("collateral_contact")
+	if boss_lunge_impact_triggered and not boss_lunge_intercepted:
+		_attempt_boss_lunge_hits()
 	if boss_lunge_intercepted:
 		velocity = Vector2.ZERO
 		boss_completed_lunge_cycles += 1
+		boss_marked_ally = null
+		_face_player_after_lunge()
 		_set_boss_loop_state(BossLoopState.VULNERABLE, boss_vulnerable_duration)
 		return
-	velocity = boss_lunge_direction * maxf(40.0, boss_lunge_speed)
+	if boss_lunge_impact_triggered:
+		velocity = Vector2.ZERO
+	else:
+		velocity = boss_lunge_direction * maxf(40.0, boss_lunge_speed)
+		boss_lunge_travel_distance += lunge_step_distance
 	_tick_boss_state_timer(delta)
 	if boss_state_time_left > 0.0:
 		return
+	if not boss_lunge_impact_triggered:
+		_log_boss_lunge("END no_impact travel=%.2f marked_distance=%.2f" % [
+			boss_lunge_travel_distance,
+			_get_boss_lunge_marked_distance()
+		])
+	elif not boss_lunge_hit_landed:
+		_log_boss_lunge("END impact_no_hit travel=%.2f marked_distance=%.2f intercepted=%s" % [
+			boss_lunge_travel_distance,
+			_get_boss_lunge_marked_distance(),
+			str(boss_lunge_intercepted)
+		])
+	else:
+		_log_boss_lunge("END hit_landed travel=%.2f marked_distance=%.2f intercepted=%s" % [
+			boss_lunge_travel_distance,
+			_get_boss_lunge_marked_distance(),
+			str(boss_lunge_intercepted)
+		])
 	boss_completed_lunge_cycles += 1
 	if boss_lunge_intercepted or not boss_lunge_hit_landed:
+		boss_marked_ally = null
+		_face_player_after_lunge()
 		_set_boss_loop_state(BossLoopState.VULNERABLE, boss_vulnerable_duration)
 		return
+	boss_marked_ally = null
+	_face_player_after_lunge()
 	attack_recovery_hold_left = maxf(attack_recovery_hold_left, boss_short_recovery_duration)
 	_set_boss_loop_state(BossLoopState.IDLE, 0.0)
 
 
+func _face_player_after_lunge() -> void:
+	if attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0:
+		return
+	var player_node := player as Node2D
+	if player_node == null or not is_instance_valid(player_node):
+		return
+	var to_player: Vector2 = player_node.global_position - global_position
+	if to_player.length_squared() > 0.0001:
+		committed_attack_facing_direction = to_player.normalized()
+
+
 func _tick_boss_vulnerable_state(delta: float) -> void:
 	velocity = Vector2.ZERO
-	var vulnerable_target := _get_or_reacquire_mark_target()
-	if vulnerable_target == null and is_instance_valid(player):
+	var vulnerable_target: Node2D = null
+	if not is_instance_valid(player):
+		_reacquire_player()
+	if is_instance_valid(player):
 		vulnerable_target = player as Node2D
+	elif _is_valid_mark_target(boss_marked_ally):
+		vulnerable_target = boss_marked_ally
 	if vulnerable_target != null and is_instance_valid(vulnerable_target):
 		var to_target := vulnerable_target.global_position - global_position
 		if to_target.length_squared() > 0.0001:
@@ -865,10 +1616,11 @@ func _attempt_boss_lunge_hits() -> void:
 	if lunge_direction.length_squared() <= 0.0001:
 		lunge_direction = Vector2.RIGHT
 	lunge_direction = lunge_direction.normalized()
+	var contact_length := maxf(18.0, boss_lunge_hit_length * 0.34)
 	var segment_start := global_position + (lunge_direction * boss_lunge_hit_start_offset)
-	var segment_end := segment_start + (lunge_direction * maxf(24.0, boss_lunge_hit_length))
-	var half_width := maxf(8.0, boss_lunge_hit_half_width)
-	var tip_radius := maxf(8.0, boss_lunge_tip_radius)
+	var segment_end := segment_start + (lunge_direction * contact_length)
+	var half_width := maxf(12.0, boss_lunge_hit_half_width * 0.5)
+	var tip_radius := maxf(10.0, boss_lunge_tip_radius * 0.75)
 	for target in lunge_targets:
 		var target_id := target.get_instance_id()
 		if boss_lunge_hit_ids.has(target_id):
@@ -880,6 +1632,7 @@ func _attempt_boss_lunge_hits() -> void:
 			blocked_by_player_arc = _is_target_blocking_attack(player_target)
 			var blocked_by_shield_area := player_target.is_blocking and _is_lunge_intersecting_player_block_shield(player_target, segment_start, segment_end, half_width, tip_radius)
 			if blocked_by_shield_area:
+				_spawn_lunge_block_success_effect(player_target)
 				_apply_blocked_counter_stun()
 				boss_lunge_intercepted = true
 				return
@@ -887,16 +1640,21 @@ func _attempt_boss_lunge_hits() -> void:
 			target,
 			attack_damage * boss_lunge_damage_multiplier,
 			false,
-			outgoing_hit_stun_duration + boss_lunge_stun_bonus
+			outgoing_hit_stun_duration + boss_lunge_stun_bonus,
+			boss_lunge_knockback_scale
 		)
 		if player_target != null and blocked_by_player_arc:
 			boss_lunge_intercepted = true
 			if landed:
 				boss_lunge_hit_landed = true
+				_spawn_hit_effect(target.global_position + Vector2(0.0, -15.0), Color(1.0, 0.54, 0.34, 0.96), maxf(12.0, boss_lunge_impact_effect_size))
+				_log_boss_lunge("HIT target=%s blocked_arc=true distance=%.2f kb=%.2f" % [target.name, global_position.distance_to(target.global_position), boss_lunge_knockback_scale])
 			return
 		if not landed:
 			continue
 		boss_lunge_hit_landed = true
+		_spawn_hit_effect(target.global_position + Vector2(0.0, -15.0), Color(1.0, 0.54, 0.34, 0.96), maxf(12.0, boss_lunge_impact_effect_size))
+		_log_boss_lunge("HIT target=%s blocked_arc=false distance=%.2f kb=%.2f" % [target.name, global_position.distance_to(target.global_position), boss_lunge_knockback_scale])
 		if player_target != null:
 			boss_lunge_intercepted = true
 			return
@@ -911,11 +1669,15 @@ func _query_friendly_hits_for_lunge() -> Array[Node2D]:
 	if lunge_direction.length_squared() <= 0.0001:
 		lunge_direction = Vector2.RIGHT
 	lunge_direction = lunge_direction.normalized()
+	var contact_length := maxf(18.0, boss_lunge_hit_length * 0.34)
 	var segment_start := global_position + (lunge_direction * boss_lunge_hit_start_offset)
-	var segment_end := segment_start + (lunge_direction * maxf(24.0, boss_lunge_hit_length))
-	var half_width := maxf(8.0, boss_lunge_hit_half_width)
-	var tip_radius := maxf(8.0, boss_lunge_tip_radius)
+	var segment_end := segment_start + (lunge_direction * contact_length)
+	var half_width := maxf(12.0, boss_lunge_hit_half_width * 0.5)
+	var tip_radius := maxf(10.0, boss_lunge_tip_radius * 0.75)
 	for candidate in _get_attackable_friendly_targets():
+		if _is_boss_lunge_contact_with_target(candidate):
+			hit_targets.append(candidate)
+			continue
 		var player_candidate := candidate as Player
 		if player_candidate != null and _is_lunge_intersecting_player_block_shield(player_candidate, segment_start, segment_end, half_width, tip_radius):
 			hit_targets.append(candidate)
@@ -932,12 +1694,14 @@ func _query_friendly_hits_for_lunge() -> Array[Node2D]:
 func _is_lunge_intersecting_player_block_shield(player_target: Player, segment_start: Vector2, segment_end: Vector2, half_width: float, tip_radius: float) -> bool:
 	if player_target == null or not is_instance_valid(player_target):
 		return false
-	if not player_target.has_method("is_block_shield_active"):
-		return false
-	if not bool(player_target.call("is_block_shield_active")):
+	var block_held := player_target.is_blocking
+	var shield_pose_active := false
+	if player_target.has_method("is_block_shield_active"):
+		shield_pose_active = bool(player_target.call("is_block_shield_active"))
+	if not block_held and not shield_pose_active:
 		return false
 
-	if player_target.has_method("is_point_inside_block_shield") and bool(player_target.call("is_point_inside_block_shield", global_position)):
+	if shield_pose_active and player_target.has_method("is_point_inside_block_shield") and bool(player_target.call("is_point_inside_block_shield", global_position)):
 		return true
 
 	var shield_center := player_target.global_position
@@ -997,28 +1761,43 @@ func _tick_boss_state_timer(delta: float) -> void:
 
 
 func _get_or_reacquire_mark_target() -> Node2D:
+	# Keep the marked ally locked for the current mark->windup->lunge cycle.
+	# If the target becomes invalid, cancel the sequence instead of retargeting.
 	if _is_valid_mark_target(boss_marked_ally):
 		return boss_marked_ally
-	boss_marked_ally = _select_mark_target()
-	return boss_marked_ally
+	return null
 
 
-func _is_valid_mark_target(target: Node2D) -> bool:
-	if target == null or not is_instance_valid(target):
+func _is_valid_mark_target(target: Variant) -> bool:
+	if target == null:
 		return false
-	var target_healer := target as FriendlyHealer
-	var target_ratfolk := target as FriendlyRatfolk
+	if not (target is Object):
+		return false
+	if not is_instance_valid(target):
+		return false
+	var target_node := target as Node2D
+	if target_node == null:
+		return false
+	var target_healer := target_node as FriendlyHealer
+	var target_ratfolk := target_node as FriendlyRatfolk
 	if target_healer == null and target_ratfolk == null:
 		return false
-	if not _is_friendly_target_alive(target):
+	if not _is_friendly_target_alive(target_node):
 		return false
-	if not target.has_method("receive_hit"):
+	if not target_node.has_method("receive_hit"):
 		return false
-	if target.is_in_group("shadow_clones"):
+	if target_node.is_in_group("shadow_clones"):
 		return false
-	if target.has_method("is_shadow_clone_actor") and bool(target.call("is_shadow_clone_actor")):
+	if target_node.has_method("is_shadow_clone_actor") and bool(target_node.call("is_shadow_clone_actor")):
 		return false
 	return true
+
+
+func _is_mark_target_in_start_range(target: Node2D) -> bool:
+	if target == null or not is_instance_valid(target):
+		return false
+	var engage_range := maxf(24.0, boss_mark_start_range)
+	return global_position.distance_squared_to(target.global_position) <= engage_range * engage_range
 
 
 func _is_friendly_target_alive(target: Node2D) -> bool:
@@ -1045,6 +1824,8 @@ func _select_mark_target() -> Node2D:
 		if candidate == null:
 			continue
 		if not _is_valid_mark_target(candidate):
+			continue
+		if not _is_mark_target_in_start_range(candidate):
 			continue
 		var score := candidate.global_position.distance_squared_to(global_position)
 		var candidate_id := candidate.get_instance_id()
@@ -1080,6 +1861,8 @@ func get_guardian_intercept_point(marked_world_position: Vector2) -> Vector2:
 
 
 func get_boss_debug_state() -> String:
+	if _is_cacodemon_visual_profile() and breath_attack != null and int(breath_attack.state) != int(BREATH_ATTACK_SCRIPT.State.IDLE):
+		return "Breath %s" % breath_attack.get_state_name()
 	return String(BOSS_LOOP_STATE_NAMES.get(boss_loop_state, "Idle"))
 
 
@@ -1344,7 +2127,7 @@ func _perform_attack() -> void:
 	if hit_targets.is_empty():
 		return
 	for target in hit_targets:
-		_attempt_friendly_hit(target, attack_damage, false, outgoing_hit_stun_duration)
+		_attempt_friendly_hit(target, attack_damage, false, outgoing_hit_stun_duration, 1.0, true)
 
 
 func _begin_spin_charge(to_player: Vector2) -> void:
@@ -1409,6 +2192,8 @@ func _perform_spin_attack_hit() -> void:
 func receive_hit(amount: float, source_position: Vector2, stun_duration: float = 0.0, apply_hit_stun: bool = true, knockback_scale: float = 1.0) -> bool:
 	if dead:
 		return false
+	if shadow_fear_left > 0.0 and amount > 0.0:
+		_clear_shadow_fear(true)
 	var damage_to_apply := maxf(0.0, amount)
 	if boss_dps_mark_left > 0.0:
 		damage_to_apply *= maxf(1.0, boss_dps_mark_damage_taken_multiplier)
@@ -1420,6 +2205,7 @@ func receive_hit(amount: float, source_position: Vector2, stun_duration: float =
 		or attack_prestrike_hold_left > 0.0 \
 		or attack_anim_left > 0.0 \
 		or attack_recovery_hold_left > 0.0 \
+		or cacodemon_breath_left > 0.0 \
 		or spin_charge_left > 0.0 \
 		or spin_active_left > 0.0
 	var loop_interrupt_lock := use_single_phase_loop and boss_loop_state in [BossLoopState.MARK, BossLoopState.WINDUP, BossLoopState.LUNGE, BossLoopState.SUMMON]
@@ -1442,6 +2228,7 @@ func receive_hit(amount: float, source_position: Vector2, stun_duration: float =
 		applied_stun = maxf(hit_stun_duration, stun_duration) if apply_hit_stun else maxf(0.0, stun_duration)
 		stun_left = maxf(stun_left, applied_stun)
 	if applied_stun > 0.0:
+		_end_cacodemon_breath_attack()
 		_cancel_spin_attack()
 		pending_attack = false
 		attack_windup_left = 0.0
@@ -1497,17 +2284,21 @@ func get_trade_stun_duration() -> float:
 	return outgoing_hit_stun_duration
 
 
-func _attempt_friendly_hit(target: Node2D, damage: float, guard_break: bool = false, stun_duration: float = 0.0) -> bool:
+func _attempt_friendly_hit(target: Node2D, damage: float, guard_break: bool = false, stun_duration: float = 0.0, knockback_scale: float = 1.0, spawn_block_success_fx: bool = false) -> bool:
 	if target == null or not is_instance_valid(target):
 		return false
 	if not target.has_method("receive_hit"):
 		return false
 	var was_blocked := _is_target_blocking_attack(target)
 	var adjusted_damage := damage * _get_protective_shield_damage_multiplier(target)
-	var landed := bool(target.call("receive_hit", adjusted_damage, global_position, guard_break, stun_duration))
+	var landed := bool(target.call("receive_hit", adjusted_damage, global_position, guard_break, stun_duration, knockback_scale))
 	if landed:
 		_spawn_hit_effect(target.global_position + Vector2(0.0, -14.0), Color(1.0, 0.44, 0.3, 0.95), 10.0)
 	if was_blocked and not guard_break:
+		if spawn_block_success_fx:
+			var blocked_player := target as Player
+			if blocked_player != null:
+				_queue_basic_block_success_effect(blocked_player)
 		_apply_blocked_counter_stun()
 	return landed
 
@@ -1701,6 +2492,8 @@ func _update_visuals(delta: float, to_player: Vector2) -> void:
 		target_scale = Vector2(1.1, 0.9)
 	elif attack_flash_left > 0.0:
 		target_scale = Vector2(1.16, 0.84)
+	if _is_cacodemon_visual_profile():
+		target_scale = Vector2.ONE
 
 	_update_model_animation(delta, movement_ratio, to_player)
 
@@ -1752,7 +2545,9 @@ func _update_visuals(delta: float, to_player: Vector2) -> void:
 func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vector2) -> void:
 	var lock_facing_from_hit := stun_left > 0.0 or hurt_anim_left > 0.0
 	var facing := external_sprite_facing_direction if lock_facing_from_hit else to_player
-	if not lock_facing_from_hit and (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0 or spin_active_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001:
+	var lunge_charge_visual_active := _is_lunge_charge_visual_active()
+	var breath_visual_active := _is_cacodemon_breath_active()
+	if not lock_facing_from_hit and (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0 or spin_active_left > 0.0 or lunge_charge_visual_active or breath_visual_active) and committed_attack_facing_direction.length_squared() > 0.0001:
 		facing = committed_attack_facing_direction
 	elif not lock_facing_from_hit and velocity.length_squared() > 0.001:
 		facing = velocity
@@ -1774,13 +2569,19 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		action_key = "spin"
 	elif spin_charge_left > 0.0:
 		action_key = "attack"
+	elif lunge_charge_visual_active:
+		action_key = "attack"
+	elif breath_visual_active:
+		action_key = "attack"
 	elif pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0:
 		action_key = "attack"
 	elif has_cosmetic_hurt_anim:
 		action_key = "hurt"
 	elif movement_ratio > 0.08:
 		action_key = "run"
-	var row := int(MONSTER_ACTION_ROWS.get(action_key, 0))
+	if _is_cacodemon_visual_profile() and action_key == "run":
+		action_key = "idle"
+	var row := _get_active_monster_action_row(action_key)
 	debug_last_action = action_key
 	debug_last_facing = facing
 	debug_last_to_player = to_player
@@ -1789,13 +2590,23 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		return
 
 	monster_sprite.position = monster_sprite_base_position
-	monster_sprite.flip_h = facing.x < -0.01
+	if _is_cacodemon_visual_profile():
+		var hover_strength := 2.8 + (movement_ratio * 1.8)
+		monster_sprite.position.y += sin(anim_time * 4.8) * hover_strength
+		monster_sprite.rotation = sin(anim_time * 3.1) * 0.03
+	else:
+		monster_sprite.rotation = 0.0
+	var facing_flip_deadzone := 0.08
+	if facing.x < -facing_flip_deadzone:
+		monster_sprite.flip_h = true
+	elif facing.x > facing_flip_deadzone:
+		monster_sprite.flip_h = false
 
-	var sheet := MONSTER_TEXTURES.get(action_key) as Texture2D
+	var sheet := _get_active_monster_sheet(action_key)
 	if sheet == null:
 		return
-	var frame_count := int(MONSTER_ACTION_FRAME_COUNTS.get(action_key, MONSTER_HD_HFRAMES))
-	var frame_columns: Array = MONSTER_ACTION_FRAME_COLUMNS.get(action_key, [])
+	var frame_count := _get_active_monster_action_frame_count(action_key)
+	var frame_columns: Array = _get_active_monster_action_frame_columns(action_key)
 	var has_custom_columns := not frame_columns.is_empty()
 	if has_custom_columns:
 		frame_count = frame_columns.size()
@@ -1803,23 +2614,29 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		monster_anim_name = action_key
 		monster_anim_time = 0.0
 		monster_sprite.texture = sheet
-		monster_sprite.hframes = MONSTER_HD_HFRAMES
-		monster_sprite.vframes = MONSTER_HD_VFRAMES
+		monster_sprite.hframes = _get_active_monster_hframes()
+		monster_sprite.vframes = _get_active_monster_vframes()
 		var first_column := int(frame_columns[0]) if has_custom_columns else 0
 		monster_sprite.frame_coords = Vector2i(first_column, row)
-	var fps := float(MONSTER_FPS.get(action_key, 8.0))
+	var fps := _get_active_monster_fps(action_key)
 	var holding_attack_frame := action_key == "attack" and pending_attack and attack_windup_left <= 0.0 and attack_prestrike_hold_left > 0.0
 	var preparing_attack_hold := action_key == "attack" and pending_attack and attack_windup_left > 0.0 and attack_prestrike_hold_duration > 0.0
 	var holding_recovery_frame := action_key == "attack" and not pending_attack and attack_anim_left <= 0.0 and attack_recovery_hold_left > 0.0
 	var holding_spin_charge_frame := action_key == "attack" and spin_charge_left > 0.0
+	var holding_lunge_charge_frame := action_key == "attack" and lunge_charge_visual_active
 	if not holding_attack_frame and not holding_recovery_frame:
 		monster_anim_time += delta * fps
 	var frame_index: int
 	if action_key == "death" and dead:
 		frame_index = mini(int(floor(monster_anim_time)), frame_count - 1)
 	elif action_key == "attack":
-		if holding_spin_charge_frame:
+		if breath_visual_active:
+			frame_index = int(floor(monster_anim_time)) % frame_count
+		elif holding_spin_charge_frame:
 			frame_index = clampi(maxi(0, attack_hold_frame - 1), 0, max(0, frame_count - 1))
+			monster_anim_time = float(frame_index)
+		elif holding_lunge_charge_frame:
+			frame_index = clampi(maxi(0, attack_hold_frame), 0, max(0, frame_count - 1))
 			monster_anim_time = float(frame_index)
 		elif holding_attack_frame:
 			frame_index = clampi(attack_hold_frame, 0, max(0, frame_count - 1))
@@ -1841,6 +2658,12 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		frame_index = int(floor(monster_anim_time)) % frame_count
 	var source_column := int(frame_columns[frame_index]) if has_custom_columns else frame_index
 	monster_sprite.frame_coords = Vector2i(source_column, row)
+	var hit_flash_strength := clampf(hit_flash_left / 0.12, 0.0, 1.0)
+	if hit_flash_strength > 0.0:
+		var fade := 1.0 - (hit_flash_strength * 0.62)
+		monster_sprite.modulate = Color(1.0, fade, fade, 1.0)
+	else:
+		monster_sprite.modulate = Color(1.0, 1.0, 1.0, 1.0)
 
 
 func _pick_debug_facing_row(direction: Vector2, fallback_row: int = 6) -> int:
@@ -1856,6 +2679,77 @@ func _pick_debug_facing_row(direction: Vector2, fallback_row: int = 6) -> int:
 			best_dot = alignment
 			best_row = row_idx
 	return best_row
+
+
+func set_monster_visual_profile(profile: int) -> void:
+	if profile == int(MonsterVisualProfile.CACODEMON):
+		monster_visual_profile = MonsterVisualProfile.CACODEMON
+	else:
+		monster_visual_profile = MonsterVisualProfile.MINOTAUR
+	_apply_monster_visual_profile()
+
+
+func _apply_monster_visual_profile() -> void:
+	if not using_external_monster_sprite or monster_sprite == null:
+		return
+	monster_anim_name = ""
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		monster_sprite_base_position = monster_sprite_default_position + Vector2(0.0, -16.0)
+		monster_sprite.scale = monster_sprite_default_scale
+	else:
+		monster_sprite_base_position = monster_sprite_default_position
+		monster_sprite.scale = monster_sprite_default_scale
+	monster_sprite.position = monster_sprite_base_position
+
+
+func _get_active_monster_sheet(action_key: String) -> Texture2D:
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		return CACODEMON_SHEET
+	return MONSTER_TEXTURES.get(action_key) as Texture2D
+
+
+func _get_active_monster_hframes() -> int:
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		return CACODEMON_HD_HFRAMES
+	return MONSTER_HD_HFRAMES
+
+
+func _get_active_monster_vframes() -> int:
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		return CACODEMON_HD_VFRAMES
+	return MONSTER_HD_VFRAMES
+
+
+func _get_active_monster_action_row(action_key: String) -> int:
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		return int(CACODEMON_ACTION_ROWS.get(action_key, 0))
+	return int(MONSTER_ACTION_ROWS.get(action_key, 0))
+
+
+func _get_active_monster_action_frame_count(action_key: String) -> int:
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		return int(CACODEMON_ACTION_FRAME_COUNTS.get(action_key, max(1, CACODEMON_HD_HFRAMES)))
+	return int(MONSTER_ACTION_FRAME_COUNTS.get(action_key, max(1, MONSTER_HD_HFRAMES)))
+
+
+func _get_active_monster_action_frame_columns(action_key: String) -> Array:
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		return CACODEMON_ACTION_FRAME_COLUMNS.get(action_key, [])
+	return MONSTER_ACTION_FRAME_COLUMNS.get(action_key, [])
+
+
+func _get_active_monster_fps(action_key: String) -> float:
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		return float(CACODEMON_FPS.get(action_key, 8.0))
+	return float(MONSTER_FPS.get(action_key, 8.0))
+
+
+func _is_cacodemon_visual_profile() -> bool:
+	return monster_visual_profile == MonsterVisualProfile.CACODEMON
+
+
+func _is_cacodemon_breath_active() -> bool:
+	return _is_cacodemon_visual_profile() and breath_attack != null and breath_attack.is_threat_active()
 
 
 func _update_debug_overlay() -> void:
@@ -1989,6 +2883,13 @@ func _update_spin_warning_visual(delta: float) -> void:
 func _die() -> void:
 	dead = true
 	knockback_velocity = Vector2.ZERO
+	shadow_fear_left = 0.0
+	_shadow_fear_teardown_vfx()
+	_end_cacodemon_breath_attack()
+	if is_instance_valid(cacodemon_breath_vfx):
+		cacodemon_breath_vfx.queue_free()
+	cacodemon_breath_vfx = null
+	pending_basic_block_success_fx.clear()
 	_cancel_spin_attack()
 	_teardown_debug_overlay()
 	died.emit(self)
@@ -1996,7 +2897,9 @@ func _die() -> void:
 
 
 func _start_attack_animation(duration: float, strength: float) -> void:
-	var attack_facing := external_sprite_facing_direction
+	var attack_facing := committed_attack_facing_direction
+	if attack_facing.length_squared() <= 0.0001:
+		attack_facing = external_sprite_facing_direction
 	if attack_facing.length_squared() <= 0.0001 and is_instance_valid(player):
 		attack_facing = (player.global_position - global_position).normalized()
 	if attack_facing.length_squared() <= 0.0001:
@@ -2041,6 +2944,7 @@ func _update_model_animation(delta: float, movement_ratio: float, to_player: Vec
 		cloth_back_visual.rotation = cloth_back_base_rotation - (step * 0.07) - (movement_ratio * 0.06)
 	if cloth_front_visual != null:
 		cloth_front_visual.rotation = cloth_front_base_rotation + (step * 0.06)
+	var lunge_charge_visual_active := _is_lunge_charge_visual_active()
 
 	if pending_attack:
 		var windup_progress := clampf(1.0 - (attack_windup_left / maxf(0.01, attack_windup)), 0.0, 1.0)
@@ -2061,6 +2965,11 @@ func _update_model_animation(delta: float, movement_ratio: float, to_player: Vec
 		left_leg_visual.rotation = lerp_angle(left_leg_visual.rotation, -0.28, clampf(delta * 10.0, 0.0, 1.0))
 		right_leg_visual.rotation = lerp_angle(right_leg_visual.rotation, -0.2, clampf(delta * 10.0, 0.0, 1.0))
 		body_visual.rotation = lerp_angle(body_visual.rotation, body_visual.rotation + (charge_progress * 0.06), clampf(delta * 8.0, 0.0, 1.0))
+	elif lunge_charge_visual_active:
+		right_arm_visual.rotation = lerp_angle(right_arm_visual.rotation, -1.05, clampf(delta * 14.0, 0.0, 1.0))
+		weapon_visual.rotation = lerp_angle(weapon_visual.rotation, -1.55, clampf(delta * 14.0, 0.0, 1.0))
+		left_leg_visual.rotation = lerp_angle(left_leg_visual.rotation, -0.2, clampf(delta * 10.0, 0.0, 1.0))
+		right_leg_visual.rotation = lerp_angle(right_leg_visual.rotation, -0.16, clampf(delta * 10.0, 0.0, 1.0))
 
 	if spin_active_left > 0.0:
 		body_visual.rotation += delta * 15.0
@@ -2082,7 +2991,7 @@ func _update_model_animation(delta: float, movement_ratio: float, to_player: Vec
 
 	if spin_active_left <= 0.0:
 		var body_aim := external_sprite_facing_direction if (stun_left > 0.0 or hurt_anim_left > 0.0) else to_player
-		if stun_left <= 0.0 and hurt_anim_left <= 0.0 and (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001:
+		if stun_left <= 0.0 and hurt_anim_left <= 0.0 and (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0 or lunge_charge_visual_active) and committed_attack_facing_direction.length_squared() > 0.0001:
 			body_aim = committed_attack_facing_direction
 		if body_aim.length_squared() > 0.0001:
 			body_visual.rotation = lerp_angle(body_visual.rotation, body_aim.angle() * 0.16, clampf(delta * 10.0, 0.0, 1.0))
