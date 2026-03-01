@@ -1,6 +1,9 @@
 extends CharacterBody2D
 class_name EnemyBase
 
+const BREATH_ATTACK_SCRIPT := preload("res://combat/boss/BreathAttack.gd")
+const BREATH_VFX_SCRIPT := preload("res://vfx/breath/BreathVFX.gd")
+
 const SHADOW_FEAR_DEBUFF_TEXTURE_PATH: String = "res://assets/external/DarkEffects/Dark VFX 2 (48x64).png"
 const SHADOW_FEAR_DEBUFF_FRAME_SIZE: Vector2i = Vector2i(48, 64)
 const SHADOW_FEAR_DEBUFF_FRAME_COUNT: int = 16
@@ -11,6 +14,7 @@ static var shadow_fear_debuff_frames_cache: SpriteFrames = null
 
 signal died(enemy: EnemyBase)
 signal summon_minions_requested(enemy: EnemyBase, count: int)
+signal breath_threat(active: bool, boss_pos: Vector2, dir: Vector2, time_remaining: float)
 
 enum BossLoopState {
 	IDLE,
@@ -19,6 +23,11 @@ enum BossLoopState {
 	LUNGE,
 	VULNERABLE,
 	SUMMON
+}
+
+enum MonsterVisualProfile {
+	MINOTAUR,
+	CACODEMON
 }
 
 const BOSS_LOOP_STATE_NAMES: Dictionary = {
@@ -76,6 +85,22 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var boss_summon_duration: float = 0.75
 @export var boss_summon_every_cycles: int = 3
 @export var boss_summon_count: int = 2
+@export var cacodemon_breath_enabled: bool = true
+@export var cacodemon_breath_range: float = 248.0
+@export var cacodemon_breath_duration: float = 2.7
+@export var cacodemon_breath_cooldown: float = 4.8
+@export var cacodemon_breath_charge_duration: float = 1.15
+@export var cacodemon_breath_tick_interval: float = 0.16
+@export var cacodemon_breath_damage_scale: float = 0.32
+@export var cacodemon_breath_half_width: float = 24.0
+@export var cacodemon_breath_telegraph_half_width_scale: float = 3.8
+@export var cacodemon_breath_block_fx_interval: float = 0.24
+@export var cacodemon_breath_hit_stun_scale: float = 0.45
+@export var cacodemon_breath_knockback_scale: float = 0.32
+@export var cacodemon_breath_pocket_back_offset: float = 58.0
+@export var cacodemon_breath_pocket_half_width: float = 42.0
+@export var cacodemon_breath_pocket_half_depth: float = 32.0
+@export_enum("Mode A - Torrent Split:0", "Mode B - Inferno Wall:1", "Mode C - Braided Ribbons:2") var cacodemon_breath_visual_style: int = 0
 @export var boss_mark_warning_radius_x: float = 72.0
 @export var boss_mark_warning_radius_y: float = 40.0
 @export var prioritize_companion_targets: bool = false
@@ -127,10 +152,14 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var is_miniboss: bool = false
 @export var debug_orientation_overlay: bool = false
 @export var debug_focus_nearest_enemy_only: bool = true
+@export var monster_visual_profile: MonsterVisualProfile = MonsterVisualProfile.MINOTAUR
 
 const MONSTER_HD_HFRAMES: int = 10
 const MONSTER_HD_VFRAMES: int = 20
 const MONSTER_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/mintotaur/Minotaur - Sprite Sheet Cropped.png")
+const CACODEMON_HD_HFRAMES: int = 8
+const CACODEMON_HD_VFRAMES: int = 4
+const CACODEMON_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/cacodemon/Cacodaemon Sprite Sheet.png")
 const MONSTER_TEXTURES: Dictionary = {
 	"idle": MONSTER_SHEET,
 	"run": MONSTER_SHEET,
@@ -147,6 +176,14 @@ const MONSTER_FPS: Dictionary = {
 	"hurt": 11.0,
 	"death": 8.0
 }
+const CACODEMON_FPS: Dictionary = {
+	"idle": 8.0,
+	"run": 8.4,
+	"attack": 10.0,
+	"spin": 10.0,
+	"hurt": 9.5,
+	"death": 7.2
+}
 const MONSTER_ACTION_ROWS: Dictionary = {
 	"idle": 0,
 	"run": 1,
@@ -154,6 +191,14 @@ const MONSTER_ACTION_ROWS: Dictionary = {
 	"spin": 6,
 	"hurt": 4,
 	"death": 9
+}
+const CACODEMON_ACTION_ROWS: Dictionary = {
+	"idle": 0,
+	"run": 0,
+	"attack": 1,
+	"spin": 1,
+	"hurt": 2,
+	"death": 3
 }
 const MONSTER_ACTION_FRAME_COUNTS: Dictionary = {
 	"idle": 5,
@@ -163,9 +208,21 @@ const MONSTER_ACTION_FRAME_COUNTS: Dictionary = {
 	"hurt": 5,
 	"death": 6
 }
+const CACODEMON_ACTION_FRAME_COUNTS: Dictionary = {
+	"idle": 6,
+	"run": 6,
+	"attack": 6,
+	"spin": 6,
+	"hurt": 4,
+	"death": 7
+}
 const MONSTER_ACTION_FRAME_COLUMNS: Dictionary = {
 	"spin": [0, 1, 2, 3, 4, 5, 6, 7],
 	"hurt": [1, 2, 3, 4]
+}
+const CACODEMON_ACTION_FRAME_COLUMNS: Dictionary = {
+	"hurt": [0, 1, 2, 3],
+	"death": [0, 1, 2, 3, 4, 5, 6]
 }
 const MONSTER_HD_ROW_DIRECTIONS: Array[Vector2] = [
 	Vector2(-0.70710677, -0.70710677),
@@ -208,6 +265,8 @@ var monster_anim_name: String = ""
 var monster_anim_time: float = 0.0
 var using_external_monster_sprite: bool = false
 var monster_sprite_base_position: Vector2 = Vector2.ZERO
+var monster_sprite_default_position: Vector2 = Vector2.ZERO
+var monster_sprite_default_scale: Vector2 = Vector2.ONE
 var external_sprite_facing_direction: Vector2 = Vector2.RIGHT
 var committed_attack_facing_direction: Vector2 = Vector2.RIGHT
 var debug_overlay_root: Node2D = null
@@ -247,11 +306,18 @@ var boss_mark_cycle_left: float = 0.0
 var boss_summon_cycle_left: float = 0.0
 var companion_target_refresh_left: float = 0.0
 var boss_dps_mark_left: float = 0.0
+var cacodemon_breath_left: float = 0.0
+var cacodemon_breath_tick_left: float = 0.0
+var cacodemon_breath_block_fx_left: float = 0.0
+var cacodemon_breath_charge_left: float = 0.0
 var shadow_fear_left: float = 0.0
 var shadow_fear_apply_count: int = 0
 var shadow_fear_vfx_time: float = 0.0
 var shadow_fear_vfx_root: Node2D = null
 var shadow_fear_vfx_sprite: AnimatedSprite2D = null
+var cacodemon_breath_vfx: Node2D = null
+var breath_attack: RefCounted = null
+var breath_threat_was_active: bool = false
 
 @onready var shadow_visual: Polygon2D = $Shadow
 @onready var body_visual: Polygon2D = $Body
@@ -306,6 +372,9 @@ func _ready() -> void:
 		body_visual.visible = false
 		monster_sprite.visible = true
 		monster_sprite_base_position = monster_sprite.position
+		monster_sprite_default_position = monster_sprite.position
+		monster_sprite_default_scale = monster_sprite.scale
+		_apply_monster_visual_profile()
 	base_body_color = body_visual.color
 	base_head_color = head_visual.color
 	base_arm_color = left_arm_visual.color
@@ -338,12 +407,34 @@ func _ready() -> void:
 	_setup_health_bar()
 	_update_health_bar()
 	_reacquire_player()
+	_configure_cacodemon_breath_controller()
 	_setup_debug_overlay()
 	boss_mark_cycle_left = 0.0
 	boss_summon_cycle_left = maxf(1.0, boss_summon_interval)
 	companion_target_refresh_left = 0.0
 	_reset_periodic_hurt_anim_cooldown()
 	_set_boss_loop_state(BossLoopState.IDLE, 0.0)
+
+
+func _configure_cacodemon_breath_controller() -> void:
+	if BREATH_ATTACK_SCRIPT == null:
+		return
+	var controller := BREATH_ATTACK_SCRIPT.new()
+	if controller == null:
+		return
+	breath_attack = controller
+	breath_attack.configure({
+		"charge_duration": cacodemon_breath_charge_duration,
+		"fire_duration": cacodemon_breath_duration,
+		"cooldown_duration": cacodemon_breath_cooldown,
+		"damage_tick_interval": cacodemon_breath_tick_interval,
+		"range": cacodemon_breath_range,
+		"half_width": cacodemon_breath_half_width,
+		"telegraph_half_width_scale": cacodemon_breath_telegraph_half_width_scale,
+		"pocket_back_offset": cacodemon_breath_pocket_back_offset,
+		"pocket_half_width": cacodemon_breath_pocket_half_width,
+		"pocket_half_depth": cacodemon_breath_pocket_half_depth
+	})
 
 
 func _is_env_flag_enabled(env_key: String) -> bool:
@@ -520,6 +611,10 @@ func _shadow_fear_teardown_vfx() -> void:
 func _exit_tree() -> void:
 	_teardown_debug_overlay()
 	_shadow_fear_teardown_vfx()
+	_end_cacodemon_breath_attack()
+	if is_instance_valid(cacodemon_breath_vfx):
+		cacodemon_breath_vfx.queue_free()
+	cacodemon_breath_vfx = null
 	if is_instance_valid(spin_warning_area):
 		spin_warning_area.queue_free()
 
@@ -747,6 +842,16 @@ func _physics_process_single_phase(delta: float) -> void:
 
 	if shadow_fear_left > 0.0:
 		_hold_shadow_fear_state(delta, to_player)
+		return
+
+	if _is_cacodemon_visual_profile() and is_miniboss:
+		_tick_cacodemon_breath_loop(delta, to_player)
+		move_and_slide()
+		_apply_soft_enemy_separation(delta)
+		_clamp_to_arena()
+		knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
+		_update_visuals(delta, to_player)
+		_update_health_bar()
 		return
 
 	if pending_attack and boss_loop_state == BossLoopState.IDLE:
@@ -984,6 +1089,250 @@ func _tick_boss_idle_basic_pressure(to_player: Vector2) -> void:
 		velocity = to_player.normalized() * (move_speed * 0.42)
 	else:
 		velocity = Vector2.ZERO
+
+
+func _tick_cacodemon_breath_loop(delta: float, to_player: Vector2) -> void:
+	pending_attack = false
+	attack_windup_left = 0.0
+	attack_prestrike_hold_left = 0.0
+	attack_recovery_hold_left = 0.0
+	attack_telegraph.visible = false
+	if breath_attack == null:
+		_configure_cacodemon_breath_controller()
+	if not cacodemon_breath_enabled or breath_attack == null:
+		_end_cacodemon_breath_attack()
+		_tick_boss_idle_basic_pressure(to_player)
+		return
+	var player_target := player as Player
+	var tank_position := player_target.global_position if player_target != null and is_instance_valid(player_target) else global_position + Vector2.RIGHT * 48.0
+	var aim_to_tank := tank_position - global_position
+	var breath_direction_sign := _get_cacodemon_breath_direction_sign(aim_to_tank)
+	var desired_breath_direction := Vector2(breath_direction_sign, 0.0)
+	committed_attack_facing_direction = breath_attack.get_direction() if breath_attack.is_threat_active() else desired_breath_direction
+	external_sprite_facing_direction = committed_attack_facing_direction
+	cacodemon_breath_block_fx_left = maxf(0.0, cacodemon_breath_block_fx_left - maxf(0.0, delta))
+	var step_result: Dictionary = breath_attack.update(delta, global_position, tank_position, committed_attack_facing_direction, _is_target_blocking_attack(player_target))
+	cacodemon_breath_charge_left = breath_attack.get_time_remaining() if breath_attack.is_charge_active() else 0.0
+	cacodemon_breath_left = breath_attack.get_time_remaining() if breath_attack.is_fire_active() else 0.0
+	cacodemon_breath_tick_left = breath_attack.damage_tick_left if breath_attack.is_fire_active() else 0.0
+	if bool(step_result.get("entered_fire", false)):
+		_spawn_hit_effect(_get_cacodemon_breath_origin(), Color(1.0, 0.48, 0.24, 0.92), 9.0)
+	if bool(step_result.get("fire_tick", false)):
+		_attempt_cacodemon_breath_hits()
+	_emit_cacodemon_breath_threat_signal()
+	_update_cacodemon_breath_vfx()
+	if breath_attack.is_threat_active():
+		velocity = Vector2.ZERO
+		return
+	if breath_attack.is_cooldown_active():
+		velocity = _compute_cacodemon_breath_reposition_velocity(aim_to_tank)
+		return
+	var distance_to_player := aim_to_tank.length()
+	var alignment_ready := absf(aim_to_tank.y) <= maxf(16.0, cacodemon_breath_half_width * 0.9)
+	var in_range := distance_to_player <= maxf(48.0, cacodemon_breath_range)
+	if breath_attack.can_begin() and in_range and alignment_ready:
+		_start_cacodemon_breath_attack(breath_direction_sign)
+		return
+	velocity = _compute_cacodemon_breath_reposition_velocity(aim_to_tank)
+
+
+func _start_cacodemon_breath_attack(direction_sign: float) -> void:
+	if breath_attack == null:
+		_configure_cacodemon_breath_controller()
+	if breath_attack == null:
+		return
+	var player_target := player as Player
+	var tank_position := player_target.global_position if player_target != null and is_instance_valid(player_target) else global_position + Vector2(direction_sign * 48.0, 0.0)
+	breath_attack.force_start(global_position, tank_position, Vector2(direction_sign, 0.0))
+	cacodemon_breath_left = 0.0
+	cacodemon_breath_charge_left = breath_attack.get_time_remaining()
+	cacodemon_breath_tick_left = 0.0
+	cacodemon_breath_block_fx_left = 0.0
+	velocity = Vector2.ZERO
+	committed_attack_facing_direction = Vector2(direction_sign, 0.0)
+	external_sprite_facing_direction = committed_attack_facing_direction
+	_emit_cacodemon_breath_threat_signal(true)
+	_update_cacodemon_breath_vfx()
+
+
+func _end_cacodemon_breath_attack() -> void:
+	cacodemon_breath_left = 0.0
+	cacodemon_breath_tick_left = 0.0
+	cacodemon_breath_charge_left = 0.0
+	cacodemon_breath_block_fx_left = 0.0
+	if breath_attack != null:
+		breath_attack.cancel()
+	_emit_cacodemon_breath_threat_signal(true)
+	_update_cacodemon_breath_vfx()
+
+
+func _compute_cacodemon_breath_reposition_velocity(to_tank: Vector2) -> Vector2:
+	var distance_to_player := to_tank.length()
+	var breath_direction_sign := _get_cacodemon_breath_direction_sign(to_tank)
+	var desired_velocity := Vector2.ZERO
+	if distance_to_player > maxf(64.0, cacodemon_breath_range * 0.84):
+		desired_velocity.x = breath_direction_sign
+	elif distance_to_player < maxf(44.0, cacodemon_breath_range * 0.36):
+		desired_velocity.x = -breath_direction_sign
+	if absf(to_tank.y) > maxf(12.0, cacodemon_breath_half_width * 0.6):
+		desired_velocity.y = signf(to_tank.y)
+	if desired_velocity.length_squared() <= 0.0001:
+		return Vector2.ZERO
+	return desired_velocity.normalized() * (move_speed * 0.52)
+
+
+func _ensure_cacodemon_breath_vfx() -> void:
+	if not is_instance_valid(cacodemon_breath_vfx):
+		var scene_root := get_tree().current_scene
+		if scene_root == null:
+			scene_root = get_parent()
+		if scene_root == null:
+			return
+		var vfx := BREATH_VFX_SCRIPT.new()
+		if vfx == null:
+			return
+		scene_root.add_child(vfx)
+		cacodemon_breath_vfx = vfx
+		if cacodemon_breath_vfx.has_method("configure"):
+			cacodemon_breath_vfx.call("configure", self, player as Player)
+
+
+func _update_cacodemon_breath_vfx() -> void:
+	if breath_attack == null:
+		return
+	if not breath_attack.is_threat_active() and not is_instance_valid(cacodemon_breath_vfx):
+		return
+	_ensure_cacodemon_breath_vfx()
+	if not is_instance_valid(cacodemon_breath_vfx):
+		return
+	if cacodemon_breath_vfx.has_method("set_mode"):
+		cacodemon_breath_vfx.call("set_mode", clampi(cacodemon_breath_visual_style, 0, 2))
+	if cacodemon_breath_vfx.has_method("update_state"):
+		cacodemon_breath_vfx.call("update_state", get_breath_threat_snapshot())
+
+
+func _emit_cacodemon_breath_threat_signal(force_emit: bool = false) -> void:
+	var snapshot := get_breath_threat_snapshot()
+	var active := bool(snapshot.get("active", false))
+	if force_emit or active or breath_threat_was_active != active:
+		breath_threat.emit(
+			active,
+			global_position,
+			snapshot.get("dir", Vector2.RIGHT),
+			float(snapshot.get("time_remaining", 0.0))
+		)
+	breath_threat_was_active = active
+
+
+func get_breath_threat_snapshot() -> Dictionary:
+	if breath_attack == null or not _is_cacodemon_visual_profile():
+		return {
+			"active": false,
+			"charge_active": false,
+			"fire_active": false,
+			"cooldown_active": false,
+			"state_name": "Idle",
+			"time_remaining": 0.0,
+			"dir": committed_attack_facing_direction.normalized() if committed_attack_facing_direction.length_squared() > 0.0001 else Vector2.RIGHT,
+			"boss_position": global_position
+		}
+	return breath_attack.build_threat_snapshot(_get_cacodemon_breath_origin())
+
+
+func is_position_in_breath_safe_pocket(world_position: Vector2) -> bool:
+	return breath_attack != null and breath_attack.is_in_safe_pocket(world_position)
+
+
+func _attempt_cacodemon_breath_hits() -> void:
+	if breath_attack == null or not breath_attack.is_fire_active():
+		return
+	var segment_start := _get_cacodemon_breath_origin()
+	var segment_end: Vector2 = segment_start + (breath_attack.get_direction() * maxf(48.0, cacodemon_breath_range))
+	var half_width := maxf(10.0, cacodemon_breath_half_width)
+	var blocking_player := _get_cacodemon_breath_blocking_player(segment_start, segment_end, half_width)
+	if blocking_player != null:
+		_spawn_cacodemon_breath_block_effect(blocking_player)
+	var hit_damage := maxf(1.0, attack_damage * maxf(0.1, cacodemon_breath_damage_scale))
+	var hit_stun := maxf(0.0, outgoing_hit_stun_duration * maxf(0.0, cacodemon_breath_hit_stun_scale))
+	var hit_knockback := maxf(0.1, cacodemon_breath_knockback_scale)
+	for target in _get_attackable_friendly_targets():
+		if _distance_to_segment(target.global_position, segment_start, segment_end) > half_width:
+			continue
+		if is_position_in_breath_safe_pocket(target.global_position):
+			continue
+		if target == blocking_player:
+			continue
+		_attempt_friendly_hit(target, hit_damage, false, hit_stun, hit_knockback, false)
+
+
+func debug_force_cacodemon_breath() -> void:
+	if not _is_cacodemon_visual_profile():
+		return
+	var player_target := player as Player
+	var tank_position := player_target.global_position if player_target != null and is_instance_valid(player_target) else global_position + Vector2.RIGHT * 48.0
+	var direction_sign := _get_cacodemon_breath_direction_sign(tank_position - global_position)
+	_start_cacodemon_breath_attack(direction_sign)
+
+
+func cycle_cacodemon_breath_visual_mode() -> int:
+	cacodemon_breath_visual_style = wrapi(cacodemon_breath_visual_style + 1, 0, 3)
+	_update_cacodemon_breath_vfx()
+	return cacodemon_breath_visual_style
+
+
+func _get_cacodemon_breath_direction_sign(to_player: Vector2) -> float:
+	if absf(to_player.x) > 4.0:
+		return -1.0 if to_player.x < 0.0 else 1.0
+	if committed_attack_facing_direction.length_squared() > 0.0001:
+		return -1.0 if committed_attack_facing_direction.x < 0.0 else 1.0
+	return 1.0
+
+
+func _get_cacodemon_breath_origin() -> Vector2:
+	var direction := committed_attack_facing_direction
+	if breath_attack != null and breath_attack.is_threat_active():
+		direction = breath_attack.get_direction()
+	if direction.length_squared() <= 0.0001:
+		direction = Vector2.RIGHT
+	direction = Vector2.RIGHT if direction.x >= 0.0 else Vector2.LEFT
+	return global_position + Vector2(direction.x * 24.0, -18.0)
+
+
+func _get_cacodemon_breath_blocking_player(segment_start: Vector2, segment_end: Vector2, half_width: float) -> Player:
+	var player_target := player as Player
+	if player_target == null or not is_instance_valid(player_target):
+		return null
+	if not _is_friendly_target_alive(player_target):
+		return null
+	if not _is_target_blocking_attack(player_target):
+		return null
+	var shield_center := player_target.global_position + Vector2(0.0, -10.0)
+	if player_target.has_method("get_block_shield_center_global"):
+		var center_variant: Variant = player_target.call("get_block_shield_center_global")
+		if center_variant is Vector2:
+			shield_center = center_variant
+	var shield_radius := maxf(8.0, player_target.block_shield_radius)
+	return player_target if _distance_to_segment(shield_center, segment_start, segment_end) <= (shield_radius + half_width) else null
+
+
+func _spawn_cacodemon_breath_block_effect(blocking_player: Player) -> void:
+	if blocking_player == null or not is_instance_valid(blocking_player):
+		return
+	if cacodemon_breath_block_fx_left > 0.0:
+		return
+	cacodemon_breath_block_fx_left = maxf(0.04, cacodemon_breath_block_fx_interval)
+	var shield_center := blocking_player.global_position + Vector2(0.0, -10.0)
+	if blocking_player.has_method("get_block_shield_center_global"):
+		var center_variant: Variant = blocking_player.call("get_block_shield_center_global")
+		if center_variant is Vector2:
+			shield_center = center_variant
+	var forward := committed_attack_facing_direction.normalized()
+	if breath_attack != null and breath_attack.is_threat_active():
+		forward = breath_attack.get_direction()
+	if forward.length_squared() <= 0.0001:
+		forward = Vector2.RIGHT
+	_spawn_hit_effect(shield_center, Color(1.0, 0.72, 0.34, 0.92), 10.0)
+	_spawn_hit_effect(shield_center + (forward * 7.0), Color(1.0, 1.0, 1.0, 0.84), 7.0)
 
 
 func _tick_boss_mark_state(delta: float) -> void:
@@ -1512,6 +1861,8 @@ func get_guardian_intercept_point(marked_world_position: Vector2) -> Vector2:
 
 
 func get_boss_debug_state() -> String:
+	if _is_cacodemon_visual_profile() and breath_attack != null and int(breath_attack.state) != int(BREATH_ATTACK_SCRIPT.State.IDLE):
+		return "Breath %s" % breath_attack.get_state_name()
 	return String(BOSS_LOOP_STATE_NAMES.get(boss_loop_state, "Idle"))
 
 
@@ -1854,6 +2205,7 @@ func receive_hit(amount: float, source_position: Vector2, stun_duration: float =
 		or attack_prestrike_hold_left > 0.0 \
 		or attack_anim_left > 0.0 \
 		or attack_recovery_hold_left > 0.0 \
+		or cacodemon_breath_left > 0.0 \
 		or spin_charge_left > 0.0 \
 		or spin_active_left > 0.0
 	var loop_interrupt_lock := use_single_phase_loop and boss_loop_state in [BossLoopState.MARK, BossLoopState.WINDUP, BossLoopState.LUNGE, BossLoopState.SUMMON]
@@ -1876,6 +2228,7 @@ func receive_hit(amount: float, source_position: Vector2, stun_duration: float =
 		applied_stun = maxf(hit_stun_duration, stun_duration) if apply_hit_stun else maxf(0.0, stun_duration)
 		stun_left = maxf(stun_left, applied_stun)
 	if applied_stun > 0.0:
+		_end_cacodemon_breath_attack()
 		_cancel_spin_attack()
 		pending_attack = false
 		attack_windup_left = 0.0
@@ -2139,6 +2492,8 @@ func _update_visuals(delta: float, to_player: Vector2) -> void:
 		target_scale = Vector2(1.1, 0.9)
 	elif attack_flash_left > 0.0:
 		target_scale = Vector2(1.16, 0.84)
+	if _is_cacodemon_visual_profile():
+		target_scale = Vector2.ONE
 
 	_update_model_animation(delta, movement_ratio, to_player)
 
@@ -2191,7 +2546,8 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	var lock_facing_from_hit := stun_left > 0.0 or hurt_anim_left > 0.0
 	var facing := external_sprite_facing_direction if lock_facing_from_hit else to_player
 	var lunge_charge_visual_active := _is_lunge_charge_visual_active()
-	if not lock_facing_from_hit and (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0 or spin_active_left > 0.0 or lunge_charge_visual_active) and committed_attack_facing_direction.length_squared() > 0.0001:
+	var breath_visual_active := _is_cacodemon_breath_active()
+	if not lock_facing_from_hit and (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0 or spin_active_left > 0.0 or lunge_charge_visual_active or breath_visual_active) and committed_attack_facing_direction.length_squared() > 0.0001:
 		facing = committed_attack_facing_direction
 	elif not lock_facing_from_hit and velocity.length_squared() > 0.001:
 		facing = velocity
@@ -2215,13 +2571,17 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		action_key = "attack"
 	elif lunge_charge_visual_active:
 		action_key = "attack"
+	elif breath_visual_active:
+		action_key = "attack"
 	elif pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0:
 		action_key = "attack"
 	elif has_cosmetic_hurt_anim:
 		action_key = "hurt"
 	elif movement_ratio > 0.08:
 		action_key = "run"
-	var row := int(MONSTER_ACTION_ROWS.get(action_key, 0))
+	if _is_cacodemon_visual_profile() and action_key == "run":
+		action_key = "idle"
+	var row := _get_active_monster_action_row(action_key)
 	debug_last_action = action_key
 	debug_last_facing = facing
 	debug_last_to_player = to_player
@@ -2230,17 +2590,23 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		return
 
 	monster_sprite.position = monster_sprite_base_position
+	if _is_cacodemon_visual_profile():
+		var hover_strength := 2.8 + (movement_ratio * 1.8)
+		monster_sprite.position.y += sin(anim_time * 4.8) * hover_strength
+		monster_sprite.rotation = sin(anim_time * 3.1) * 0.03
+	else:
+		monster_sprite.rotation = 0.0
 	var facing_flip_deadzone := 0.08
 	if facing.x < -facing_flip_deadzone:
 		monster_sprite.flip_h = true
 	elif facing.x > facing_flip_deadzone:
 		monster_sprite.flip_h = false
 
-	var sheet := MONSTER_TEXTURES.get(action_key) as Texture2D
+	var sheet := _get_active_monster_sheet(action_key)
 	if sheet == null:
 		return
-	var frame_count := int(MONSTER_ACTION_FRAME_COUNTS.get(action_key, MONSTER_HD_HFRAMES))
-	var frame_columns: Array = MONSTER_ACTION_FRAME_COLUMNS.get(action_key, [])
+	var frame_count := _get_active_monster_action_frame_count(action_key)
+	var frame_columns: Array = _get_active_monster_action_frame_columns(action_key)
 	var has_custom_columns := not frame_columns.is_empty()
 	if has_custom_columns:
 		frame_count = frame_columns.size()
@@ -2248,11 +2614,11 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		monster_anim_name = action_key
 		monster_anim_time = 0.0
 		monster_sprite.texture = sheet
-		monster_sprite.hframes = MONSTER_HD_HFRAMES
-		monster_sprite.vframes = MONSTER_HD_VFRAMES
+		monster_sprite.hframes = _get_active_monster_hframes()
+		monster_sprite.vframes = _get_active_monster_vframes()
 		var first_column := int(frame_columns[0]) if has_custom_columns else 0
 		monster_sprite.frame_coords = Vector2i(first_column, row)
-	var fps := float(MONSTER_FPS.get(action_key, 8.0))
+	var fps := _get_active_monster_fps(action_key)
 	var holding_attack_frame := action_key == "attack" and pending_attack and attack_windup_left <= 0.0 and attack_prestrike_hold_left > 0.0
 	var preparing_attack_hold := action_key == "attack" and pending_attack and attack_windup_left > 0.0 and attack_prestrike_hold_duration > 0.0
 	var holding_recovery_frame := action_key == "attack" and not pending_attack and attack_anim_left <= 0.0 and attack_recovery_hold_left > 0.0
@@ -2264,7 +2630,9 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	if action_key == "death" and dead:
 		frame_index = mini(int(floor(monster_anim_time)), frame_count - 1)
 	elif action_key == "attack":
-		if holding_spin_charge_frame:
+		if breath_visual_active:
+			frame_index = int(floor(monster_anim_time)) % frame_count
+		elif holding_spin_charge_frame:
 			frame_index = clampi(maxi(0, attack_hold_frame - 1), 0, max(0, frame_count - 1))
 			monster_anim_time = float(frame_index)
 		elif holding_lunge_charge_frame:
@@ -2311,6 +2679,77 @@ func _pick_debug_facing_row(direction: Vector2, fallback_row: int = 6) -> int:
 			best_dot = alignment
 			best_row = row_idx
 	return best_row
+
+
+func set_monster_visual_profile(profile: int) -> void:
+	if profile == int(MonsterVisualProfile.CACODEMON):
+		monster_visual_profile = MonsterVisualProfile.CACODEMON
+	else:
+		monster_visual_profile = MonsterVisualProfile.MINOTAUR
+	_apply_monster_visual_profile()
+
+
+func _apply_monster_visual_profile() -> void:
+	if not using_external_monster_sprite or monster_sprite == null:
+		return
+	monster_anim_name = ""
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		monster_sprite_base_position = monster_sprite_default_position + Vector2(0.0, -16.0)
+		monster_sprite.scale = monster_sprite_default_scale
+	else:
+		monster_sprite_base_position = monster_sprite_default_position
+		monster_sprite.scale = monster_sprite_default_scale
+	monster_sprite.position = monster_sprite_base_position
+
+
+func _get_active_monster_sheet(action_key: String) -> Texture2D:
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		return CACODEMON_SHEET
+	return MONSTER_TEXTURES.get(action_key) as Texture2D
+
+
+func _get_active_monster_hframes() -> int:
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		return CACODEMON_HD_HFRAMES
+	return MONSTER_HD_HFRAMES
+
+
+func _get_active_monster_vframes() -> int:
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		return CACODEMON_HD_VFRAMES
+	return MONSTER_HD_VFRAMES
+
+
+func _get_active_monster_action_row(action_key: String) -> int:
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		return int(CACODEMON_ACTION_ROWS.get(action_key, 0))
+	return int(MONSTER_ACTION_ROWS.get(action_key, 0))
+
+
+func _get_active_monster_action_frame_count(action_key: String) -> int:
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		return int(CACODEMON_ACTION_FRAME_COUNTS.get(action_key, max(1, CACODEMON_HD_HFRAMES)))
+	return int(MONSTER_ACTION_FRAME_COUNTS.get(action_key, max(1, MONSTER_HD_HFRAMES)))
+
+
+func _get_active_monster_action_frame_columns(action_key: String) -> Array:
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		return CACODEMON_ACTION_FRAME_COLUMNS.get(action_key, [])
+	return MONSTER_ACTION_FRAME_COLUMNS.get(action_key, [])
+
+
+func _get_active_monster_fps(action_key: String) -> float:
+	if monster_visual_profile == MonsterVisualProfile.CACODEMON:
+		return float(CACODEMON_FPS.get(action_key, 8.0))
+	return float(MONSTER_FPS.get(action_key, 8.0))
+
+
+func _is_cacodemon_visual_profile() -> bool:
+	return monster_visual_profile == MonsterVisualProfile.CACODEMON
+
+
+func _is_cacodemon_breath_active() -> bool:
+	return _is_cacodemon_visual_profile() and breath_attack != null and breath_attack.is_threat_active()
 
 
 func _update_debug_overlay() -> void:
@@ -2446,6 +2885,10 @@ func _die() -> void:
 	knockback_velocity = Vector2.ZERO
 	shadow_fear_left = 0.0
 	_shadow_fear_teardown_vfx()
+	_end_cacodemon_breath_attack()
+	if is_instance_valid(cacodemon_breath_vfx):
+		cacodemon_breath_vfx.queue_free()
+	cacodemon_breath_vfx = null
 	pending_basic_block_success_fx.clear()
 	_cancel_spin_attack()
 	_teardown_debug_overlay()

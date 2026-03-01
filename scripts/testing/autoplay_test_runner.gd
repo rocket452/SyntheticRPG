@@ -28,6 +28,14 @@ var healer_tidal_wave_setup_done: bool = false
 var healer_respects_fear_setup_done: bool = false
 var healer_respects_fear_start_time: float = -1.0
 var healer_respects_fear_health_floor: float = -1.0
+var cacodemon_breath_setup_done: bool = false
+var cacodemon_breath_started: bool = false
+var cacodemon_breath_start_time: float = -1.0
+var cacodemon_breath_health_floor: float = -1.0
+var cacodemon_breath_stack_setup_done: bool = false
+var cacodemon_breath_stack_success_time: float = -1.0
+var cacodemon_breath_stack_fire_seen: bool = false
+var cacodemon_breath_stack_best_safe_count: int = 0
 
 
 func configure(target_arena: Arena) -> void:
@@ -47,9 +55,17 @@ func _ready() -> void:
 	healer_respects_fear_setup_done = false
 	healer_respects_fear_start_time = -1.0
 	healer_respects_fear_health_floor = -1.0
+	cacodemon_breath_setup_done = false
+	cacodemon_breath_started = false
+	cacodemon_breath_start_time = -1.0
+	cacodemon_breath_health_floor = -1.0
+	cacodemon_breath_stack_setup_done = false
+	cacodemon_breath_stack_success_time = -1.0
+	cacodemon_breath_stack_fire_seen = false
+	cacodemon_breath_stack_best_safe_count = 0
 	var layout_variant_env := OS.get_environment("AUTOPLAY_LAYOUT_VARIANT").strip_edges()
 	shadow_fear_layout_variant = int(layout_variant_env) if layout_variant_env.is_valid_int() else 0
-	if autoplay_scenario == "lunge_block" or autoplay_scenario == "basic_block" or autoplay_scenario == "shadow_fear" or autoplay_scenario == "shadow_fear_break" or autoplay_scenario == "shadow_fear_new_enemy" or autoplay_scenario == "healer_tidal_wave" or autoplay_scenario == "healer_respects_fear":
+	if autoplay_scenario == "lunge_block" or autoplay_scenario == "basic_block" or autoplay_scenario == "shadow_fear" or autoplay_scenario == "shadow_fear_break" or autoplay_scenario == "shadow_fear_new_enemy" or autoplay_scenario == "healer_tidal_wave" or autoplay_scenario == "healer_respects_fear" or autoplay_scenario == "cacodemon_breath_block" or autoplay_scenario == "cacodemon_breath_stack":
 		timeout_seconds = maxf(timeout_seconds, 45.0)
 	autoplay_log_path = OS.get_environment("AUTOPLAY_LOG_PATH")
 	if autoplay_log_path.is_empty():
@@ -96,6 +112,12 @@ func _physics_process(delta: float) -> void:
 		return
 	if autoplay_scenario == "healer_respects_fear":
 		_step_healer_respects_fear_scenario()
+		return
+	if autoplay_scenario == "cacodemon_breath_block":
+		_step_cacodemon_breath_block_scenario()
+		return
+	if autoplay_scenario == "cacodemon_breath_stack":
+		_step_cacodemon_breath_stack_scenario()
 		return
 
 	match phase:
@@ -409,6 +431,144 @@ func _step_healer_respects_fear_scenario() -> void:
 		return
 
 
+func _step_cacodemon_breath_block_scenario() -> void:
+	if not is_instance_valid(player) or not is_instance_valid(arena):
+		return
+	var boss_enemy := _get_boss_enemy()
+	if boss_enemy == null:
+		return
+
+	arena.allow_multiple_minotaurs = false
+	arena.max_active_minotaurs = 1
+	arena.timed_extra_minotaur_enabled = false
+	boss_enemy.boss_can_summon_minions = false
+	boss_enemy.boss_summon_count = 0
+	boss_enemy.spin_attack_enabled = false
+	boss_enemy.use_single_phase_loop = true
+	boss_enemy.attack_cooldown_left = 0.0
+	var breath_style_override := OS.get_environment("CACODEMON_BREATH_STYLE").strip_edges()
+	if breath_style_override != "" and breath_style_override.is_valid_int():
+		boss_enemy.cacodemon_breath_visual_style = clampi(int(breath_style_override), 0, 2)
+	if boss_enemy.has_method("set_monster_visual_profile"):
+		boss_enemy.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.CACODEMON))
+
+	if not cacodemon_breath_setup_done:
+		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		var player_pos := Vector2(max_x - 360.0, clampf(10.0, min_y + 8.0, max_y - 8.0))
+		var enemy_pos := Vector2(max_x - 160.0, clampf(10.0, min_y + 8.0, max_y - 8.0))
+		player.global_position = arena.to_global(player_pos)
+		player.velocity = Vector2.ZERO
+		var enemy_body := boss_enemy as CharacterBody2D
+		if enemy_body != null:
+			enemy_body.global_position = arena.to_global(enemy_pos)
+			enemy_body.velocity = Vector2.ZERO
+		cacodemon_breath_health_floor = player.current_health
+		cacodemon_breath_setup_done = true
+		_write_log("Cacodemon breath block setup applied")
+		_write_log("Cacodemon breath style=%d" % boss_enemy.cacodemon_breath_visual_style)
+
+	var to_boss := boss_enemy.global_position - player.global_position
+	var desired_distance := 178.0
+	if to_boss.length() > desired_distance + 12.0:
+		_set_move_inputs(to_boss.normalized())
+	elif to_boss.length() < desired_distance - 12.0:
+		_set_move_inputs((-to_boss).normalized())
+	else:
+		_set_move_inputs(Vector2.ZERO)
+	Input.action_press("block")
+
+	var breath_left := float(boss_enemy.get("cacodemon_breath_left"))
+	if breath_left > 0.0:
+		if not cacodemon_breath_started:
+			cacodemon_breath_started = true
+			cacodemon_breath_start_time = elapsed
+			_write_log("Cacodemon breath observed")
+		if elapsed - cacodemon_breath_start_time >= 2.8:
+			if player.current_health < cacodemon_breath_health_floor - 0.1:
+				_finish(1, "cacodemon_breath_block_failed")
+				return
+			_finish(0, "cacodemon_breath_block")
+			return
+
+
+func _step_cacodemon_breath_stack_scenario() -> void:
+	if not is_instance_valid(player) or not is_instance_valid(arena):
+		return
+	var boss_enemy := _get_boss_enemy()
+	if boss_enemy == null:
+		return
+
+	arena.allow_multiple_minotaurs = false
+	arena.max_active_minotaurs = 1
+	arena.timed_extra_minotaur_enabled = false
+	boss_enemy.boss_can_summon_minions = false
+	boss_enemy.boss_summon_count = 0
+	boss_enemy.spin_attack_enabled = false
+	boss_enemy.use_single_phase_loop = true
+	boss_enemy.move_speed = 0.0
+	boss_enemy.attack_damage = minf(boss_enemy.attack_damage, 1.0)
+	boss_enemy.attack_cooldown_left = 0.0
+	if boss_enemy.has_method("set_monster_visual_profile"):
+		boss_enemy.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.CACODEMON))
+
+	if not cacodemon_breath_stack_setup_done:
+		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		var player_pos := Vector2(max_x - 360.0, clampf(8.0, min_y + 8.0, max_y - 8.0))
+		var enemy_pos := Vector2(max_x - 140.0, clampf(8.0, min_y + 8.0, max_y - 8.0))
+		var healer_pos := Vector2(max_x - 300.0, clampf(-78.0, min_y + 8.0, max_y - 8.0))
+		var rat_pos := Vector2(max_x - 290.0, clampf(84.0, min_y + 8.0, max_y - 8.0))
+		player.global_position = arena.to_global(player_pos)
+		player.velocity = Vector2.ZERO
+		var enemy_body := boss_enemy as CharacterBody2D
+		if enemy_body != null:
+			enemy_body.global_position = arena.to_global(enemy_pos)
+			enemy_body.velocity = Vector2.ZERO
+		if is_instance_valid(arena.healer):
+			arena.healer.global_position = arena.to_global(healer_pos)
+			arena.healer.move_velocity = Vector2.ZERO
+		if is_instance_valid(arena.ratfolk):
+			arena.ratfolk.global_position = arena.to_global(rat_pos)
+			arena.ratfolk.velocity = Vector2.ZERO
+		if boss_enemy.has_method("debug_force_cacodemon_breath"):
+			boss_enemy.call("debug_force_cacodemon_breath")
+		cacodemon_breath_stack_setup_done = true
+		_write_log("Cacodemon breath stack setup applied")
+
+	_set_move_inputs(Vector2.ZERO)
+	Input.action_press("block")
+
+	if not boss_enemy.has_method("get_breath_threat_snapshot"):
+		return
+	var snapshot_variant: Variant = boss_enemy.call("get_breath_threat_snapshot")
+	if not (snapshot_variant is Dictionary):
+		return
+	var snapshot := snapshot_variant as Dictionary
+	if bool(snapshot.get("fire_active", false)):
+		cacodemon_breath_stack_fire_seen = true
+	var companion_safe_count := _count_companions_in_safe_pocket(snapshot)
+	if companion_safe_count > cacodemon_breath_stack_best_safe_count:
+		cacodemon_breath_stack_best_safe_count = companion_safe_count
+		_write_log("Cacodemon stack safe_count=%d" % companion_safe_count)
+	if bool(snapshot.get("active", false)) and cacodemon_breath_stack_fire_seen and companion_safe_count >= 2:
+		if cacodemon_breath_stack_success_time < 0.0:
+			cacodemon_breath_stack_success_time = elapsed
+		elif elapsed - cacodemon_breath_stack_success_time >= 0.25:
+			_finish(0, "cacodemon_breath_stack")
+			return
+	else:
+		cacodemon_breath_stack_success_time = -1.0
+
+	if cacodemon_breath_stack_fire_seen and not bool(snapshot.get("active", false)):
+		_finish(1, "cacodemon_breath_stack_failed")
+		return
+
+
 func _apply_shadow_fear_opening_layout(primary_enemy: EnemyBase) -> void:
 	if shadow_fear_layout_applied:
 		return
@@ -444,6 +604,38 @@ func _apply_shadow_fear_opening_layout(primary_enemy: EnemyBase) -> void:
 		first_enemy.velocity = Vector2.ZERO
 	shadow_fear_layout_applied = true
 	_write_log("Shadow fear layout variant=%d" % posmod(shadow_fear_layout_variant, 3))
+
+
+func _count_companions_in_safe_pocket(snapshot: Dictionary) -> int:
+	if snapshot.is_empty():
+		return 0
+	var count := 0
+	var actors: Array[Node2D] = []
+	if is_instance_valid(arena.healer):
+		actors.append(arena.healer)
+	if is_instance_valid(arena.ratfolk):
+		actors.append(arena.ratfolk)
+	for actor in actors:
+		if not is_instance_valid(actor):
+			continue
+		if _is_position_in_snapshot_safe_pocket(actor.global_position, snapshot):
+			count += 1
+	return count
+
+
+func _is_position_in_snapshot_safe_pocket(world_position: Vector2, snapshot: Dictionary) -> bool:
+	if not bool(snapshot.get("safe_pocket_valid", false)):
+		return false
+	var center: Vector2 = snapshot.get("safe_pocket_center", Vector2.ZERO)
+	var dir: Vector2 = snapshot.get("dir", Vector2.RIGHT)
+	var half_depth := maxf(1.0, float(snapshot.get("safe_pocket_half_depth", 32.0)))
+	var half_width := maxf(1.0, float(snapshot.get("safe_pocket_half_width", 36.0)))
+	var delta := world_position - center
+	var local_x := delta.dot(dir)
+	var local_y := delta.dot(Vector2(-dir.y, dir.x))
+	var normalized_x := local_x / half_depth
+	var normalized_y := local_y / half_width
+	return (normalized_x * normalized_x) + (normalized_y * normalized_y) <= 1.0
 
 
 func _apply_healer_tidal_wave_layout(primary_enemy: EnemyBase) -> void:

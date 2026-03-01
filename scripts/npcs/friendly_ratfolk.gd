@@ -10,7 +10,8 @@ enum DPSAIState {
 	DASHING,
 	MARKING,
 	ATTACKING,
-	ASSAULT_CAST
+	ASSAULT_CAST,
+	BREATH_STACK
 }
 
 const DPS_AI_STATE_NAMES: Dictionary = {
@@ -19,12 +20,14 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 	DPSAIState.DASHING: "DASHING",
 	DPSAIState.MARKING: "MARKING",
 	DPSAIState.ATTACKING: "ATTACKING",
-	DPSAIState.ASSAULT_CAST: "ASSAULT_CAST"
+	DPSAIState.ASSAULT_CAST: "ASSAULT_CAST",
+	DPSAIState.BREATH_STACK: "BREATH_STACK"
 }
 
 # Pacing experiment knobs (slow-RPG cadence).
 @export var max_health: float = 86.0
 @export var move_speed: float = 127.5
+@export var breath_stack_move_speed_multiplier: float = 1.75
 @export var use_player_like_movement: bool = true
 @export_range(4, 16, 1) var player_like_direction_steps: int = 8
 @export_range(0.0, 1.0, 0.01) var player_like_move_deadzone_ratio: float = 0.24
@@ -92,7 +95,7 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var shadow_clone_speed_scale: float = 1.05
 @export var shadow_clone_health_scale: float = 0.52
 @export var shadow_clone_attack_cooldown_scale: float = 0.78
-@export var shadow_clone_tint: Color = Color(0.62, 0.56, 0.98, 0.82)
+@export var shadow_clone_tint: Color = Color(0.72, 0.44, 1.0, 0.82)
 @export var backstab_dash_enabled: bool = true
 @export var backstab_dash_cooldown: float = 2.05
 @export var backstab_dash_speed: float = 285.0
@@ -107,6 +110,7 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 const RATFOLK_SHEET_PATH: String = "res://assets/external/ElthenAssets/ratfolk/Ratfolk Rogue Sprite Sheet.png"
 const RATFOLK_SCENE_PATH: String = "res://scenes/npcs/FriendlyRatfolk.tscn"
 const SHADOW_FEAR_PROJECTILE_SCENE_PATH: String = "res://scenes/projectiles/ShadowFearProjectile.tscn"
+const COMPANION_BREATH_RESPONSE_SCRIPT := preload("res://ai/CompanionBreathResponse.gd")
 const RATFOLK_HFRAMES: int = 8
 const RATFOLK_VFRAMES: int = 5
 const ANIM_ROWS: Dictionary = {
@@ -177,6 +181,10 @@ var shadow_fear_focus_target: EnemyBase = null
 var shadow_fear_resume_target: EnemyBase = null
 var shadow_fear_focus_requires_close: bool = true
 var sprite_base_scale: Vector2 = Vector2.ONE
+var breath_threat_snapshot: Dictionary = {}
+var breath_safe_indicator_left: float = 0.0
+var breath_safe_indicator: Line2D = null
+var breath_was_safe: bool = false
 var rng := RandomNumberGenerator.new()
 
 @onready var sprite: Sprite2D = $Sprite2D
@@ -213,6 +221,7 @@ func _ready() -> void:
 		_setup_health_bar()
 	else:
 		shadow_clone_lifetime_left = maxf(0.2, shadow_clone_lifetime)
+	_setup_breath_safe_indicator()
 	_update_health_bar()
 	health_changed.emit(current_health, max_health)
 
@@ -308,6 +317,7 @@ func _physics_process(delta: float) -> void:
 	else:
 		visual_motion_velocity = frame_displacement / maxf(0.0001, delta)
 	_update_animation(delta)
+	_update_breath_safe_indicator()
 	_update_health_bar()
 
 
@@ -356,6 +366,7 @@ func _tick_timers(delta: float) -> void:
 	stun_left = maxf(0.0, stun_left - delta)
 	hurt_anim_left = maxf(0.0, hurt_anim_left - delta)
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
+	breath_safe_indicator_left = maxf(0.0, breath_safe_indicator_left - delta)
 	knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, maxf(0.0, hit_knockback_decay) * delta)
 	if is_instance_valid(sprite):
 		var base_modulate := shadow_clone_tint if is_shadow_clone else Color(1.0, 1.0, 1.0, 1.0)
@@ -377,6 +388,41 @@ func _tick_timers(delta: float) -> void:
 			_die()
 
 
+func _handle_breath_threat() -> bool:
+	if is_shadow_clone:
+		breath_threat_snapshot.clear()
+		breath_was_safe = false
+		return false
+	breath_threat_snapshot = COMPANION_BREATH_RESPONSE_SCRIPT.get_active_threat(get_tree())
+	if not bool(breath_threat_snapshot.get("active", false)):
+		breath_was_safe = false
+		return false
+	_interrupt_attack()
+	backstab_dash_left = 0.0
+	backstab_dash_target_enemy = null
+	shadow_fear_pending_left = -1.0
+	shadow_fear_focus_target = null
+	_set_dps_ai_state(DPSAIState.BREATH_STACK, player)
+	var pocket_valid := bool(breath_threat_snapshot.get("safe_pocket_valid", false))
+	var in_safe_pocket: bool = bool(COMPANION_BREATH_RESPONSE_SCRIPT.is_position_safe(global_position, breath_threat_snapshot))
+	if pocket_valid and in_safe_pocket:
+		velocity = Vector2.ZERO
+		_update_facing((breath_threat_snapshot.get("boss_position", global_position) as Vector2) - global_position)
+		if not breath_was_safe:
+			breath_safe_indicator_left = maxf(breath_safe_indicator_left, 0.6)
+		breath_was_safe = true
+		return true
+	breath_was_safe = false
+	var destination: Vector2 = COMPANION_BREATH_RESPONSE_SCRIPT.compute_cover_position(breath_threat_snapshot, 1, 2) if pocket_valid else COMPANION_BREATH_RESPONSE_SCRIPT.compute_scatter_position(breath_threat_snapshot, global_position, 1)
+	var to_destination: Vector2 = destination - global_position
+	if to_destination.length_squared() <= 4.0:
+		velocity = Vector2.ZERO
+	else:
+		velocity = to_destination.normalized() * (move_speed * maxf(1.0, breath_stack_move_speed_multiplier))
+	_update_facing((breath_threat_snapshot.get("boss_position", destination) as Vector2) - global_position)
+	return true
+
+
 func _tick_combat_logic(delta: float) -> void:
 	if shadow_clone_cast_active:
 		velocity = Vector2.ZERO
@@ -384,6 +430,9 @@ func _tick_combat_logic(delta: float) -> void:
 			shadow_clone_cast_active = false
 			_spawn_shadow_clones()
 			shadow_clone_cooldown_left = maxf(0.01, shadow_clone_cooldown)
+		return
+
+	if _handle_breath_threat():
 		return
 
 	if _is_enemy_shadow_feared(target_enemy) or _is_enemy_shadow_feared(backstab_dash_target_enemy):
@@ -1715,6 +1764,41 @@ func _update_health_bar() -> void:
 	health_bar_fill.visible = health_ratio > 0.0
 
 
+func _setup_breath_safe_indicator() -> void:
+	if breath_safe_indicator != null and is_instance_valid(breath_safe_indicator):
+		return
+	var icon := Line2D.new()
+	icon.name = "BreathSafeIndicator"
+	icon.width = 2.2
+	icon.default_color = Color(0.46, 0.92, 1.0, 0.0)
+	icon.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	icon.end_cap_mode = Line2D.LINE_CAP_ROUND
+	icon.joint_mode = Line2D.LINE_JOINT_ROUND
+	icon.closed = true
+	icon.points = PackedVector2Array([
+		Vector2(0.0, -6.0),
+		Vector2(6.0, 0.0),
+		Vector2(0.0, 6.0),
+		Vector2(-6.0, 0.0)
+	])
+	icon.visible = false
+	add_child(icon)
+	breath_safe_indicator = icon
+
+
+func _update_breath_safe_indicator() -> void:
+	if breath_safe_indicator == null or not is_instance_valid(breath_safe_indicator):
+		return
+	if breath_safe_indicator_left <= 0.0:
+		breath_safe_indicator.visible = false
+		return
+	var pulse := 0.5 + (sin(Time.get_ticks_msec() * 0.014) * 0.5)
+	breath_safe_indicator.visible = true
+	breath_safe_indicator.position = Vector2(0.0, -42.0)
+	breath_safe_indicator.scale = Vector2.ONE * lerpf(0.96, 1.14, pulse)
+	breath_safe_indicator.default_color = Color(0.46, 0.92, 1.0, lerpf(0.24, 0.78, clampf(breath_safe_indicator_left / 0.6, 0.0, 1.0)))
+
+
 func _spawn_hit_effect(world_position: Vector2, effect_color: Color, effect_size: float) -> void:
 	var scene_root := get_tree().current_scene
 	if scene_root == null:
@@ -1801,7 +1885,7 @@ func _spawn_shadow_clone_focus_effect() -> void:
 	scene_root.add_child(burst)
 
 	var ring := Line2D.new()
-	ring.default_color = Color(0.72, 0.68, 1.0, 0.9)
+	ring.default_color = Color(0.72, 0.44, 1.0, 0.9)
 	ring.width = 2.4
 	ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	ring.end_cap_mode = Line2D.LINE_CAP_ROUND
@@ -1810,7 +1894,7 @@ func _spawn_shadow_clone_focus_effect() -> void:
 	burst.add_child(ring)
 
 	var inner_ring := Line2D.new()
-	inner_ring.default_color = Color(0.5, 0.84, 1.0, 0.72)
+	inner_ring.default_color = Color(0.72, 0.44, 1.0, 0.72)
 	inner_ring.width = 1.7
 	inner_ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	inner_ring.end_cap_mode = Line2D.LINE_CAP_ROUND
@@ -1819,7 +1903,7 @@ func _spawn_shadow_clone_focus_effect() -> void:
 	burst.add_child(inner_ring)
 
 	var cross := Line2D.new()
-	cross.default_color = Color(0.68, 0.96, 1.0, 0.85)
+	cross.default_color = Color(0.72, 0.44, 1.0, 0.85)
 	cross.width = 1.8
 	cross.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	cross.end_cap_mode = Line2D.LINE_CAP_ROUND
@@ -1827,7 +1911,7 @@ func _spawn_shadow_clone_focus_effect() -> void:
 	burst.add_child(cross)
 
 	var cross_v := Line2D.new()
-	cross_v.default_color = Color(0.68, 0.96, 1.0, 0.85)
+	cross_v.default_color = Color(0.72, 0.44, 1.0, 0.85)
 	cross_v.width = 1.8
 	cross_v.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	cross_v.end_cap_mode = Line2D.LINE_CAP_ROUND
@@ -1859,7 +1943,7 @@ func _spawn_shadow_clone_birth_effect(world_position: Vector2) -> void:
 	scene_root.add_child(pulse)
 
 	var ring := Line2D.new()
-	ring.default_color = Color(0.62, 0.92, 1.0, 0.92)
+	ring.default_color = Color(0.72, 0.44, 1.0, 0.92)
 	ring.width = 2.6
 	ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	ring.end_cap_mode = Line2D.LINE_CAP_ROUND
@@ -1867,7 +1951,7 @@ func _spawn_shadow_clone_birth_effect(world_position: Vector2) -> void:
 	ring.points = _build_ring_points(8.0, 16)
 	pulse.add_child(ring)
 
-	var shards_color := Color(0.78, 0.74, 1.0, 0.85)
+	var shards_color := Color(0.72, 0.44, 1.0, 0.85)
 	for i in range(3):
 		var shard := Polygon2D.new()
 		shard.color = shards_color

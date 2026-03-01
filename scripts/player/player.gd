@@ -205,6 +205,7 @@ var inventory: Dictionary = {}
 
 var facing_direction: Vector2 = Vector2.RIGHT
 var is_blocking: bool = false
+var debug_auto_block_enabled: bool = false
 var is_rolling: bool = false
 var is_invulnerable: bool = false
 var is_dead: bool = false
@@ -997,7 +998,7 @@ func _handle_actions() -> void:
 		_start_roll()
 		return
 
-	var wants_block := Input.is_action_pressed("block")
+	var wants_block := Input.is_action_pressed("block") or debug_auto_block_enabled
 	if not wants_block:
 		instant_dash_block_latched = false
 	if wants_block and _can_enter_instant_dash_block():
@@ -1843,6 +1844,11 @@ func is_block_shield_active() -> bool:
 
 func get_block_shield_center_global() -> Vector2:
 	return global_position + Vector2(0.0, block_shield_y_offset)
+
+
+func toggle_debug_auto_block() -> bool:
+	debug_auto_block_enabled = not debug_auto_block_enabled
+	return debug_auto_block_enabled
 
 
 func is_point_inside_block_shield(world_point: Vector2) -> bool:

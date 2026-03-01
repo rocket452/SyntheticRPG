@@ -9,7 +9,8 @@ enum HealerAIState {
 	REPOSITIONING,
 	HEALING,
 	SHIELDING,
-	ATTACKING
+	ATTACKING,
+	BREATH_STACK
 }
 
 const HEALER_AI_STATE_NAMES: Dictionary = {
@@ -17,7 +18,8 @@ const HEALER_AI_STATE_NAMES: Dictionary = {
 	HealerAIState.REPOSITIONING: "REPOSITIONING",
 	HealerAIState.HEALING: "HEALING",
 	HealerAIState.SHIELDING: "SHIELDING",
-	HealerAIState.ATTACKING: "ATTACKING"
+	HealerAIState.ATTACKING: "ATTACKING",
+	HealerAIState.BREATH_STACK: "BREATH_STACK"
 }
 
 enum CastAction {
@@ -53,6 +55,7 @@ enum CastAction {
 @export var move_deadzone: float = 8.0
 @export var slow_down_radius: float = 36.0
 @export var cast_move_speed_multiplier: float = 0.9
+@export var breath_stack_move_speed_multiplier: float = 1.75
 @export var input_decision_interval_min: float = 0.08
 @export var input_decision_interval_max: float = 0.18
 @export var input_noise_degrees: float = 8.0
@@ -113,6 +116,7 @@ enum CastAction {
 const HEALER_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/fishfolk/Fishfolk Archpriest Sprite Sheet.png")
 const TIDAL_WAVE_STARTUP_SHEET_PATH: String = "res://assets/external/Water Blast - Spritesheet/Water Blast - Startup and Infinite.png"
 const TIDAL_WAVE_END_SHEET_PATH: String = "res://assets/external/Water Blast - Spritesheet/Water Blast - End.png"
+const COMPANION_BREATH_RESPONSE_SCRIPT := preload("res://ai/CompanionBreathResponse.gd")
 const TIDAL_WAVE_FRAME_SIZE: Vector2i = Vector2i(128, 128)
 const TIDAL_WAVE_STARTUP_FRAME_COUNT: int = 12
 const TIDAL_WAVE_LOOP_FRAME_START: int = 8
@@ -183,6 +187,10 @@ var stun_left: float = 0.0
 var hit_flash_left: float = 0.0
 var knockback_velocity: Vector2 = Vector2.ZERO
 var dead: bool = false
+var breath_threat_snapshot: Dictionary = {}
+var breath_safe_indicator_left: float = 0.0
+var breath_safe_indicator: Line2D = null
+var breath_was_safe: bool = false
 
 @onready var sprite: Sprite2D = $Sprite2D
 
@@ -217,6 +225,7 @@ func _ready() -> void:
 	healer_ai_desired_position = position
 	pending_cast_action = CastAction.NONE
 	pending_cast_target = null
+	_setup_breath_safe_indicator()
 	_prepare_frame_alignment()
 	_set_anim_frame("idle", 0)
 	current_health = maxf(1.0, max_health)
@@ -237,6 +246,7 @@ func _physics_process(delta: float) -> void:
 		return
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
 	stun_left = maxf(0.0, stun_left - delta)
+	breath_safe_indicator_left = maxf(0.0, breath_safe_indicator_left - delta)
 	knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, maxf(0.0, hit_knockback_decay) * delta)
 	if knockback_velocity.length_squared() > 0.0001:
 		position += knockback_velocity * delta
@@ -250,11 +260,15 @@ func _physics_process(delta: float) -> void:
 		if reacquire_left <= 0.0:
 			_acquire_player()
 			reacquire_left = reacquire_retry_interval
+	_refresh_breath_threat()
+	if _is_breath_threat_active() and is_casting:
+		_cancel_cast_for_breath()
 	var primary_enemy := _find_primary_enemy()
 	_update_healer_ai_state(delta, primary_enemy)
 	_update_tactical_positioning(delta)
 	_apply_miniboss_soft_separation(delta)
 	_update_facing()
+	_update_breath_safe_indicator()
 	_update_health_bar()
 	basic_heal_cooldown_left = maxf(0.0, basic_heal_cooldown_left - delta)
 	tidal_wave_cooldown_left = maxf(0.0, tidal_wave_cooldown_left - delta)
@@ -267,6 +281,8 @@ func _physics_process(delta: float) -> void:
 
 	if is_casting:
 		_tick_cast(delta)
+		return
+	if _is_breath_threat_active():
 		return
 
 	if _is_tactically_moving():
@@ -328,11 +344,39 @@ func _on_player_health_changed(current: float, maximum: float) -> void:
 		heal_timer_left = minf(heal_timer_left, react_heal_delay)
 
 
+func _refresh_breath_threat() -> void:
+	breath_threat_snapshot = COMPANION_BREATH_RESPONSE_SCRIPT.get_active_threat(get_tree())
+	if not _is_breath_threat_active():
+		breath_was_safe = false
+		return
+	var in_safe_pocket: bool = COMPANION_BREATH_RESPONSE_SCRIPT.is_position_safe(global_position, breath_threat_snapshot)
+	if in_safe_pocket and not breath_was_safe:
+		breath_safe_indicator_left = maxf(breath_safe_indicator_left, 0.6)
+	breath_was_safe = in_safe_pocket
+
+
+func _is_breath_threat_active() -> bool:
+	return bool(breath_threat_snapshot.get("active", false))
+
+
+func _cancel_cast_for_breath() -> void:
+	is_casting = false
+	cast_anim_time = 0.0
+	heal_applied_this_cast = false
+	pending_cast_action = CastAction.NONE
+	pending_cast_target = null
+	_set_anim_frame("idle", 0)
+	heal_timer_left = minf(heal_timer_left, react_heal_delay)
+
+
 func _update_healer_ai_state(delta: float, primary_enemy: EnemyBase) -> void:
 	healer_ai_decision_left = maxf(0.0, healer_ai_decision_left - delta)
 	if healer_ai_decision_left > 0.0:
 		return
 	healer_ai_decision_left = maxf(0.05, ai_decision_interval)
+	if _is_breath_threat_active():
+		_set_healer_ai_state(HealerAIState.BREATH_STACK, primary_enemy if primary_enemy != null else player)
+		return
 	var marked_target := _find_marked_ally_under_threat()
 	if marked_target != null:
 		_set_healer_ai_state(HealerAIState.SHIELDING, marked_target)
@@ -956,7 +1000,17 @@ func _update_tactical_positioning(delta: float) -> void:
 
 	var enemy := _find_primary_enemy()
 	var desired_position := _compute_desired_position()
-	if healer_ai_state == HealerAIState.SHIELDING:
+	if healer_ai_state == HealerAIState.BREATH_STACK and _is_breath_threat_active():
+		var shared_parent := get_parent() as Node2D
+		if bool(breath_threat_snapshot.get("safe_pocket_valid", false)):
+			var cover_world_position := COMPANION_BREATH_RESPONSE_SCRIPT.compute_cover_position(breath_threat_snapshot, 0, 2)
+			var cover_local_position := shared_parent.to_local(cover_world_position) if shared_parent != null else cover_world_position
+			desired_position = _clamp_to_bounds(cover_local_position)
+		else:
+			var scatter_world_position := COMPANION_BREATH_RESPONSE_SCRIPT.compute_scatter_position(breath_threat_snapshot, global_position, 0)
+			var scatter_local_position := shared_parent.to_local(scatter_world_position) if shared_parent != null else scatter_world_position
+			desired_position = _clamp_to_bounds(scatter_local_position)
+	elif healer_ai_state == HealerAIState.SHIELDING:
 		var shield_target := _resolve_support_target(healer_ai_target)
 		if shield_target != null and is_instance_valid(shield_target):
 			var shield_target_position := _get_position_in_actor_space(shield_target)
@@ -985,12 +1039,16 @@ func _update_tactical_positioning(delta: float) -> void:
 	var effective_speed := move_speed
 	if is_casting:
 		effective_speed *= clampf(cast_move_speed_multiplier, 0.0, 1.0)
+	if healer_ai_state == HealerAIState.BREATH_STACK:
+		effective_speed *= maxf(1.0, breath_stack_move_speed_multiplier)
 	if use_player_like_movement:
 		smoothed_target_position = healer_ai_desired_position
 		var direct_to_target := healer_ai_desired_position - position
 		var direct_distance := direct_to_target.length()
 		var speed_cap := maxf(1.0, effective_speed)
 		var stop_distance := maxf(0.0, move_deadzone)
+		if healer_ai_state == HealerAIState.BREATH_STACK:
+			stop_distance = minf(stop_distance, 2.0)
 		var start_distance := stop_distance + maxf(2.0, speed_cap * clampf(player_like_move_deadzone_ratio, 0.0, 0.95) * 0.45)
 		var moving_now := move_velocity.length_squared() > 0.0001
 		var must_stop := direct_distance <= stop_distance
@@ -1903,6 +1961,41 @@ func _update_health_bar() -> void:
 	var fill_x := lerpf(bar_start.x, bar_end.x, health_ratio)
 	health_bar_fill.points = PackedVector2Array([bar_start, Vector2(fill_x, 0.0)])
 	health_bar_fill.visible = health_ratio > 0.0
+
+
+func _setup_breath_safe_indicator() -> void:
+	if breath_safe_indicator != null and is_instance_valid(breath_safe_indicator):
+		return
+	var icon := Line2D.new()
+	icon.name = "BreathSafeIndicator"
+	icon.width = 2.2
+	icon.default_color = Color(0.46, 0.92, 1.0, 0.0)
+	icon.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	icon.end_cap_mode = Line2D.LINE_CAP_ROUND
+	icon.joint_mode = Line2D.LINE_JOINT_ROUND
+	icon.closed = true
+	icon.points = PackedVector2Array([
+		Vector2(0.0, -6.0),
+		Vector2(6.0, 0.0),
+		Vector2(0.0, 6.0),
+		Vector2(-6.0, 0.0)
+	])
+	icon.visible = false
+	add_child(icon)
+	breath_safe_indicator = icon
+
+
+func _update_breath_safe_indicator() -> void:
+	if breath_safe_indicator == null or not is_instance_valid(breath_safe_indicator):
+		return
+	if breath_safe_indicator_left <= 0.0:
+		breath_safe_indicator.visible = false
+		return
+	var pulse := 0.5 + (sin(Time.get_ticks_msec() * 0.014) * 0.5)
+	breath_safe_indicator.visible = true
+	breath_safe_indicator.position = Vector2(0.0, -42.0)
+	breath_safe_indicator.scale = Vector2.ONE * lerpf(0.96, 1.14, pulse)
+	breath_safe_indicator.default_color = Color(0.46, 0.92, 1.0, lerpf(0.24, 0.78, clampf(breath_safe_indicator_left / 0.6, 0.0, 1.0)))
 
 
 func _anim_columns(anim_name: String) -> Array:
