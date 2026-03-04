@@ -448,7 +448,7 @@ func _step_cacodemon_breath_block_scenario() -> void:
 	boss_enemy.attack_cooldown_left = 0.0
 	var breath_style_override := OS.get_environment("CACODEMON_BREATH_STYLE").strip_edges()
 	if breath_style_override != "" and breath_style_override.is_valid_int():
-		boss_enemy.cacodemon_breath_visual_style = clampi(int(breath_style_override), 0, 2)
+		boss_enemy.cacodemon_breath_visual_style = clampi(int(breath_style_override), 0, 4)
 	if boss_enemy.has_method("set_monster_visual_profile"):
 		boss_enemy.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.CACODEMON))
 

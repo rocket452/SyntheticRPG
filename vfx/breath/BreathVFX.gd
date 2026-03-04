@@ -2,16 +2,21 @@ extends Node2D
 class_name BreathVFX
 
 const BREATH_STREAM_SCRIPT := preload("res://scripts/effects/cacodemon_breath_stream.gd")
+const BREATH_ROLLING_CELLS_SCRIPT := preload("res://scripts/effects/cacodemon_breath_rolling_cells.gd")
+const BREATH_RIBBON_SHEETS_SCRIPT := preload("res://scripts/effects/cacodemon_breath_ribbon_sheets.gd")
+const BREATH_XYEZAWR_FLIPBOOK_SCRIPT := preload("res://scripts/effects/cacodemon_breath_xyezawr_flipbook.gd")
 
 enum Mode {
 	PARTICLE_SPLIT,
-	SCREEN_CONE,
-	RIBBON_SHEETS
+	ROLLING_CELLS,
+	ROLLING_CELLS_DENSE_SMALL,
+	RIBBON_SHEETS,
+	XYEZAWR_FLIPBOOK
 }
 
 var source_enemy: Node2D = null
 var tank: Node2D = null
-var mode: Mode = Mode.PARTICLE_SPLIT
+var mode: Mode = Mode.XYEZAWR_FLIPBOOK
 var active_snapshot: Dictionary = {}
 var breath_stream: Node2D = null
 var fade_alpha: float = 0.0
@@ -29,9 +34,13 @@ func configure(source_enemy_node: Node2D, tank_target: Node2D) -> void:
 	queue_redraw()
 
 
-func set_mode(mode_index: int) -> void:
-	var clamped_mode := clampi(mode_index, 0, Mode.size() - 1)
-	mode = clamped_mode
+func set_mode(_mode_index: int) -> void:
+	var clamped_mode := clampi(_mode_index, 0, Mode.size() - 1)
+	if mode != clamped_mode:
+		mode = clamped_mode
+		if is_instance_valid(breath_stream):
+			breath_stream.queue_free()
+			breath_stream = null
 	_sync_breath_stream()
 	queue_redraw()
 
@@ -81,14 +90,6 @@ func _draw() -> void:
 	var pulse := 0.5 + (0.5 * sin(safe_overlay_pulse_time * 8.0))
 	if charge_active:
 		_draw_telegraph(origin, end_point, telegraph_half_width, state_alpha, pulse)
-	if fire_active:
-		match mode:
-			Mode.SCREEN_CONE:
-				_draw_screen_cone_overlay(origin, end_point, telegraph_half_width * 1.18, state_alpha, pulse)
-			Mode.RIBBON_SHEETS:
-				_draw_ribbon_overlay(origin, end_point, telegraph_half_width, state_alpha, pulse)
-			_:
-				_draw_particle_split_overlay(origin, end_point, telegraph_half_width, state_alpha, pulse)
 	if bool(snapshot.get("safe_pocket_valid", false)):
 		_draw_safe_pocket_overlay(snapshot, state_alpha, pulse)
 
@@ -114,11 +115,15 @@ func _sync_breath_stream() -> void:
 
 
 func _ensure_breath_stream() -> Node2D:
+	var expected_script: Script = _get_effect_script_for_mode()
 	if is_instance_valid(breath_stream):
-		return breath_stream
-	if BREATH_STREAM_SCRIPT == null:
+		if breath_stream.get_script() == expected_script:
+			return breath_stream
+		breath_stream.queue_free()
+		breath_stream = null
+	if expected_script == null:
 		return null
-	var stream := BREATH_STREAM_SCRIPT.new()
+	var stream: Node2D = expected_script.new() as Node2D
 	if stream == null:
 		return null
 	add_child(stream)
@@ -133,13 +138,17 @@ func _ensure_breath_stream() -> Node2D:
 
 
 func _get_stream_style_for_mode() -> int:
-	match mode:
-		Mode.SCREEN_CONE:
-			return 1
-		Mode.RIBBON_SHEETS:
-			return 2
-		_:
-			return 0
+	return int(mode)
+
+
+func _get_effect_script_for_mode() -> Script:
+	if mode == Mode.XYEZAWR_FLIPBOOK:
+		return BREATH_XYEZAWR_FLIPBOOK_SCRIPT
+	if mode == Mode.RIBBON_SHEETS:
+		return BREATH_RIBBON_SHEETS_SCRIPT
+	if mode == Mode.ROLLING_CELLS or mode == Mode.ROLLING_CELLS_DENSE_SMALL:
+		return BREATH_ROLLING_CELLS_SCRIPT
+	return BREATH_STREAM_SCRIPT
 
 
 func _draw_telegraph(origin: Vector2, end_point: Vector2, half_width: float, alpha_scale: float, pulse: float) -> void:
@@ -166,46 +175,73 @@ func _draw_particle_split_overlay(origin: Vector2, end_point: Vector2, half_widt
 	_draw_tapered_band(
 		origin,
 		end_point,
-		half_width * 0.82,
-		half_width * 1.58,
-		Color(1.0, 0.18, 0.04, 0.18 * alpha_scale),
-		Color(0.74, 0.02, 0.02, 0.03 * alpha_scale)
+		half_width * 0.16,
+		half_width * 0.24,
+		Color(1.0, 0.9, 0.34, (0.1 + (pulse * 0.04)) * alpha_scale),
+		Color(1.0, 0.46, 0.04, 0.02 * alpha_scale)
 	)
 	_draw_tapered_band(
 		origin,
 		end_point,
-		half_width * 0.26,
-		half_width * 0.36,
-		Color(1.0, 0.92, 0.36, (0.16 + (pulse * 0.06)) * alpha_scale),
-		Color(1.0, 0.42, 0.04, 0.03 * alpha_scale)
+		half_width * 0.08,
+		half_width * 0.08,
+		Color(1.0, 0.98, 0.72, (0.11 + (pulse * 0.05)) * alpha_scale),
+		Color(1.0, 0.82, 0.14, 0.02 * alpha_scale)
 	)
 
 
-func _draw_screen_cone_overlay(origin: Vector2, end_point: Vector2, half_width: float, alpha_scale: float, pulse: float) -> void:
+func _draw_pressure_jet_overlay(origin: Vector2, end_point: Vector2, half_width: float, alpha_scale: float, pulse: float) -> void:
 	_draw_tapered_band(
 		origin,
 		end_point,
-		half_width * 1.3,
-		half_width * 2.35,
-		Color(0.26, 0.02, 0.01, 0.16 * alpha_scale),
+		half_width * 0.6,
+		half_width * 1.18,
+		Color(0.22, 0.02, 0.01, 0.1 * alpha_scale),
 		Color(0.02, 0.0, 0.0, 0.01)
 	)
 	_draw_tapered_band(
 		origin,
 		end_point,
-		half_width,
-		half_width * 1.9,
-		Color(1.0, 0.14, 0.03, 0.18 * alpha_scale),
-		Color(0.9, 0.04, 0.02, 0.02 * alpha_scale)
+		half_width * 0.34,
+		half_width * 0.62,
+		Color(1.0, 0.34, 0.05, 0.24 * alpha_scale),
+		Color(0.9, 0.08, 0.02, 0.05 * alpha_scale)
 	)
 	_draw_tapered_band(
 		origin,
 		end_point,
-		half_width * 0.3,
-		half_width * 0.34,
-		Color(1.0, 0.95, 0.48, (0.12 + (pulse * 0.05)) * alpha_scale),
-		Color(1.0, 0.58, 0.08, 0.01 * alpha_scale)
+		half_width * 0.12,
+		half_width * 0.12,
+		Color(1.0, 0.96, 0.62, (0.18 + (pulse * 0.06)) * alpha_scale),
+		Color(1.0, 0.72, 0.08, 0.04 * alpha_scale)
 	)
+
+
+func _draw_coanda_wrap_overlay(origin: Vector2, end_point: Vector2, half_width: float, alpha_scale: float, pulse: float) -> void:
+	_draw_tapered_band(
+		origin,
+		end_point,
+		half_width * 0.96,
+		half_width * 1.8,
+		Color(1.0, 0.18, 0.04, 0.16 * alpha_scale),
+		Color(0.74, 0.04, 0.02, 0.03 * alpha_scale)
+	)
+	_draw_tapered_band(
+		origin,
+		end_point,
+		half_width * 0.24,
+		half_width * 0.38,
+		Color(1.0, 0.9, 0.42, (0.14 + (pulse * 0.05)) * alpha_scale),
+		Color(1.0, 0.36, 0.04, 0.03 * alpha_scale)
+	)
+	if bool(active_snapshot.get("safe_pocket_valid", false)):
+		var center: Vector2 = active_snapshot.get("tank_position", origin)
+		var dir := (end_point - origin).normalized()
+		if dir.length_squared() <= 0.0001:
+			dir = Vector2.RIGHT
+		var side := Vector2(-dir.y, dir.x)
+		draw_arc(center + (side * half_width * 0.74), maxf(14.0, half_width * 0.44), PI * 0.72, PI * 1.46, 16, Color(1.0, 0.74, 0.22, 0.16 * alpha_scale), 2.0, true)
+		draw_arc(center - (side * half_width * 0.74), maxf(14.0, half_width * 0.44), -PI * 0.46, PI * 0.28, 16, Color(1.0, 0.74, 0.22, 0.16 * alpha_scale), 2.0, true)
 
 
 func _draw_ribbon_overlay(origin: Vector2, end_point: Vector2, half_width: float, alpha_scale: float, pulse: float) -> void:
@@ -230,6 +266,50 @@ func _draw_ribbon_overlay(origin: Vector2, end_point: Vector2, half_width: float
 				Color(1.0, 0.18, 0.02, 0.01 * alpha_scale)
 			)
 			previous_point = point
+
+
+func _draw_rolling_cells_overlay(origin: Vector2, end_point: Vector2, half_width: float, alpha_scale: float, pulse: float) -> void:
+	_draw_tapered_band(
+		origin,
+		end_point,
+		half_width * 0.14,
+		half_width * 0.2,
+		Color(1.0, 0.88, 0.3, (0.09 + (pulse * 0.04)) * alpha_scale),
+		Color(1.0, 0.38, 0.04, 0.02 * alpha_scale)
+	)
+	for puff_index in range(6):
+		var t := 0.12 + (float(puff_index) * 0.12)
+		var center := origin.lerp(end_point, t)
+		var puff_radius := lerpf(half_width * 0.18, half_width * 0.46, t)
+		var jitter_y := sin((t * TAU * 1.2) + (pulse * 1.6)) * half_width * 0.12
+		draw_circle(center + Vector2(0.0, jitter_y), maxf(10.0, puff_radius * 0.72), Color(1.0, 0.64, 0.16, 0.04 * alpha_scale))
+		draw_circle(center + Vector2(0.0, jitter_y * 0.5), maxf(6.0, puff_radius * 0.36), Color(1.0, 0.9, 0.3, 0.05 * alpha_scale))
+
+
+func _draw_vortex_shear_overlay(origin: Vector2, end_point: Vector2, half_width: float, alpha_scale: float, pulse: float) -> void:
+	_draw_tapered_band(
+		origin,
+		end_point,
+		half_width * 1.08,
+		half_width * 1.94,
+		Color(0.58, 0.06, 0.03, 0.14 * alpha_scale),
+		Color(0.18, 0.01, 0.01, 0.03 * alpha_scale)
+	)
+	_draw_tapered_band(
+		origin,
+		end_point,
+		half_width * 0.42,
+		half_width * 0.64,
+		Color(1.0, 0.88, 0.34, (0.12 + (pulse * 0.05)) * alpha_scale),
+		Color(1.0, 0.22, 0.03, 0.04 * alpha_scale)
+	)
+	var side := Vector2(-end_point.y + origin.y, end_point.x - origin.x).normalized()
+	if side.length_squared() <= 0.0001:
+		side = Vector2.UP
+	for swirl_index in range(3):
+		var swirl_t := float(swirl_index) / 2.0
+		var swirl_center := origin.lerp(end_point, 0.18 + (swirl_t * 0.14)) + (side * sin((swirl_t * TAU) + pulse) * half_width * 0.18)
+		draw_arc(swirl_center, maxf(12.0, half_width * 0.22), PI * 0.2, PI * 1.7, 14, Color(1.0, 0.78, 0.18, 0.12 * alpha_scale), 1.8, true)
 
 
 func _draw_safe_pocket_overlay(snapshot: Dictionary, alpha_scale: float, pulse: float) -> void:

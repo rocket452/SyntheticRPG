@@ -60,6 +60,13 @@ signal item_looted(item_name: String, total_owned: int)
 @export var block_arc_degrees: float = 120.0
 @export var block_damage_reduction: float = 0.65
 @export var block_move_multiplier: float = 0.45
+@export var block_stamina_max: float = 100.0
+@export var block_stamina_hold_drain_per_second: float = 2.5
+@export var block_stamina_recharge_per_second: float = 26.0
+@export var block_stamina_blocked_hit_cost: float = 8.0
+@export var block_stamina_min_to_raise: float = 5.0
+@export var block_stamina_recover_threshold_ratio: float = 0.5
+@export var block_input_grace_duration: float = 0.12
 @export var depth_speed_multiplier: float = 0.62
 @export var lane_min_x: float = -760.0
 @export var lane_max_x: float = 760.0
@@ -77,6 +84,9 @@ signal item_looted(item_name: String, total_owned: int)
 @export var hit_knockback_decay: float = 1300.0
 @export var blocked_knockback_move_scale: float = 0.6
 @export var block_shield_radius: float = 57.6
+@export var block_shield_forward_offset: float = 24.0
+@export var block_shield_half_width_scale: float = 0.78
+@export var block_shield_half_height_scale: float = 1.14
 @export var block_shield_y_offset: float = -10.0
 @export var block_shield_line_width: float = 6.0
 @export var block_shield_pulse_speed: float = 7.5
@@ -113,6 +123,9 @@ signal item_looted(item_name: String, total_owned: int)
 @export var health_bar_width: float = 74.0
 @export var health_bar_thickness: float = 6.0
 @export var health_bar_y_offset: float = -74.0
+@export var block_stamina_bar_width_scale: float = 0.92
+@export var block_stamina_bar_thickness: float = 4.0
+@export var block_stamina_bar_y_offset: float = -9.0
 
 const ITEM_NAMES: Dictionary = {
 	"iron_shard": "Iron Shard",
@@ -198,6 +211,9 @@ const COMBAT_STATE_NAMES: Dictionary = {
 }
 
 var current_health: float = 0.0
+var current_block_stamina: float = 0.0
+var block_stamina_broken: bool = false
+var block_input_grace_left: float = 0.0
 var current_xp: int = 0
 var xp_to_next_level: int = 100
 var level: int = 1
@@ -332,6 +348,8 @@ var cape_fold_base_alpha: float = 1.0
 var health_bar_root: Node2D = null
 var health_bar_background: Line2D = null
 var health_bar_fill: Line2D = null
+var block_stamina_bar_background: Line2D = null
+var block_stamina_bar_fill: Line2D = null
 
 @onready var shadow_visual: Polygon2D = $Shadow
 @onready var body_visual: Polygon2D = $Body
@@ -370,6 +388,7 @@ var health_bar_fill: Line2D = null
 func _ready() -> void:
 	add_to_group("player")
 	current_health = max_health
+	current_block_stamina = block_stamina_max
 	camera_base_offset = camera_2d.offset if is_instance_valid(camera_2d) else Vector2.ZERO
 	_configure_autoplay_logging()
 	_set_combat_state(CombatState.IDLE_MOVE)
@@ -447,6 +466,7 @@ func _physics_process(delta: float) -> void:
 		knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
 	else:
 		_handle_actions()
+		_tick_block_stamina(delta)
 		_apply_movement()
 		knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
 	move_and_slide()
@@ -503,6 +523,22 @@ func _setup_health_bar() -> void:
 	health_bar_fill.end_cap_mode = Line2D.LINE_CAP_ROUND
 	health_bar_root.add_child(health_bar_fill)
 
+	block_stamina_bar_background = Line2D.new()
+	block_stamina_bar_background.default_color = Color(0.06, 0.08, 0.12, 0.9)
+	block_stamina_bar_background.width = maxf(2.0, block_stamina_bar_thickness)
+	block_stamina_bar_background.z_index = 2
+	block_stamina_bar_background.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	block_stamina_bar_background.end_cap_mode = Line2D.LINE_CAP_ROUND
+	health_bar_root.add_child(block_stamina_bar_background)
+
+	block_stamina_bar_fill = Line2D.new()
+	block_stamina_bar_fill.default_color = Color(0.34, 0.86, 1.0, 0.96)
+	block_stamina_bar_fill.width = maxf(1.0, block_stamina_bar_thickness - 1.0)
+	block_stamina_bar_fill.z_index = 3
+	block_stamina_bar_fill.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	block_stamina_bar_fill.end_cap_mode = Line2D.LINE_CAP_ROUND
+	health_bar_root.add_child(block_stamina_bar_fill)
+
 
 func _update_health_bar() -> void:
 	if not is_instance_valid(health_bar_root):
@@ -517,6 +553,22 @@ func _update_health_bar() -> void:
 	var fill_x := lerpf(bar_start.x, bar_end.x, health_ratio)
 	health_bar_fill.points = PackedVector2Array([bar_start, Vector2(fill_x, 0.0)])
 	health_bar_fill.visible = health_ratio > 0.0
+
+	if is_instance_valid(block_stamina_bar_background) and is_instance_valid(block_stamina_bar_fill):
+		var stamina_half_width := half_width * clampf(block_stamina_bar_width_scale, 0.25, 1.0)
+		var stamina_start := Vector2(-stamina_half_width, block_stamina_bar_y_offset)
+		var stamina_end := Vector2(stamina_half_width, block_stamina_bar_y_offset)
+		block_stamina_bar_background.points = PackedVector2Array([stamina_start, stamina_end])
+		var stamina_ratio := clampf(current_block_stamina / maxf(1.0, block_stamina_max), 0.0, 1.0)
+		var stamina_fill_x := lerpf(stamina_start.x, stamina_end.x, stamina_ratio)
+		block_stamina_bar_fill.points = PackedVector2Array([stamina_start, Vector2(stamina_fill_x, block_stamina_bar_y_offset)])
+		block_stamina_bar_fill.visible = stamina_ratio > 0.0
+		var stamina_locked := block_stamina_broken
+		block_stamina_bar_background.default_color = Color(0.28, 0.08, 0.08, 0.92) if stamina_locked else Color(0.2, 0.15, 0.04, 0.92)
+		if stamina_locked:
+			block_stamina_bar_fill.default_color = Color(1.0, 0.22, 0.18, 0.98)
+		else:
+			block_stamina_bar_fill.default_color = Color(0.96, 0.82, 0.22, 0.98)
 
 
 func add_experience(amount: int) -> void:
@@ -579,6 +631,7 @@ func receive_hit(amount: float, source_position: Vector2, guard_break: bool = fa
 		if facing_direction.dot(incoming_direction) >= block_threshold:
 			damage_to_apply *= (1.0 - block_damage_reduction)
 			blocked = true
+			drain_block_stamina(block_stamina_blocked_hit_cost)
 
 	if damage_to_apply <= 0.0:
 		return false
@@ -656,6 +709,7 @@ func _tick_timers(delta: float) -> void:
 	attack_anim_left = maxf(0.0, attack_anim_left - delta)
 	light_attack_recovery_left = maxf(0.0, light_attack_recovery_left - delta)
 	ally_dash_block_grace_left = maxf(0.0, ally_dash_block_grace_left - delta)
+	block_input_grace_left = maxf(0.0, block_input_grace_left - delta)
 	slash_effect_left = maxf(0.0, slash_effect_left - delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.35))
 	charge_lunge_velocity = charge_lunge_velocity.move_toward(Vector2.ZERO, heavy_lunge_decay * delta)
@@ -698,6 +752,40 @@ func _tick_timers(delta: float) -> void:
 			_start_basic_combo_attack()
 		else:
 			_start_basic_single_attack()
+
+
+func _tick_block_stamina(delta: float) -> void:
+	if delta <= 0.0:
+		return
+	if is_blocking:
+		drain_block_stamina(block_stamina_hold_drain_per_second * delta)
+	else:
+		if current_block_stamina >= block_stamina_max:
+			return
+		current_block_stamina = minf(block_stamina_max, current_block_stamina + maxf(0.0, block_stamina_recharge_per_second) * delta)
+		if block_stamina_broken and current_block_stamina >= _get_block_stamina_recover_threshold():
+			block_stamina_broken = false
+
+
+func _get_block_stamina_recover_threshold() -> float:
+	return maxf(maxf(0.0, block_stamina_min_to_raise), block_stamina_max * clampf(block_stamina_recover_threshold_ratio, 0.0, 1.0))
+
+
+func can_raise_block() -> bool:
+	if block_stamina_broken:
+		return false
+	return current_block_stamina > maxf(0.0, block_stamina_min_to_raise)
+
+
+func drain_block_stamina(amount: float) -> float:
+	if amount <= 0.0:
+		return current_block_stamina
+	current_block_stamina = maxf(0.0, current_block_stamina - amount)
+	if current_block_stamina <= 0.0:
+		block_stamina_broken = true
+		is_blocking = false
+		instant_dash_block_latched = false
+	return current_block_stamina
 
 
 func _configure_autoplay_logging() -> void:
@@ -998,10 +1086,15 @@ func _handle_actions() -> void:
 		_start_roll()
 		return
 
-	var wants_block := Input.is_action_pressed("block") or debug_auto_block_enabled
-	if not wants_block:
+	var raw_wants_block := Input.is_action_pressed("block") or debug_auto_block_enabled
+	if raw_wants_block:
+		block_input_grace_left = maxf(block_input_grace_left, maxf(0.0, block_input_grace_duration))
+	var wants_block := raw_wants_block or block_input_grace_left > 0.0
+	var was_blocking := is_blocking
+	var can_block_now := current_block_stamina > 0.0 and (was_blocking or can_raise_block())
+	if not raw_wants_block and block_input_grace_left <= 0.0:
 		instant_dash_block_latched = false
-	if wants_block and _can_enter_instant_dash_block():
+	if wants_block and can_block_now and _can_enter_instant_dash_block():
 		_enter_instant_dash_block()
 		return
 
@@ -1033,7 +1126,7 @@ func _handle_actions() -> void:
 		_start_roll()
 		return
 
-	is_blocking = wants_block
+	is_blocking = wants_block and can_block_now
 	if is_blocking:
 		return
 
@@ -1827,23 +1920,42 @@ func _update_visual_feedback(delta: float) -> void:
 
 
 func _is_block_pose_ready() -> bool:
-	if not is_blocking:
-		return false
-	if instant_dash_block_latched:
-		return true
-	if not using_external_player_sprite:
-		return true
-	if player_sprite_anim_key != "block":
-		return false
-	return player_sprite_anim_time >= float(PLAYER_BLOCK_HOLD_FRAME_INDEX)
+	return is_blocking
 
 
 func is_block_shield_active() -> bool:
 	return _is_block_pose_ready()
 
 
+func _get_block_shield_facing_sign() -> float:
+	return -1.0 if facing_direction.x < 0.0 else 1.0
+
+
+func get_block_shield_center_local() -> Vector2:
+	return Vector2(_get_block_shield_facing_sign() * block_shield_forward_offset, block_shield_y_offset)
+
+
+func get_block_shield_visual_center_local() -> Vector2:
+	return Vector2(0.0, block_shield_y_offset)
+
+
 func get_block_shield_center_global() -> Vector2:
-	return global_position + Vector2(0.0, block_shield_y_offset)
+	return global_position + get_block_shield_center_local()
+
+
+func get_block_shield_half_extents() -> Vector2:
+	var radius := maxf(8.0, block_shield_radius)
+	return Vector2(
+		maxf(6.0, radius * maxf(0.2, block_shield_half_width_scale)),
+		maxf(6.0, radius * maxf(0.2, block_shield_half_height_scale))
+	)
+
+
+func orient_block_toward(world_source: Vector2) -> void:
+	var to_source := world_source - global_position
+	if absf(to_source.x) <= 0.01:
+		return
+	facing_direction = Vector2.LEFT if to_source.x < 0.0 else Vector2.RIGHT
 
 
 func toggle_debug_auto_block() -> bool:
@@ -1851,11 +1963,39 @@ func toggle_debug_auto_block() -> bool:
 	return debug_auto_block_enabled
 
 
+func _is_point_inside_block_shield_ellipse(world_point: Vector2, half_extents: Vector2) -> bool:
+	var center := get_block_shield_center_global()
+	var local := world_point - center
+	var half_width := maxf(1.0, half_extents.x)
+	var half_height := maxf(1.0, half_extents.y)
+	var norm_x := local.x / half_width
+	var norm_y := local.y / half_height
+	return (norm_x * norm_x) + (norm_y * norm_y) <= 1.0
+
+
 func is_point_inside_block_shield(world_point: Vector2) -> bool:
 	if not is_block_shield_active():
 		return false
-	var radius := maxf(8.0, block_shield_radius)
-	return world_point.distance_squared_to(get_block_shield_center_global()) <= radius * radius
+	return _is_point_inside_block_shield_ellipse(world_point, get_block_shield_half_extents())
+
+
+func is_segment_intersecting_block_shield(world_start: Vector2, world_end: Vector2, padding: float = 0.0) -> bool:
+	if not is_block_shield_active():
+		return false
+	var padded_extents := get_block_shield_half_extents() + Vector2.ONE * maxf(0.0, padding)
+	if _is_point_inside_block_shield_ellipse(world_start, padded_extents):
+		return true
+	if _is_point_inside_block_shield_ellipse(world_end, padded_extents):
+		return true
+	var distance := world_start.distance_to(world_end)
+	var sample_spacing := maxf(6.0, minf(padded_extents.x, padded_extents.y) * 0.35)
+	var samples := clampi(int(ceil(distance / sample_spacing)), 6, 24)
+	for i in range(samples + 1):
+		var t := float(i) / float(samples)
+		var sample_point := world_start.lerp(world_end, t)
+		if _is_point_inside_block_shield_ellipse(sample_point, padded_extents):
+			return true
+	return false
 
 
 func _build_circle_line_points(center: Vector2, radius: float, segments: int) -> PackedVector2Array:
@@ -1924,7 +2064,7 @@ func _update_block_indicator_visual() -> void:
 
 	var pulse := 0.5 + (sin(anim_time * maxf(0.1, block_shield_pulse_speed)) * 0.5)
 	var radius := maxf(8.0, block_shield_radius * lerpf(0.96, 1.04, pulse))
-	var center_local := Vector2(0.0, block_shield_y_offset)
+	var center_local := get_block_shield_visual_center_local()
 	if block_shield_effect_sprite == null or not is_instance_valid(block_shield_effect_sprite):
 		_setup_block_shield_effect_sprite()
 	if block_shield_effect_sprite == null or not is_instance_valid(block_shield_effect_sprite):
