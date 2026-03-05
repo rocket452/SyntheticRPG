@@ -36,6 +36,20 @@ var cacodemon_breath_stack_setup_done: bool = false
 var cacodemon_breath_stack_success_time: float = -1.0
 var cacodemon_breath_stack_fire_seen: bool = false
 var cacodemon_breath_stack_best_safe_count: int = 0
+var cacodemon_fireball_setup_done: bool = false
+var cacodemon_fireball_seen: bool = false
+var cacodemon_fireball_seen_time: float = -1.0
+var cacodemon_fireball_health_floor: float = -1.0
+var cacodemon_summon_setup_done: bool = false
+var cacodemon_player_hit_setup_done: bool = false
+var cacodemon_player_hit_start_time: float = -1.0
+var cacodemon_player_hit_health_floor: float = -1.0
+var cacodemon_player_hit_last_pulse: int = -1
+var cacodemon_natural_fireball_setup_done: bool = false
+var cacodemon_natural_fireball_seen: bool = false
+var cacodemon_natural_fireball_last_debug_second: int = -1
+var cacodemon_fireball_pressure_setup_done: bool = false
+var cacodemon_fireball_pressure_seen: bool = false
 
 
 func configure(target_arena: Arena) -> void:
@@ -63,9 +77,23 @@ func _ready() -> void:
 	cacodemon_breath_stack_success_time = -1.0
 	cacodemon_breath_stack_fire_seen = false
 	cacodemon_breath_stack_best_safe_count = 0
+	cacodemon_fireball_setup_done = false
+	cacodemon_fireball_seen = false
+	cacodemon_fireball_seen_time = -1.0
+	cacodemon_fireball_health_floor = -1.0
+	cacodemon_summon_setup_done = false
+	cacodemon_player_hit_setup_done = false
+	cacodemon_player_hit_start_time = -1.0
+	cacodemon_player_hit_health_floor = -1.0
+	cacodemon_player_hit_last_pulse = -1
+	cacodemon_natural_fireball_setup_done = false
+	cacodemon_natural_fireball_seen = false
+	cacodemon_natural_fireball_last_debug_second = -1
+	cacodemon_fireball_pressure_setup_done = false
+	cacodemon_fireball_pressure_seen = false
 	var layout_variant_env := OS.get_environment("AUTOPLAY_LAYOUT_VARIANT").strip_edges()
 	shadow_fear_layout_variant = int(layout_variant_env) if layout_variant_env.is_valid_int() else 0
-	if autoplay_scenario == "lunge_block" or autoplay_scenario == "basic_block" or autoplay_scenario == "shadow_fear" or autoplay_scenario == "shadow_fear_break" or autoplay_scenario == "shadow_fear_new_enemy" or autoplay_scenario == "healer_tidal_wave" or autoplay_scenario == "healer_respects_fear" or autoplay_scenario == "cacodemon_breath_block" or autoplay_scenario == "cacodemon_breath_stack":
+	if autoplay_scenario == "lunge_block" or autoplay_scenario == "basic_block" or autoplay_scenario == "shadow_fear" or autoplay_scenario == "shadow_fear_break" or autoplay_scenario == "shadow_fear_new_enemy" or autoplay_scenario == "healer_tidal_wave" or autoplay_scenario == "healer_respects_fear" or autoplay_scenario == "cacodemon_breath_block" or autoplay_scenario == "cacodemon_breath_stack" or autoplay_scenario == "cacodemon_fireball_block" or autoplay_scenario == "cacodemon_summon_imps" or autoplay_scenario == "cacodemon_player_hit" or autoplay_scenario == "cacodemon_fireball_natural" or autoplay_scenario == "cacodemon_fireball_pressure":
 		timeout_seconds = maxf(timeout_seconds, 45.0)
 	autoplay_log_path = OS.get_environment("AUTOPLAY_LOG_PATH")
 	if autoplay_log_path.is_empty():
@@ -118,6 +146,21 @@ func _physics_process(delta: float) -> void:
 		return
 	if autoplay_scenario == "cacodemon_breath_stack":
 		_step_cacodemon_breath_stack_scenario()
+		return
+	if autoplay_scenario == "cacodemon_fireball_block":
+		_step_cacodemon_fireball_block_scenario()
+		return
+	if autoplay_scenario == "cacodemon_summon_imps":
+		_step_cacodemon_summon_imps_scenario()
+		return
+	if autoplay_scenario == "cacodemon_player_hit":
+		_step_cacodemon_player_hit_scenario()
+		return
+	if autoplay_scenario == "cacodemon_fireball_natural":
+		_step_cacodemon_natural_fireball_scenario()
+		return
+	if autoplay_scenario == "cacodemon_fireball_pressure":
+		_step_cacodemon_fireball_pressure_scenario()
 		return
 
 	match phase:
@@ -446,11 +489,12 @@ func _step_cacodemon_breath_block_scenario() -> void:
 	boss_enemy.spin_attack_enabled = false
 	boss_enemy.use_single_phase_loop = true
 	boss_enemy.attack_cooldown_left = 0.0
+	boss_enemy.cacodemon_breath_first_use_left = 0.0
 	var breath_style_override := OS.get_environment("CACODEMON_BREATH_STYLE").strip_edges()
 	if breath_style_override != "" and breath_style_override.is_valid_int():
 		boss_enemy.cacodemon_breath_visual_style = clampi(int(breath_style_override), 0, 4)
 	if boss_enemy.has_method("set_monster_visual_profile"):
-		boss_enemy.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.CACODEMON))
+		boss_enemy.call("set_monster_visual_profile", _get_air_boss_debug_visual_profile())
 
 	if not cacodemon_breath_setup_done:
 		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
@@ -469,6 +513,8 @@ func _step_cacodemon_breath_block_scenario() -> void:
 		cacodemon_breath_setup_done = true
 		_write_log("Cacodemon breath block setup applied")
 		_write_log("Cacodemon breath style=%d" % boss_enemy.cacodemon_breath_visual_style)
+		if boss_enemy.has_method("debug_force_cacodemon_breath"):
+			boss_enemy.call("debug_force_cacodemon_breath")
 
 	var to_boss := boss_enemy.global_position - player.global_position
 	var desired_distance := 178.0
@@ -511,8 +557,9 @@ func _step_cacodemon_breath_stack_scenario() -> void:
 	boss_enemy.move_speed = 0.0
 	boss_enemy.attack_damage = minf(boss_enemy.attack_damage, 1.0)
 	boss_enemy.attack_cooldown_left = 0.0
+	boss_enemy.cacodemon_breath_first_use_left = 0.0
 	if boss_enemy.has_method("set_monster_visual_profile"):
-		boss_enemy.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.CACODEMON))
+		boss_enemy.call("set_monster_visual_profile", _get_air_boss_debug_visual_profile())
 
 	if not cacodemon_breath_stack_setup_done:
 		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
@@ -539,6 +586,8 @@ func _step_cacodemon_breath_stack_scenario() -> void:
 			boss_enemy.call("debug_force_cacodemon_breath")
 		cacodemon_breath_stack_setup_done = true
 		_write_log("Cacodemon breath stack setup applied")
+		if boss_enemy.has_method("debug_force_cacodemon_breath"):
+			boss_enemy.call("debug_force_cacodemon_breath")
 
 	_set_move_inputs(Vector2.ZERO)
 	Input.action_press("block")
@@ -567,6 +616,292 @@ func _step_cacodemon_breath_stack_scenario() -> void:
 	if cacodemon_breath_stack_fire_seen and not bool(snapshot.get("active", false)):
 		_finish(1, "cacodemon_breath_stack_failed")
 		return
+
+
+func _step_cacodemon_fireball_block_scenario() -> void:
+	if not is_instance_valid(player) or not is_instance_valid(arena):
+		return
+	var boss_enemy := _get_boss_enemy()
+	if boss_enemy == null:
+		return
+
+	arena.allow_multiple_minotaurs = false
+	arena.max_active_minotaurs = 1
+	arena.timed_extra_minotaur_enabled = false
+	boss_enemy.boss_can_summon_minions = false
+	boss_enemy.boss_summon_count = 0
+	boss_enemy.spin_attack_enabled = false
+	boss_enemy.use_single_phase_loop = true
+	boss_enemy.move_speed = 0.0
+	if boss_enemy.has_method("set_monster_visual_profile"):
+		boss_enemy.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.CACODEMON))
+
+	if not cacodemon_fireball_setup_done:
+		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		var player_pos := Vector2(max_x - 360.0, clampf(10.0, min_y + 8.0, max_y - 8.0))
+		var enemy_pos := Vector2(max_x - 170.0, clampf(10.0, min_y + 8.0, max_y - 8.0))
+		player.global_position = arena.to_global(player_pos)
+		player.velocity = Vector2.ZERO
+		var enemy_body := boss_enemy as CharacterBody2D
+		if enemy_body != null:
+			enemy_body.global_position = arena.to_global(enemy_pos)
+			enemy_body.velocity = Vector2.ZERO
+		boss_enemy.cacodemon_fireball_first_use_left = 0.0
+		boss_enemy.cacodemon_fireball_cooldown_left = 0.0
+		boss_enemy.cacodemon_fireball_enabled = true
+		cacodemon_fireball_health_floor = player.current_health
+		cacodemon_fireball_setup_done = true
+		_write_log("Cacodemon fireball block setup applied")
+		if boss_enemy.has_method("debug_force_cacodemon_breath"):
+			boss_enemy.call("debug_force_cacodemon_breath")
+
+	var to_boss := boss_enemy.global_position - player.global_position
+	var desired_distance := 176.0
+	if to_boss.length() > desired_distance + 10.0:
+		_set_move_inputs(to_boss.normalized())
+	elif to_boss.length() < desired_distance - 10.0:
+		_set_move_inputs((-to_boss).normalized())
+	else:
+		_set_move_inputs(Vector2.ZERO)
+	Input.action_press("block")
+
+	var active_fireballs := get_tree().get_nodes_in_group("cacodemon_fireballs").size()
+	var fireball_cast_active := bool(boss_enemy.get("cacodemon_fireball_pending")) or float(boss_enemy.get("cacodemon_fireball_cast_left")) > 0.0
+	if (active_fireballs > 0 or fireball_cast_active) and not cacodemon_fireball_seen:
+		cacodemon_fireball_seen = true
+		cacodemon_fireball_seen_time = elapsed
+		_write_log("Cacodemon fireball observed")
+	if cacodemon_fireball_seen and elapsed - cacodemon_fireball_seen_time >= 1.2:
+		if player.current_health < cacodemon_fireball_health_floor - 0.1:
+			_finish(1, "cacodemon_fireball_block_failed")
+			return
+		_finish(0, "cacodemon_fireball_block")
+		return
+
+
+func _step_cacodemon_summon_imps_scenario() -> void:
+	if not is_instance_valid(player) or not is_instance_valid(arena):
+		return
+	var boss_enemy := _get_boss_enemy()
+	if boss_enemy == null:
+		return
+
+	arena.allow_multiple_minotaurs = false
+	arena.max_active_minotaurs = 1
+	arena.timed_extra_minotaur_enabled = false
+	boss_enemy.spin_attack_enabled = false
+	boss_enemy.use_single_phase_loop = true
+	boss_enemy.move_speed = 0.0
+	if boss_enemy.has_method("set_monster_visual_profile"):
+		boss_enemy.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.CACODEMON))
+
+	if not cacodemon_summon_setup_done:
+		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		player.global_position = arena.to_global(Vector2(max_x - 360.0, clampf(10.0, min_y + 8.0, max_y - 8.0)))
+		player.velocity = Vector2.ZERO
+		var enemy_body := boss_enemy as CharacterBody2D
+		if enemy_body != null:
+			enemy_body.global_position = arena.to_global(Vector2(max_x - 170.0, clampf(10.0, min_y + 8.0, max_y - 8.0)))
+			enemy_body.velocity = Vector2.ZERO
+		boss_enemy.boss_can_summon_minions = true
+		boss_enemy.boss_summon_count = 4
+		boss_enemy.boss_summon_cycle_left = 0.0
+		cacodemon_summon_setup_done = true
+		_write_log("Cacodemon summon setup applied")
+
+	_set_move_inputs(Vector2.ZERO)
+	Input.action_press("block")
+
+	var imp_count := 0
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var candidate := node as EnemyBase
+		if candidate == null or not is_instance_valid(candidate) or candidate.dead or candidate.is_miniboss:
+			continue
+		if candidate.monster_visual_profile == EnemyBase.MonsterVisualProfile.IMP:
+			imp_count += 1
+	if imp_count >= 1:
+		_write_log("Cacodemon summoned imps=%d" % imp_count)
+		_finish(0, "cacodemon_summon_imps")
+		return
+
+
+func _step_cacodemon_player_hit_scenario() -> void:
+	if not is_instance_valid(player) or not is_instance_valid(arena):
+		return
+	var boss_enemy := _get_boss_enemy()
+	if boss_enemy == null:
+		return
+
+	arena.allow_multiple_minotaurs = false
+	arena.max_active_minotaurs = 1
+	arena.timed_extra_minotaur_enabled = false
+	boss_enemy.use_single_phase_loop = true
+	boss_enemy.move_speed = 0.0
+	boss_enemy.spin_attack_enabled = false
+	boss_enemy.boss_can_summon_minions = false
+	boss_enemy.boss_summon_count = 0
+	boss_enemy.cacodemon_fireball_enabled = false
+	boss_enemy.cacodemon_fireball_first_use_left = 99.0
+	boss_enemy.cacodemon_fireball_cooldown_left = 99.0
+	if boss_enemy.has_method("set_monster_visual_profile"):
+		boss_enemy.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.CACODEMON))
+
+	if not cacodemon_player_hit_setup_done:
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		player.global_position = arena.to_global(Vector2(max_x - 320.0, clampf(10.0, min_y + 8.0, max_y - 8.0)))
+		player.velocity = Vector2.ZERO
+		var enemy_body := boss_enemy as CharacterBody2D
+		if enemy_body != null:
+			enemy_body.global_position = arena.to_global(Vector2(max_x - 256.0, clampf(10.0, min_y + 8.0, max_y - 8.0)))
+			enemy_body.velocity = Vector2.ZERO
+		cacodemon_player_hit_health_floor = boss_enemy.current_health
+		cacodemon_player_hit_start_time = elapsed
+		cacodemon_player_hit_last_pulse = -1
+		cacodemon_player_hit_setup_done = true
+		_write_log("Cacodemon player-hit setup applied health=%.2f" % boss_enemy.current_health)
+
+	Input.action_release("block")
+	var to_boss := boss_enemy.global_position - player.global_position
+	if to_boss.length() > 56.0:
+		_set_move_inputs(to_boss.normalized())
+	else:
+		_set_move_inputs(Vector2.ZERO)
+
+	var elapsed_since_start := maxf(0.0, elapsed - cacodemon_player_hit_start_time)
+	var pulse := int(floor(elapsed_since_start / 0.24))
+	if pulse != cacodemon_player_hit_last_pulse:
+		cacodemon_player_hit_last_pulse = pulse
+		if (pulse % 2) == 0:
+			Input.action_press("basic_attack")
+		else:
+			Input.action_release("basic_attack")
+
+	if boss_enemy.current_health < cacodemon_player_hit_health_floor - 0.1:
+		_write_log("Cacodemon took player damage before=%.2f after=%.2f" % [cacodemon_player_hit_health_floor, boss_enemy.current_health])
+		_finish(0, "cacodemon_player_hit")
+		return
+	if elapsed_since_start >= 7.0:
+		_finish(1, "cacodemon_player_hit_failed")
+
+
+func _step_cacodemon_natural_fireball_scenario() -> void:
+	if not is_instance_valid(player) or not is_instance_valid(arena):
+		return
+	var boss_enemy := _get_boss_enemy()
+	if boss_enemy == null:
+		return
+
+	arena.allow_multiple_minotaurs = false
+	arena.max_active_minotaurs = 1
+	arena.timed_extra_minotaur_enabled = false
+	boss_enemy.spin_attack_enabled = false
+	boss_enemy.use_single_phase_loop = true
+	boss_enemy.boss_can_summon_minions = false
+	boss_enemy.boss_summon_count = 0
+	boss_enemy.cacodemon_fireball_enabled = true
+	if boss_enemy.has_method("set_monster_visual_profile"):
+		boss_enemy.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.CACODEMON))
+
+	if not cacodemon_natural_fireball_setup_done:
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		player.global_position = arena.to_global(Vector2(max_x - 380.0, clampf(10.0, min_y + 8.0, max_y - 8.0)))
+		player.velocity = Vector2.ZERO
+		var enemy_body := boss_enemy as CharacterBody2D
+		if enemy_body != null:
+			enemy_body.global_position = arena.to_global(Vector2(max_x - 180.0, clampf(10.0, min_y + 8.0, max_y - 8.0)))
+			enemy_body.velocity = Vector2.ZERO
+		cacodemon_natural_fireball_setup_done = true
+		_write_log("Cacodemon natural fireball setup applied")
+
+	var to_boss := boss_enemy.global_position - player.global_position
+	var desired_distance := 176.0
+	if to_boss.length() > desired_distance + 12.0:
+		_set_move_inputs(to_boss.normalized())
+	elif to_boss.length() < desired_distance - 12.0:
+		_set_move_inputs((-to_boss).normalized())
+	else:
+		_set_move_inputs(Vector2.ZERO)
+	Input.action_release("block")
+
+	var active_fireballs := get_tree().get_nodes_in_group("cacodemon_fireballs").size()
+	var fireball_cast_active := bool(boss_enemy.get("cacodemon_fireball_pending")) or float(boss_enemy.get("cacodemon_fireball_cast_left")) > 0.0
+	if (active_fireballs > 0 or fireball_cast_active) and not cacodemon_natural_fireball_seen:
+		cacodemon_natural_fireball_seen = true
+		_write_log("Cacodemon natural fireball observed")
+		_finish(0, "cacodemon_fireball_natural")
+		return
+	var debug_second := int(floor(elapsed))
+	if debug_second != cacodemon_natural_fireball_last_debug_second:
+		cacodemon_natural_fireball_last_debug_second = debug_second
+		_write_log(
+			"NaturalFB t=%.2f first=%.2f cd=%.2f pending=%s cast=%.2f attack=%.2f rec=%.2f dist=%.1f" % [
+				elapsed,
+				float(boss_enemy.get("cacodemon_fireball_first_use_left")),
+				float(boss_enemy.get("cacodemon_fireball_cooldown_left")),
+				("true" if bool(boss_enemy.get("cacodemon_fireball_pending")) else "false"),
+				float(boss_enemy.get("cacodemon_fireball_cast_left")),
+				float(boss_enemy.get("attack_anim_left")),
+				float(boss_enemy.get("attack_recovery_hold_left")),
+				to_boss.length()
+			]
+		)
+
+
+func _step_cacodemon_fireball_pressure_scenario() -> void:
+	if not is_instance_valid(player) or not is_instance_valid(arena):
+		return
+	var boss_enemy := _get_boss_enemy()
+	if boss_enemy == null:
+		return
+
+	arena.allow_multiple_minotaurs = false
+	arena.max_active_minotaurs = 1
+	arena.timed_extra_minotaur_enabled = false
+	boss_enemy.use_single_phase_loop = true
+	boss_enemy.spin_attack_enabled = false
+	boss_enemy.boss_can_summon_minions = false
+	boss_enemy.boss_summon_count = 0
+	boss_enemy.cacodemon_fireball_enabled = true
+	if boss_enemy.has_method("set_monster_visual_profile"):
+		boss_enemy.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.CACODEMON))
+
+	if not cacodemon_fireball_pressure_setup_done:
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		player.global_position = arena.to_global(Vector2(max_x - 320.0, clampf(10.0, min_y + 8.0, max_y - 8.0)))
+		player.velocity = Vector2.ZERO
+		var enemy_body := boss_enemy as CharacterBody2D
+		if enemy_body != null:
+			enemy_body.global_position = arena.to_global(Vector2(max_x - 250.0, clampf(10.0, min_y + 8.0, max_y - 8.0)))
+			enemy_body.velocity = Vector2.ZERO
+		cacodemon_fireball_pressure_setup_done = true
+		_write_log("Cacodemon pressure fireball setup applied")
+
+	var to_boss := boss_enemy.global_position - player.global_position
+	if to_boss.length() > 62.0:
+		_set_move_inputs(to_boss.normalized())
+	else:
+		_set_move_inputs(Vector2.ZERO)
+	Input.action_release("block")
+	Input.action_press("basic_attack")
+
+	var active_fireballs := get_tree().get_nodes_in_group("cacodemon_fireballs").size()
+	var fireball_cast_active := bool(boss_enemy.get("cacodemon_fireball_pending")) or float(boss_enemy.get("cacodemon_fireball_cast_left")) > 0.0
+	if (active_fireballs > 0 or fireball_cast_active) and not cacodemon_fireball_pressure_seen:
+		cacodemon_fireball_pressure_seen = true
+		_write_log("Cacodemon pressure fireball observed")
+		_finish(0, "cacodemon_fireball_pressure")
 
 
 func _apply_shadow_fear_opening_layout(primary_enemy: EnemyBase) -> void:
@@ -694,6 +1029,15 @@ func _get_boss_enemy() -> EnemyBase:
 		if candidate.is_miniboss:
 			return candidate
 	return null
+
+
+func _get_air_boss_debug_visual_profile() -> int:
+	var encounter_raw := OS.get_environment("AUTOPLAY_ENCOUNTER").strip_edges().to_lower()
+	if autoplay_scenario == "cacodemon_breath_block" or autoplay_scenario == "cacodemon_breath_stack":
+		return int(EnemyBase.MonsterVisualProfile.SHARDSOUL)
+	if encounter_raw == "shardsoul" or encounter_raw == "3":
+		return int(EnemyBase.MonsterVisualProfile.SHARDSOUL)
+	return int(EnemyBase.MonsterVisualProfile.CACODEMON)
 
 
 func _step_approach_enemy() -> void:

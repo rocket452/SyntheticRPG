@@ -118,6 +118,14 @@ signal item_looted(item_name: String, total_owned: int)
 @export var impact_hitstop_multiplier: float = 1.22
 @export var impact_camera_shake_multiplier: float = 1.18
 @export var impact_vfx_scale_multiplier: float = 1.15
+@export var damage_popup_enabled: bool = true
+@export var damage_popup_duration: float = 0.42
+@export var damage_popup_rise_distance: float = 26.0
+@export var damage_popup_x_spread: float = 8.0
+@export var damage_popup_scale: float = 1.0
+@export var damage_popup_font_size: int = 17
+@export var damage_popup_outline_size: int = 3
+@export var damage_popup_head_offset_y: float = -44.0
 
 @export var pickup_radius: float = 34.0
 @export var health_bar_width: float = 74.0
@@ -350,6 +358,7 @@ var health_bar_background: Line2D = null
 var health_bar_fill: Line2D = null
 var block_stamina_bar_background: Line2D = null
 var block_stamina_bar_fill: Line2D = null
+var damage_popup_sequence: int = 0
 
 @onready var shadow_visual: Polygon2D = $Shadow
 @onready var body_visual: Polygon2D = $Body
@@ -855,6 +864,8 @@ func _start_charge_attack() -> void:
 		return
 	is_charging_attack = true
 	charge_time = 0.0
+	charge_lunge_velocity = Vector2.ZERO
+	velocity = Vector2.ZERO
 	charge_release_direction = _resolve_charge_release_direction()
 	charge_attack_hit_pending = false
 	charge_attack_hit_confirmed = false
@@ -963,7 +974,12 @@ func _tick_charge_attack_state(delta: float) -> void:
 func _begin_charge_attack_active() -> void:
 	charge_attack_active_left = maxf(0.01, charge_active_duration)
 	_set_combat_state(CombatState.ATTACK_ACTIVE)
-	_show_instant_attack_flash(charge_attack_range, charge_attack_arc, Color(1.0, 0.58, 0.32, 0.42))
+	_show_instant_attack_flash(
+		charge_attack_range,
+		charge_attack_arc,
+		Color(1.0, 0.58, 0.32, 0.42),
+		charge_release_direction
+	)
 	_start_attack_animation(lerpf(0.24, 0.34, _get_scaled_charge_ratio()), charge_attack_anim_strength)
 	if not using_external_player_sprite:
 		_trigger_slash_effect(
@@ -987,7 +1003,8 @@ func _apply_charge_attack_hit() -> void:
 		charge_attack_enemy_stun,
 		charge_attack_knockback_scale,
 		charge_attack_hitstop,
-		charge_attack_vfx_scale
+		charge_attack_vfx_scale,
+		charge_release_direction
 	)
 	if hit_confirmed:
 		charge_attack_hit_confirmed = true
@@ -1343,15 +1360,28 @@ func _show_attack_telegraph(attack_range: float, arc_degrees: float, telegraph_c
 	attack_telegraph.visible = true
 	attack_telegraph.color = telegraph_color
 	attack_telegraph.polygon = _build_arc_polygon(attack_range, arc_degrees, 18)
-	attack_telegraph.rotation = facing_direction.angle()
+	var telegraph_direction := facing_direction
+	if is_charging_attack or charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0:
+		telegraph_direction = charge_release_direction
+	if telegraph_direction.length_squared() <= 0.0001:
+		telegraph_direction = facing_direction
+	attack_telegraph.rotation = telegraph_direction.angle()
 	attack_telegraph.modulate.a = 0.25
 
 
-func _show_instant_attack_flash(attack_range: float, arc_degrees: float, telegraph_color: Color) -> void:
+func _show_instant_attack_flash(
+	attack_range: float,
+	arc_degrees: float,
+	telegraph_color: Color,
+	telegraph_direction: Vector2 = Vector2.ZERO
+) -> void:
 	attack_telegraph.visible = true
 	attack_telegraph.color = telegraph_color
 	attack_telegraph.polygon = _build_arc_polygon(attack_range, arc_degrees, 16)
-	attack_telegraph.rotation = facing_direction.angle()
+	var direction := telegraph_direction
+	if direction.length_squared() <= 0.0001:
+		direction = facing_direction
+	attack_telegraph.rotation = direction.angle()
 	attack_telegraph.modulate.a = 0.7
 	var tween := create_tween()
 	tween.tween_property(attack_telegraph, "modulate:a", 0.0, 0.08)
@@ -1365,7 +1395,12 @@ func _show_instant_attack_flash(attack_range: float, arc_degrees: float, telegra
 func _update_attack_telegraph_progress() -> void:
 	if not attack_telegraph.visible:
 		return
-	attack_telegraph.rotation = facing_direction.angle()
+	var telegraph_direction := facing_direction
+	if is_charging_attack or charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0:
+		telegraph_direction = charge_release_direction
+	if telegraph_direction.length_squared() <= 0.0001:
+		telegraph_direction = facing_direction
+	attack_telegraph.rotation = telegraph_direction.angle()
 	var progress := 1.0 - (attack_windup_left / attack_windup_total)
 	attack_telegraph.modulate.a = lerpf(0.25, 0.85, clampf(progress, 0.0, 1.0))
 	attack_telegraph.scale = Vector2.ONE * lerpf(0.92, 1.02, progress)
@@ -1624,7 +1659,20 @@ func _apply_movement() -> void:
 		return
 
 	if is_charging_attack:
+		velocity = Vector2.ZERO
+		return
+
+	# Lock manual movement for the full charge-attack sequence triggered by J.
+	if charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0 or charge_attack_recovery_left > 0.0:
+		# Preserve built-in charge impulse, but ignore player movement input.
 		velocity = charge_lunge_velocity
+		if is_blocking and knockback_velocity.length_squared() > 0.0001:
+			velocity += knockback_velocity * blocked_knockback_move_scale
+		return
+
+	# Basic attack (J) windup should root the player in place.
+	if attack_windup_left > 0.0 and queued_attack != QueuedAttack.NONE:
+		velocity = Vector2.ZERO
 		return
 
 	if is_blocking:
@@ -1638,14 +1686,6 @@ func _apply_movement() -> void:
 	if movement_vector.length_squared() > 1.0:
 		movement_vector = movement_vector.normalized()
 	var movement_multiplier := block_move_multiplier if is_blocking else 1.0
-	if charge_release_windup_left > 0.0:
-		movement_multiplier *= 0.22
-	if charge_attack_active_left > 0.0:
-		movement_multiplier *= 0.12
-	if charge_attack_recovery_left > 0.0:
-		movement_multiplier *= 0.46
-	if attack_windup_left > 0.0:
-		movement_multiplier *= 0.72
 	velocity = movement_vector * move_speed * movement_multiplier + charge_lunge_velocity
 	if is_blocking and knockback_velocity.length_squared() > 0.0001:
 		velocity += knockback_velocity * blocked_knockback_move_scale
@@ -1724,39 +1764,57 @@ func _apply_melee_strike(
 	stun_duration: float = outgoing_hit_stun_duration,
 	knockback_scale: float = 1.0,
 	hitstop_duration: float = 0.05,
-	vfx_scale: float = 1.0
+	vfx_scale: float = 1.0,
+	strike_direction: Vector2 = Vector2.ZERO
 ) -> bool:
-	var facing := facing_direction.normalized()
+	var facing := strike_direction.normalized()
+	if facing == Vector2.ZERO:
+		facing = facing_direction.normalized()
 	if facing == Vector2.ZERO:
 		facing = Vector2.RIGHT
 	var hitstop_scale := maxf(0.4, impact_hitstop_multiplier)
 	var shake_scale := maxf(0.4, impact_camera_shake_multiplier)
 	var impact_vfx_scale := maxf(0.5, impact_vfx_scale_multiplier)
-	var arc_threshold := cos(deg_to_rad(arc_degrees * 0.5))
+	var half_arc_radians := deg_to_rad(arc_degrees * 0.5)
+	var arc_edge_tolerance_radians := deg_to_rad(3.0)
 	var hit_ids: Dictionary = {}
 	var hit_confirmed := false
 	var strongest_hitstop := 0.0
 	var strongest_vfx_scale := 1.0
-	for result in _query_attack_hits(attack_range):
-		var enemy := result.get("collider") as EnemyBase
+	for enemy in _collect_attack_targets(attack_range):
 		if enemy == null or not is_instance_valid(enemy):
 			continue
 		var enemy_id := enemy.get_instance_id()
 		if hit_ids.has(enemy_id):
 			continue
 
-		var to_enemy: Vector2 = enemy.global_position - global_position
-		if absf(to_enemy.y) > attack_depth_tolerance:
+		var target_point := _get_enemy_attack_target_point(enemy, global_position)
+		var target_radius := _get_enemy_attack_collision_radius(enemy)
+		var to_enemy: Vector2 = target_point - global_position
+		var is_air_boss := enemy.monster_visual_profile == EnemyBase.MonsterVisualProfile.CACODEMON \
+			or enemy.monster_visual_profile == EnemyBase.MonsterVisualProfile.SHARDSOUL
+		var effective_depth_tolerance := attack_depth_tolerance + (18.0 if is_air_boss else 0.0) + target_radius
+		var effective_attack_range := attack_range + (14.0 if is_air_boss else 0.0) + target_radius
+		if absf(to_enemy.y) > effective_depth_tolerance:
 			continue
-		if to_enemy.length_squared() > attack_range * attack_range:
+		if to_enemy.length_squared() > effective_attack_range * effective_attack_range:
 			continue
-		if to_enemy.length_squared() > 0.0001 and facing.dot(to_enemy.normalized()) < arc_threshold:
-			continue
+		if to_enemy.length_squared() > 0.0001:
+			var distance_to_target := to_enemy.length()
+			var radius_arc_allowance := asin(clampf(target_radius / maxf(1.0, distance_to_target), 0.0, 0.99))
+			var alignment_threshold := cos(half_arc_radians + radius_arc_allowance + arc_edge_tolerance_radians)
+			if facing.dot(to_enemy / distance_to_target) < alignment_threshold:
+				continue
 
 		hit_ids[enemy_id] = true
+		var enemy_health_before := enemy.current_health
 		if enemy.receive_hit(damage, global_position, stun_duration, true, knockback_scale):
 			hit_confirmed = true
 			var hit_world_position := enemy.global_position + Vector2(0.0, -12.0)
+			var damage_dealt := maxf(0.0, enemy_health_before - enemy.current_health)
+			if damage_dealt <= 0.01:
+				damage_dealt = maxf(0.0, damage)
+			_spawn_damage_popup(enemy.global_position + Vector2(0.0, damage_popup_head_offset_y), damage_dealt)
 			var applied_hitstop := hitstop_duration * hitstop_scale
 			strongest_hitstop = maxf(strongest_hitstop, applied_hitstop)
 			strongest_vfx_scale = maxf(strongest_vfx_scale, vfx_scale * impact_vfx_scale)
@@ -1773,12 +1831,72 @@ func _apply_melee_strike(
 	return hit_confirmed
 
 
+func _collect_attack_targets(attack_range: float) -> Array[EnemyBase]:
+	var targets: Array[EnemyBase] = []
+	var seen_ids: Dictionary = {}
+	for result in _query_attack_hits(attack_range):
+		var enemy := result.get("collider") as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		var enemy_id := enemy.get_instance_id()
+		if seen_ids.has(enemy_id):
+			continue
+		seen_ids[enemy_id] = true
+		targets.append(enemy)
+	var fallback_radius := maxf(attack_range + 56.0, attack_range * 1.55)
+	var fallback_radius_sq := fallback_radius * fallback_radius
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		var enemy_id := enemy.get_instance_id()
+		if seen_ids.has(enemy_id):
+			continue
+		if global_position.distance_squared_to(enemy.global_position) > fallback_radius_sq:
+			continue
+		seen_ids[enemy_id] = true
+		targets.append(enemy)
+	return targets
+
+
+func _get_enemy_attack_target_point(enemy: EnemyBase, attack_origin: Vector2) -> Vector2:
+	var target_point := enemy.global_position
+	var collision_shape := enemy.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if collision_shape == null:
+		return target_point
+	target_point = collision_shape.global_position
+	var circle := collision_shape.shape as CircleShape2D
+	if circle == null:
+		return target_point
+	var radius_scale := maxf(absf(collision_shape.global_scale.x), absf(collision_shape.global_scale.y))
+	var hit_radius := maxf(0.0, circle.radius * maxf(0.01, radius_scale))
+	var to_enemy := target_point - attack_origin
+	var distance := to_enemy.length()
+	if distance <= 0.0001 or hit_radius <= 0.01:
+		return target_point
+	var clamped_inset := minf(hit_radius, distance * 0.8)
+	return target_point - (to_enemy / distance) * clamped_inset
+
+
+func _get_enemy_attack_collision_radius(enemy: EnemyBase) -> float:
+	if enemy == null or not is_instance_valid(enemy):
+		return 0.0
+	var collision_shape := enemy.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if collision_shape == null:
+		return 0.0
+	var circle := collision_shape.shape as CircleShape2D
+	if circle == null:
+		return 0.0
+	var radius_scale := maxf(absf(collision_shape.global_scale.x), absf(collision_shape.global_scale.y))
+	return maxf(0.0, circle.radius * maxf(0.01, radius_scale))
+
+
 func _query_attack_hits(attack_range: float) -> Array:
 	var world := get_world_2d()
 	if world == null:
 		return []
 	var hit_shape := CircleShape2D.new()
-	hit_shape.radius = maxf(4.0, attack_range)
+	hit_shape.radius = maxf(4.0, maxf(attack_range + 56.0, attack_range * 1.55))
 	var query := PhysicsShapeQueryParameters2D.new()
 	query.shape = hit_shape
 	query.transform = Transform2D(0.0, global_position)
@@ -2441,6 +2559,50 @@ func _spawn_hit_effect(world_position: Vector2, effect_color: Color, effect_size
 	tween.finished.connect(func() -> void:
 		if is_instance_valid(effect):
 			effect.queue_free()
+	)
+
+
+func _spawn_damage_popup(world_position: Vector2, damage_amount: float) -> void:
+	if not damage_popup_enabled:
+		return
+	if damage_amount <= 0.0:
+		return
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		scene_root = get_parent()
+	if scene_root == null:
+		return
+
+	var label := Label.new()
+	label.top_level = true
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	label.global_position = world_position
+	label.z_index = 260
+	label.text = str(int(round(damage_amount)))
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.scale = Vector2.ONE * maxf(0.1, damage_popup_scale)
+
+	var label_settings := LabelSettings.new()
+	label_settings.font_size = maxi(8, damage_popup_font_size)
+	label_settings.font_color = Color(1.0, 0.88, 0.34, 0.98)
+	label_settings.outline_size = maxi(0, damage_popup_outline_size)
+	label_settings.outline_color = Color(0.08, 0.05, 0.02, 0.95)
+	label.label_settings = label_settings
+	scene_root.add_child(label)
+
+	damage_popup_sequence += 1
+	var spread_step := float((damage_popup_sequence % 5) - 2)
+	var x_offset := spread_step * maxf(0.0, damage_popup_x_spread)
+	var rise := maxf(6.0, damage_popup_rise_distance)
+	var duration := maxf(0.06, damage_popup_duration)
+
+	var tween := create_tween()
+	tween.tween_property(label, "global_position", label.global_position + Vector2(x_offset, -rise), duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(label, "modulate:a", 0.0, duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tween.finished.connect(func() -> void:
+		if is_instance_valid(label):
+			label.queue_free()
 	)
 
 

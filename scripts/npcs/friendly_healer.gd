@@ -129,17 +129,20 @@ const INVALID_FRAME_ANCHOR: Vector2 = Vector2(-1.0, -1.0)
 const ANIM_ROWS: Dictionary = {
 	"idle": 0,
 	"run": 1,
-	"cast": 2
+	"cast": 2,
+	"death": 5
 }
 const ANIM_FRAME_COLUMNS: Dictionary = {
 	"idle": [0, 1, 2, 3],
 	"run": [0, 1, 2, 3],
-	"cast": [0, 1, 2, 3, 4, 5, 6]
+	"cast": [0, 1, 2, 3, 4, 5, 6],
+	"death": [0, 1, 2, 3]
 }
 const ANIM_FPS: Dictionary = {
 	"idle": 6.0,
 	"run": 8.8,
-	"cast": 10.0
+	"cast": 10.0,
+	"death": 8.0
 }
 
 var player: Player = null
@@ -187,6 +190,8 @@ var stun_left: float = 0.0
 var hit_flash_left: float = 0.0
 var knockback_velocity: Vector2 = Vector2.ZERO
 var dead: bool = false
+var death_anim_time: float = 0.0
+var death_cleanup_started: bool = false
 var breath_threat_snapshot: Dictionary = {}
 var breath_safe_indicator_left: float = 0.0
 var breath_safe_indicator: Line2D = null
@@ -243,6 +248,7 @@ func _exit_tree() -> void:
 
 func _physics_process(delta: float) -> void:
 	if dead:
+		_tick_death(delta)
 		return
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
 	stun_left = maxf(0.0, stun_left - delta)
@@ -1910,6 +1916,11 @@ func _die() -> void:
 		return
 	dead = true
 	is_casting = false
+	stun_left = 0.0
+	knockback_velocity = Vector2.ZERO
+	death_anim_time = 0.0
+	death_cleanup_started = false
+	_set_anim_frame("death", 0)
 	if is_instance_valid(health_bar_root):
 		health_bar_root.queue_free()
 		health_bar_root = null
@@ -1917,12 +1928,22 @@ func _die() -> void:
 		health_bar_fill = null
 	_clear_tidal_waves()
 	died.emit(self)
-	var fade := create_tween()
-	fade.tween_property(self, "modulate:a", 0.0, 0.18)
-	fade.finished.connect(func() -> void:
-		if is_instance_valid(self):
-			queue_free()
-	)
+
+
+func _tick_death(delta: float) -> void:
+	var fps := float(ANIM_FPS.get("death", 8.0))
+	var frame_count := _anim_frame_count("death")
+	death_anim_time += maxf(0.0, delta) * maxf(0.01, fps)
+	var frame_index := mini(int(floor(death_anim_time)), frame_count - 1)
+	_set_anim_frame("death", frame_index)
+	if death_cleanup_started:
+		_set_anim_frame("death", frame_count - 1)
+		return
+	if death_anim_time < float(frame_count):
+		return
+	death_cleanup_started = true
+	death_anim_time = float(frame_count - 1)
+	_set_anim_frame("death", frame_count - 1)
 
 
 func _setup_health_bar() -> void:
