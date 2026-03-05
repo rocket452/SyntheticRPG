@@ -33,6 +33,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			_start_selected_encounter(Arena.EncounterType.CACODEMON)
 			get_viewport().set_input_as_handled()
 			return
+		if key_event.keycode == KEY_3 or key_event.keycode == KEY_KP_3:
+			_start_selected_encounter(Arena.EncounterType.SHARDSOUL)
+			get_viewport().set_input_as_handled()
+			return
 		return
 	if key_event.keycode == KEY_F6:
 		if is_instance_valid(arena):
@@ -115,7 +119,7 @@ func _show_encounter_picker() -> void:
 	content.add_child(title)
 
 	var description := Label.new()
-	description.text = "1. Minotaur uses the current boss fight.\n2. Cacodemon reuses the same boss logic with the new sprite sheet."
+	description.text = "1. Minotaur uses the current boss fight.\n2. Cacodemon reuses the same boss logic with the new sprite sheet.\n3. Shardsoul reuses the cacodemon encounter with the shardsoul sprite sheet."
 	description.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(description)
@@ -136,8 +140,16 @@ func _show_encounter_picker() -> void:
 	)
 	content.add_child(cacodemon_button)
 
+	var shardsoul_button := Button.new()
+	shardsoul_button.text = "3. Start Shardsoul Fight"
+	shardsoul_button.custom_minimum_size = Vector2(0.0, 44.0)
+	shardsoul_button.pressed.connect(func() -> void:
+		_start_selected_encounter(Arena.EncounterType.SHARDSOUL)
+	)
+	content.add_child(shardsoul_button)
+
 	var hint := Label.new()
-	hint.text = "Press 1 or 2, or click a button."
+	hint.text = "Press 1, 2, or 3, or click a button."
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	content.add_child(hint)
 
@@ -161,6 +173,8 @@ func _get_autoplay_encounter_type() -> int:
 	var encounter_raw := OS.get_environment("AUTOPLAY_ENCOUNTER").strip_edges().to_lower()
 	if encounter_raw == "cacodemon" or encounter_raw == "2":
 		return Arena.EncounterType.CACODEMON
+	if encounter_raw == "shardsoul" or encounter_raw == "3":
+		return Arena.EncounterType.SHARDSOUL
 	return Arena.EncounterType.MINOTAUR
 
 

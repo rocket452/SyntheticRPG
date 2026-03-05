@@ -3,7 +3,8 @@ class_name Arena
 
 enum EncounterType {
 	MINOTAUR,
-	CACODEMON
+	CACODEMON,
+	SHARDSOUL
 }
 
 signal player_health_changed(current: float, maximum: float)
@@ -86,6 +87,8 @@ func start_demo_with_encounter(encounter_type: int) -> void:
 func set_encounter_type(encounter_type: int) -> void:
 	if encounter_type == EncounterType.CACODEMON:
 		selected_encounter = EncounterType.CACODEMON
+	elif encounter_type == EncounterType.SHARDSOUL:
+		selected_encounter = EncounterType.SHARDSOUL
 	else:
 		selected_encounter = EncounterType.MINOTAUR
 
@@ -161,6 +164,9 @@ func _spawn_regular_enemies() -> void:
 	if selected_encounter == EncounterType.CACODEMON:
 		_spawn_cacodemon_encounter()
 		return
+	if selected_encounter == EncounterType.SHARDSOUL:
+		_spawn_shardsoul_encounter()
+		return
 	var spawn_count := regular_enemy_count
 	var minotaur_cap := _get_minotaur_spawn_cap()
 	spawn_count = mini(spawn_count, minotaur_cap)
@@ -219,6 +225,14 @@ func _try_spawn_timed_extra_minotaur() -> void:
 
 
 func _spawn_cacodemon_encounter() -> void:
+	_spawn_air_boss_encounter(int(EnemyBase.MonsterVisualProfile.CACODEMON))
+
+
+func _spawn_shardsoul_encounter() -> void:
+	_spawn_air_boss_encounter(int(EnemyBase.MonsterVisualProfile.SHARDSOUL))
+
+
+func _spawn_air_boss_encounter(visual_profile: int) -> void:
 	var min_x := minf(arena_min_x, arena_max_x)
 	var max_x := maxf(arena_min_x, arena_max_x)
 	var min_y := minf(arena_min_y, arena_max_y)
@@ -233,7 +247,12 @@ func _spawn_cacodemon_encounter() -> void:
 		return
 	_configure_miniboss(enemy)
 	if enemy.has_method("set_monster_visual_profile"):
-		enemy.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.CACODEMON))
+		enemy.call("set_monster_visual_profile", visual_profile)
+	if visual_profile == int(EnemyBase.MonsterVisualProfile.CACODEMON):
+		enemy.boss_can_summon_minions = true
+		enemy.boss_summon_count = 4
+		enemy.boss_summon_interval = 20.0
+		enemy.boss_summon_cycle_left = 15.0
 	alive_regular_enemies = 1
 
 
@@ -327,6 +346,7 @@ func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> 
 	if not demo_started:
 		return
 	var total_to_spawn := maxi(1, count)
+	var use_imp_profile := source_enemy != null and is_instance_valid(source_enemy) and source_enemy.monster_visual_profile == EnemyBase.MonsterVisualProfile.CACODEMON
 	var min_x := minf(arena_min_x, arena_max_x)
 	var max_x := maxf(arena_min_x, arena_max_x)
 	var min_y := minf(arena_min_y, arena_max_y)
@@ -341,6 +361,8 @@ func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> 
 		var minion := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position)
 		if minion == null:
 			continue
+		if use_imp_profile and minion.has_method("set_monster_visual_profile"):
+			minion.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.IMP))
 		minion.is_miniboss = false
 		minion.use_single_phase_loop = false
 		minion.boss_can_summon_minions = false
@@ -457,6 +479,9 @@ func _update_objective() -> void:
 		return
 	if selected_encounter == EncounterType.CACODEMON:
 		objective_changed.emit("Objective: Defeat the Cacodemon")
+		return
+	if selected_encounter == EncounterType.SHARDSOUL:
+		objective_changed.emit("Objective: Defeat the Shardsoul")
 		return
 	objective_changed.emit("Objective: Defeat enemies (%d remaining)" % alive_regular_enemies)
 
