@@ -24,7 +24,7 @@ signal item_looted(item_name: String, total_owned: int)
 
 # Pacing experiment knobs (slow-RPG cadence).
 @export var move_speed: float = 82.9
-@export var max_health: float = 120.0
+@export var max_health: float = 60.0
 @export var basic_attack_damage: float = 15.0
 @export var basic_attack_range: float = 62.0
 @export var basic_attack_arc_degrees: float = 90.0
@@ -61,9 +61,9 @@ signal item_looted(item_name: String, total_owned: int)
 @export var block_damage_reduction: float = 0.65
 @export var block_move_multiplier: float = 0.45
 @export var block_stamina_max: float = 100.0
-@export var block_stamina_hold_drain_per_second: float = 2.5
+@export var block_stamina_hold_drain_per_second: float = 7.5
 @export var block_stamina_recharge_per_second: float = 26.0
-@export var block_stamina_blocked_hit_cost: float = 8.0
+@export var block_stamina_blocked_hit_cost: float = 24.0
 @export var block_stamina_min_to_raise: float = 5.0
 @export var block_stamina_recover_threshold_ratio: float = 0.5
 @export var block_input_grace_duration: float = 0.12
@@ -1832,7 +1832,7 @@ func _apply_melee_strike(
 
 		hit_ids[enemy_id] = true
 		var enemy_health_before := enemy.current_health
-		if enemy.receive_hit(damage, global_position, stun_duration, true, knockback_scale):
+		if enemy.receive_hit(damage, global_position, stun_duration, true, knockback_scale, self):
 			hit_confirmed = true
 			var hit_world_position := enemy.global_position + Vector2(0.0, -12.0)
 			var damage_dealt := maxf(0.0, enemy_health_before - enemy.current_health)

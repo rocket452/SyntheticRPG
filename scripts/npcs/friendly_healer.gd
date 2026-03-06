@@ -101,10 +101,13 @@ enum CastAction {
 @export var tidal_wave_visual_height_scale: float = 1.55
 @export var tidal_wave_droplet_interval: float = 0.07
 @export var tidal_wave_sprite_scale: Vector2 = Vector2(0.72, 0.7)
-@export var max_health: float = 90.0
+@export var max_health: float = 45.0
 @export var health_bar_width: float = 54.0
 @export var health_bar_thickness: float = 5.0
 @export var health_bar_y_offset: float = -62.0
+@export var cast_bar_width: float = 52.0
+@export var cast_bar_thickness: float = 3.0
+@export var cast_bar_vertical_offset: float = 8.0
 @export var hit_stun_duration: float = 0.18
 @export var hit_knockback_speed: float = 170.0
 @export var hit_knockback_decay: float = 960.0
@@ -186,6 +189,8 @@ var current_health: float = 0.0
 var health_bar_root: Node2D = null
 var health_bar_background: Line2D = null
 var health_bar_fill: Line2D = null
+var cast_bar_background: Line2D = null
+var cast_bar_fill: Line2D = null
 var stun_left: float = 0.0
 var hit_flash_left: float = 0.0
 var knockback_velocity: Vector2 = Vector2.ZERO
@@ -627,7 +632,7 @@ func _tick_cast(delta: float) -> void:
 	var frame_index := mini(int(floor(cast_anim_time)), frame_count - 1)
 	_set_anim_frame("cast", frame_index)
 
-	if not heal_applied_this_cast and frame_index >= cast_frame_to_heal:
+	if not heal_applied_this_cast and cast_anim_time >= float(frame_count):
 		heal_applied_this_cast = true
 		_trigger_healing_ability()
 
@@ -831,6 +836,7 @@ func _apply_heal(target: Node2D = null) -> bool:
 	var healed := bool(heal_target.call("receive_heal", heal_amount))
 	if not healed:
 		return false
+	EnemyBase.add_healing_threat_to_active_enemies(self, heal_amount)
 	_spawn_heal_beam(global_position + Vector2(0.0, -18.0), target_world, healed)
 	_spawn_heal_burst(target_world, healed)
 	return healed
@@ -922,7 +928,7 @@ func _apply_light_bolt(target: Node2D) -> bool:
 	var hit_position := bolt_target.global_position + Vector2(0.0, -12.0)
 	_spawn_heal_beam(hit_origin, hit_position, false)
 	_spawn_heal_burst(hit_position, false)
-	var landed := bolt_target.receive_hit(light_bolt_damage, global_position, light_bolt_stun_duration, true, 0.88)
+	var landed := bolt_target.receive_hit(light_bolt_damage, global_position, light_bolt_stun_duration, true, 0.88, self)
 	if landed and bolt_target.has_method("apply_hitstop"):
 		bolt_target.apply_hitstop(maxf(0.0, light_bolt_hitstop_duration))
 	light_bolt_cooldown_left = maxf(0.0, light_bolt_cooldown)
@@ -1609,6 +1615,7 @@ func _process_tidal_wave_hits(wave_state: Dictionary, wave_center: Vector2, wave
 		var healed := bool(friendly_target.call("receive_heal", tidal_wave_heal_amount))
 		healed_ids[friendly_id] = true
 		if healed:
+			EnemyBase.add_healing_threat_to_active_enemies(self, tidal_wave_heal_amount)
 			var burst_position := friendly_target.global_position + Vector2(0.0, -16.0)
 			_spawn_heal_burst(burst_position, true)
 			_spawn_heal_beam(wave_center, burst_position, true)
@@ -1626,7 +1633,7 @@ func _process_tidal_wave_hits(wave_state: Dictionary, wave_center: Vector2, wave
 		if enemy_distance > tidal_wave_hit_half_width:
 			continue
 		hit_ids[enemy_id] = true
-		var landed := enemy.receive_hit(tidal_wave_damage, wave_center, tidal_wave_stun_duration, true, tidal_wave_knockback_scale)
+		var landed := enemy.receive_hit(tidal_wave_damage, wave_center, tidal_wave_stun_duration, true, tidal_wave_knockback_scale, self)
 		if landed:
 			if enemy.has_method("apply_hitstop"):
 				enemy.apply_hitstop(maxf(0.0, tidal_wave_hitstop_duration))
@@ -1932,9 +1939,11 @@ func _die() -> void:
 	_set_anim_frame("death", 0)
 	if is_instance_valid(health_bar_root):
 		health_bar_root.queue_free()
-		health_bar_root = null
-		health_bar_background = null
-		health_bar_fill = null
+	health_bar_root = null
+	health_bar_background = null
+	health_bar_fill = null
+	cast_bar_background = null
+	cast_bar_fill = null
 	_clear_tidal_waves()
 	died.emit(self)
 
@@ -1978,6 +1987,22 @@ func _setup_health_bar() -> void:
 	health_bar_fill.end_cap_mode = Line2D.LINE_CAP_ROUND
 	health_bar_root.add_child(health_bar_fill)
 
+	cast_bar_background = Line2D.new()
+	cast_bar_background.default_color = Color(0.08, 0.08, 0.08, 0.88)
+	cast_bar_background.width = maxf(1.0, cast_bar_thickness)
+	cast_bar_background.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	cast_bar_background.end_cap_mode = Line2D.LINE_CAP_ROUND
+	cast_bar_background.visible = false
+	health_bar_root.add_child(cast_bar_background)
+
+	cast_bar_fill = Line2D.new()
+	cast_bar_fill.default_color = Color(0.42, 0.74, 1.0, 0.95)
+	cast_bar_fill.width = maxf(1.0, cast_bar_thickness - 1.0)
+	cast_bar_fill.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	cast_bar_fill.end_cap_mode = Line2D.LINE_CAP_ROUND
+	cast_bar_fill.visible = false
+	health_bar_root.add_child(cast_bar_fill)
+
 
 func _update_health_bar() -> void:
 	if not is_instance_valid(health_bar_root):
@@ -1991,6 +2016,31 @@ func _update_health_bar() -> void:
 	var fill_x := lerpf(bar_start.x, bar_end.x, health_ratio)
 	health_bar_fill.points = PackedVector2Array([bar_start, Vector2(fill_x, 0.0)])
 	health_bar_fill.visible = health_ratio > 0.0
+
+	if not is_instance_valid(cast_bar_background) or not is_instance_valid(cast_bar_fill):
+		return
+	var cast_half_width := cast_bar_width * 0.5
+	var cast_start := Vector2(-cast_half_width, -cast_bar_vertical_offset)
+	var cast_end := Vector2(cast_half_width, -cast_bar_vertical_offset)
+	cast_bar_background.points = PackedVector2Array([cast_start, cast_end])
+	var cast_ratio := _get_cast_progress_ratio()
+	var show_cast := cast_ratio >= 0.0
+	cast_bar_background.visible = show_cast
+	if show_cast:
+		var cast_fill_x := lerpf(cast_start.x, cast_end.x, cast_ratio)
+		cast_bar_fill.points = PackedVector2Array([cast_start, Vector2(cast_fill_x, cast_start.y)])
+		cast_bar_fill.visible = cast_ratio > 0.0
+	else:
+		cast_bar_fill.visible = false
+
+
+func _get_cast_progress_ratio() -> float:
+	if not is_casting:
+		return -1.0
+	var frame_count := float(_anim_frame_count("cast"))
+	if frame_count <= 0.01:
+		return 1.0
+	return clampf(cast_anim_time / frame_count, 0.0, 1.0)
 
 
 func _setup_breath_safe_indicator() -> void:

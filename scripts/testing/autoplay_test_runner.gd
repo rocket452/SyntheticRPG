@@ -41,6 +41,7 @@ var cacodemon_fireball_seen: bool = false
 var cacodemon_fireball_seen_time: float = -1.0
 var cacodemon_fireball_health_floor: float = -1.0
 var cacodemon_summon_setup_done: bool = false
+var cacodemon_summon_success_time: float = -1.0
 var cacodemon_player_hit_setup_done: bool = false
 var cacodemon_player_hit_start_time: float = -1.0
 var cacodemon_player_hit_health_floor: float = -1.0
@@ -82,6 +83,7 @@ func _ready() -> void:
 	cacodemon_fireball_seen_time = -1.0
 	cacodemon_fireball_health_floor = -1.0
 	cacodemon_summon_setup_done = false
+	cacodemon_summon_success_time = -1.0
 	cacodemon_player_hit_setup_done = false
 	cacodemon_player_hit_start_time = -1.0
 	cacodemon_player_hit_health_floor = -1.0
@@ -259,7 +261,7 @@ func _step_shadow_fear_scenario() -> void:
 			continue
 		if candidate.has_method("is_shadow_fear_active") and bool(candidate.call("is_shadow_fear_active")):
 			if autoplay_scenario == "shadow_fear_break":
-				candidate.receive_hit(1.0, player.global_position, 0.0, false)
+				candidate.receive_hit(1.0, player.global_position, 0.0, false, 1.0, player)
 				if not bool(candidate.call("is_shadow_fear_active")):
 					_finish(0, "shadow_fear_break")
 				return
@@ -712,6 +714,13 @@ func _step_cacodemon_summon_imps_scenario() -> void:
 		boss_enemy.boss_can_summon_minions = true
 		boss_enemy.boss_summon_count = 4
 		boss_enemy.boss_summon_cycle_left = 0.0
+		var summon_trigger_ratio := clampf(float(boss_enemy.get("cacodemon_summon_health_trigger_ratio")), 0.0, 1.0)
+		boss_enemy.current_health = minf(
+			boss_enemy.current_health,
+			maxf(1.0, boss_enemy.max_health * maxf(0.05, summon_trigger_ratio - 0.05))
+		)
+		if boss_enemy.has_method("_update_health_bar"):
+			boss_enemy.call("_update_health_bar")
 		cacodemon_summon_setup_done = true
 		_write_log("Cacodemon summon setup applied")
 
@@ -725,10 +734,14 @@ func _step_cacodemon_summon_imps_scenario() -> void:
 			continue
 		if candidate.monster_visual_profile == EnemyBase.MonsterVisualProfile.IMP:
 			imp_count += 1
-	if imp_count >= 1:
-		_write_log("Cacodemon summoned imps=%d" % imp_count)
-		_finish(0, "cacodemon_summon_imps")
-		return
+	var required_imp_count := maxi(1, int(boss_enemy.get("boss_summon_count")))
+	if imp_count >= required_imp_count:
+		if cacodemon_summon_success_time < 0.0:
+			cacodemon_summon_success_time = elapsed
+			_write_log("Cacodemon summoned imps=%d" % imp_count)
+		elif elapsed - cacodemon_summon_success_time >= 1.8:
+			_finish(0, "cacodemon_summon_imps")
+			return
 
 
 func _step_cacodemon_player_hit_scenario() -> void:
