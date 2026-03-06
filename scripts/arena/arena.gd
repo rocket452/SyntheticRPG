@@ -38,13 +38,18 @@ const IMP_SUMMON_PENTAGRAM_EFFECT_SCRIPT := preload("res://scripts/effects/imp_s
 @export var camera_limit_padding: Vector2 = Vector2(84.0, 60.0)
 @export var summoned_minion_edge_inset: float = 28.0
 @export var summoned_minion_y_spacing: float = 34.0
+@export var summoned_imp_spawn_distance_x: float = 88.0
+@export var summoned_imp_spawn_x_stagger: float = 18.0
 @export var summoned_minion_health_scale: float = 0.68
+@export var summoned_imp_health_multiplier: float = 0.75
 @export var summoned_minion_speed_scale: float = 0.9
 @export var summoned_minion_damage_scale: float = 0.82
+@export var summoned_imp_damage_multiplier: float = 0.5
 @export var summoned_minion_xp_scale: float = 0.35
 @export var miniboss_health_scale: float = 4.0
 @export var imp_summon_pentagram_enabled: bool = true
 @export var imp_summon_pentagram_y_offset: float = 12.0
+@export var summoned_imp_spawn_stagger: float = 0.04
 
 @onready var actors: Node2D = $Actors
 @onready var drops: Node2D = $Drops
@@ -114,6 +119,7 @@ func start_demo() -> void:
 	_spawn_player()
 	_spawn_friendly_healer()
 	_spawn_friendly_ratfolk()
+	_prewarm_imp_summon_effect_cache()
 	_spawn_regular_enemies()
 	_sync_hitbox_debug_mode()
 	_update_objective()
@@ -256,12 +262,10 @@ func _spawn_air_boss_encounter(visual_profile: int) -> void:
 	if is_instance_valid(player):
 		spawn_y = clampf(player.position.y, min_y + 10.0, max_y - 10.0)
 	var spawn_position := to_global(Vector2(spawn_x, spawn_y))
-	var enemy := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position)
+	var enemy := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position, visual_profile)
 	if enemy == null:
 		return
 	_configure_miniboss(enemy)
-	if enemy.has_method("set_monster_visual_profile"):
-		enemy.call("set_monster_visual_profile", visual_profile)
 	if visual_profile == int(EnemyBase.MonsterVisualProfile.CACODEMON):
 		enemy.boss_can_summon_minions = true
 		enemy.boss_summon_count = 4
@@ -340,11 +344,13 @@ func _get_arena_center_x() -> float:
 	return (minf(arena_min_x, arena_max_x) + maxf(arena_min_x, arena_max_x)) * 0.5
 
 
-func _spawn_enemy(scene: PackedScene, spawn_position: Vector2) -> EnemyBase:
+func _spawn_enemy(scene: PackedScene, spawn_position: Vector2, visual_profile_override: int = -1) -> EnemyBase:
 	var enemy := scene.instantiate() as EnemyBase
 	if enemy == null:
 		push_error("Failed to instantiate enemy scene: %s" % scene.resource_path)
 		return null
+	if visual_profile_override >= 0:
+		enemy.monster_visual_profile = visual_profile_override
 	actors.add_child(enemy)
 	enemy.global_position = spawn_position
 	_apply_hitbox_debug_to_node(enemy)
@@ -367,42 +373,97 @@ func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> 
 	var min_y := minf(arena_min_y, arena_max_y)
 	var max_y := maxf(arena_min_y, arena_max_y)
 	var source_local := to_local(source_enemy.global_position) if is_instance_valid(source_enemy) else Vector2.ZERO
+	var spawn_positions: Array[Vector2] = []
 	for i in range(total_to_spawn):
 		var spawn_on_left := spawn_next_debug_enemy_on_left
 		var spawn_x := (min_x + summoned_minion_edge_inset) if spawn_on_left else (max_x - summoned_minion_edge_inset)
+		if use_imp_profile and is_instance_valid(source_enemy):
+			var horizontal_slot_sign := -1.0 if (i % 2) == 0 else 1.0
+			var horizontal_layer := float(i / 2)
+			var imp_offset_x := maxf(12.0, summoned_imp_spawn_distance_x) + (horizontal_layer * maxf(0.0, summoned_imp_spawn_x_stagger))
+			spawn_x = clampf(
+				source_local.x + (horizontal_slot_sign * imp_offset_x),
+				min_x + summoned_minion_edge_inset,
+				max_x - summoned_minion_edge_inset
+			)
 		var y_offset := (float(i) - (float(total_to_spawn - 1) * 0.5)) * summoned_minion_y_spacing
 		var spawn_y := clampf(source_local.y + y_offset, min_y + 10.0, max_y - 10.0)
 		var spawn_position := to_global(Vector2(spawn_x, spawn_y))
-		if use_imp_profile:
-			_spawn_imp_summon_pentagram(spawn_position)
-		var minion := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position)
+		spawn_positions.append(spawn_position)
+		spawn_next_debug_enemy_on_left = not spawn_next_debug_enemy_on_left
+
+	if use_imp_profile:
+		var summon_delay := 0.0
+		for spawn_position in spawn_positions:
+			var effect := _spawn_imp_summon_pentagram(spawn_position)
+			if effect == null or not is_instance_valid(effect):
+				continue
+			if effect.has_method("get_expected_duration"):
+				var duration_variant: Variant = effect.call("get_expected_duration")
+				if duration_variant is float:
+					summon_delay = maxf(summon_delay, float(duration_variant))
+		if summon_delay > 0.0:
+			await get_tree().create_timer(summon_delay).timeout
+		if not demo_started:
+			return
+
+	var spawn_stagger := maxf(0.0, summoned_imp_spawn_stagger) if use_imp_profile else 0.0
+	for spawn_index in range(spawn_positions.size()):
+		var spawn_position := spawn_positions[spawn_index]
+		var minion_profile := int(EnemyBase.MonsterVisualProfile.IMP) if use_imp_profile else -1
+		var minion := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position, minion_profile)
 		if minion == null:
 			continue
-		if use_imp_profile and minion.has_method("set_monster_visual_profile"):
-			minion.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.IMP))
 		minion.is_miniboss = false
 		minion.use_single_phase_loop = false
 		minion.boss_can_summon_minions = false
 		minion.spin_attack_enabled = false
 		minion.prioritize_companion_targets = true
 		minion.max_health = maxf(10.0, minion.max_health * summoned_minion_health_scale)
+		if use_imp_profile:
+			minion.max_health = maxf(10.0, minion.max_health * maxf(0.0, summoned_imp_health_multiplier))
 		minion.current_health = minion.max_health
 		minion.move_speed = maxf(40.0, minion.move_speed * summoned_minion_speed_scale)
 		minion.attack_damage = maxf(1.0, minion.attack_damage * summoned_minion_damage_scale)
+		if use_imp_profile:
+			minion.attack_damage = maxf(1.0, minion.attack_damage * maxf(0.0, summoned_imp_damage_multiplier))
+		if use_imp_profile:
+			minion.pending_attack = false
+			minion.attack_windup_left = 0.0
+			minion.attack_prestrike_hold_left = 0.0
+			minion.attack_recovery_hold_left = 0.0
+			minion.attack_cooldown_left = maxf(minion.attack_cooldown_left, 0.45)
+			minion.velocity = Vector2.ZERO
+			if is_instance_valid(player):
+				var to_player := player.global_position - minion.global_position
+				if to_player.length_squared() > 0.0001:
+					var facing := to_player.normalized()
+					minion.external_sprite_facing_direction = facing
+					minion.committed_attack_facing_direction = facing
 		minion.xp_reward = maxi(1, int(round(float(minion.xp_reward) * summoned_minion_xp_scale)))
 		alive_regular_enemies += 1
-		spawn_next_debug_enemy_on_left = not spawn_next_debug_enemy_on_left
+		if spawn_stagger > 0.0 and spawn_index < (spawn_positions.size() - 1):
+			await get_tree().create_timer(spawn_stagger).timeout
 	_update_objective()
 
 
-func _spawn_imp_summon_pentagram(spawn_position: Vector2) -> void:
+func _spawn_imp_summon_pentagram(spawn_position: Vector2) -> Node2D:
 	if not imp_summon_pentagram_enabled:
-		return
+		return null
 	var effect := IMP_SUMMON_PENTAGRAM_EFFECT_SCRIPT.new() as Node2D
 	if effect == null:
-		return
+		return null
 	actors.add_child(effect)
 	effect.global_position = spawn_position + Vector2(0.0, imp_summon_pentagram_y_offset)
+	return effect
+
+
+func _prewarm_imp_summon_effect_cache() -> void:
+	if not imp_summon_pentagram_enabled:
+		return
+	if selected_encounter != EncounterType.CACODEMON and selected_encounter != EncounterType.SHARDSOUL:
+		return
+	ImpSummonPentagramEffect.warm_cache()
 
 
 func _on_enemy_breath_threat(active: bool, boss_pos: Vector2, dir: Vector2, time_remaining: float, source_enemy: EnemyBase) -> void:

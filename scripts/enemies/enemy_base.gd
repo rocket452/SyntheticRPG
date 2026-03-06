@@ -41,9 +41,12 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 	BossLoopState.VULNERABLE: "Vulnerable",
 	BossLoopState.SUMMON: "Summon"
 }
+const THREAT_EPSILON: float = 0.001
 
 # Pacing experiment knobs (slow-RPG cadence).
 @export var max_health: float = 240.0
+@export var global_enemy_health_multiplier: float = 0.5
+@export var global_enemy_damage_multiplier: float = 1.5
 @export var move_speed: float = 89.25
 @export var attack_damage: float = 12.0
 @export var attack_range: float = 46.0
@@ -98,7 +101,7 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var cacodemon_breath_half_width: float = 24.0
 @export var cacodemon_breath_telegraph_half_width_scale: float = 3.8
 @export var cacodemon_breath_block_fx_interval: float = 0.24
-@export var cacodemon_breath_block_stamina_drain_per_second: float = 18.0
+@export var cacodemon_breath_block_stamina_drain_per_second: float = 54.0
 @export var cacodemon_breath_hit_stun_scale: float = 0.45
 @export var cacodemon_breath_knockback_scale: float = 0.32
 @export var cacodemon_breath_pocket_back_offset: float = 58.0
@@ -120,6 +123,7 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var cacodemon_fireball_telegraph_width: float = 36.0
 @export var cacodemon_fireball_telegraph_alpha: float = 0.6
 @export var cacodemon_summon_cast_duration: float = 0.72
+@export var cacodemon_summon_health_trigger_ratio: float = 0.5
 @export var cacodemon_basic_attack_windup: float = 0.22
 @export var cacodemon_basic_attack_hold_duration: float = 0.12
 @export var cacodemon_basic_attack_hold_frame: int = 1
@@ -130,6 +134,8 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var boss_mark_warning_radius_y: float = 40.0
 @export var prioritize_companion_targets: bool = false
 @export var companion_target_refresh_interval: float = 0.18
+@export var tank_damage_threat_multiplier: float = 10.0
+@export var healing_threat_multiplier: float = 1.0
 @export var spin_attack_enabled: bool = true
 @export var spin_charge_duration: float = 2.0
 @export var spin_attack_duration: float = 1.35
@@ -182,6 +188,7 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var minotaur_hurtbox_y_offset: float = -6.0
 @export var cacodemon_hurtbox_radius: float = 36.0
 @export var cacodemon_hurtbox_y_offset: float = -26.0
+@export var imp_visual_scale_multiplier: float = 1.0
 
 const MONSTER_HD_HFRAMES: int = 10
 const MONSTER_HD_VFRAMES: int = 20
@@ -293,7 +300,7 @@ const SHARDSOUL_ACTION_FRAME_COUNTS: Dictionary = {
 }
 const IMP_ACTION_FRAME_COUNTS: Dictionary = {
 	"idle": 7,
-	"run": 8,
+	"run": 7,
 	"attack": 6,
 	"spin": 6,
 	"hurt": 4,
@@ -315,7 +322,7 @@ const SHARDSOUL_ACTION_FRAME_COLUMNS: Dictionary = {
 }
 const IMP_ACTION_FRAME_COLUMNS: Dictionary = {
 	"idle": [0, 1, 2, 3, 4, 5, 6],
-	"run": [0, 1, 2, 3, 4, 5, 6, 7],
+	"run": [0, 1, 2, 3, 4, 5, 6],
 	"attack": [0, 1, 2, 3, 4, 5],
 	"spin": [0, 1, 2, 3, 4, 5],
 	"hurt": [0, 1, 2, 3],
@@ -407,6 +414,7 @@ var boss_lunge_debug_logging_enabled: bool = false
 var boss_mark_cycle_left: float = 0.0
 var boss_summon_cycle_left: float = 0.0
 var companion_target_refresh_left: float = 0.0
+var threat_by_target_id: Dictionary = {}
 var boss_dps_mark_left: float = 0.0
 var cacodemon_breath_left: float = 0.0
 var cacodemon_breath_tick_left: float = 0.0
@@ -421,6 +429,7 @@ var cacodemon_fireball_pending_elapsed: float = 0.0
 var cacodemon_bite_hit_left: float = 0.0
 var cacodemon_bite_hit_pending: bool = false
 var cacodemon_runtime_elapsed: float = 0.0
+var cacodemon_health_summon_used: bool = false
 var shadow_fear_left: float = 0.0
 var shadow_fear_apply_count: int = 0
 var shadow_fear_vfx_time: float = 0.0
@@ -482,6 +491,8 @@ func _ready() -> void:
 	add_to_group("hitbox_debuggable")
 	if get_tree() != null and get_tree().has_meta("debug_hitbox_mode_enabled"):
 		hitbox_debug_enabled = bool(get_tree().get_meta("debug_hitbox_mode_enabled"))
+	max_health = maxf(1.0, max_health * clampf(global_enemy_health_multiplier, 0.0, 1000.0))
+	attack_damage = maxf(0.0, attack_damage * clampf(global_enemy_damage_multiplier, 0.0, 1000.0))
 	current_health = max_health
 	attack_cooldown_left = randf_range(0.1, attack_cooldown)
 	spin_attack_cooldown_left = randf_range(spin_attack_cooldown * 0.35, spin_attack_cooldown * 0.8)
@@ -534,6 +545,7 @@ func _ready() -> void:
 	cacodemon_breath_first_use_left = maxf(0.0, cacodemon_breath_first_use_delay)
 	cacodemon_fireball_first_use_left = maxf(0.0, cacodemon_fireball_first_use_delay)
 	cacodemon_runtime_elapsed = 0.0
+	cacodemon_health_summon_used = false
 	_reset_periodic_hurt_anim_cooldown()
 	_set_boss_loop_state(BossLoopState.IDLE, 0.0)
 
@@ -1366,9 +1378,7 @@ func _tick_cacodemon_fireball_loop(delta: float, to_player: Vector2) -> void:
 		attack_range + (basic_attack_hit_end_bonus * 0.65)
 	)
 	var in_range := distance_to_tank <= maxf(melee_trigger_range + 12.0, cacodemon_fireball_range)
-	var can_begin_summon := boss_can_summon_minions \
-		and boss_summon_count > 0 \
-		and boss_summon_cycle_left <= 0.0 \
+	var can_begin_summon := _can_trigger_cacodemon_health_summon() \
 		and not pending_attack \
 		and attack_anim_left <= 0.0 \
 		and attack_recovery_hold_left <= 0.0 \
@@ -1390,6 +1400,16 @@ func _tick_cacodemon_fireball_loop(delta: float, to_player: Vector2) -> void:
 		_tick_cacodemon_basic_pressure(aim_to_tank)
 		return
 	velocity = _compute_cacodemon_fireball_reposition_velocity(aim_to_tank)
+
+
+func _can_trigger_cacodemon_health_summon() -> bool:
+	if not boss_can_summon_minions or boss_summon_count <= 0:
+		return false
+	if cacodemon_health_summon_used:
+		return false
+	var trigger_ratio := clampf(cacodemon_summon_health_trigger_ratio, 0.0, 1.0)
+	var health_ratio := current_health / maxf(1.0, max_health)
+	return health_ratio <= (trigger_ratio + THREAT_EPSILON)
 
 
 func _start_cacodemon_breath_attack(direction_sign: float) -> void:
@@ -1424,6 +1444,7 @@ func _start_cacodemon_fireball_cast(direction_sign: float) -> void:
 
 func _begin_cacodemon_summon_cast(direction_sign: float) -> void:
 	_set_boss_loop_state(BossLoopState.SUMMON, maxf(0.12, cacodemon_summon_cast_duration))
+	cacodemon_health_summon_used = true
 	boss_summon_emitted = false
 	velocity = Vector2.ZERO
 	committed_attack_facing_direction = Vector2(direction_sign, 0.0)
@@ -2242,7 +2263,8 @@ func _is_friendly_target_alive(target: Node2D) -> bool:
 
 func _select_mark_target() -> Node2D:
 	var best_target: Node2D = null
-	var best_score := INF
+	var best_threat := -1.0
+	var best_distance_sq := INF
 	var best_id := INF
 	for node in get_tree().get_nodes_in_group("friendly_npcs"):
 		var candidate := node as Node2D
@@ -2252,10 +2274,15 @@ func _select_mark_target() -> Node2D:
 			continue
 		if not _is_mark_target_in_start_range(candidate):
 			continue
-		var score := candidate.global_position.distance_squared_to(global_position)
+		var threat_value := _get_threat_for_target(candidate)
+		var distance_sq := candidate.global_position.distance_squared_to(global_position)
 		var candidate_id := candidate.get_instance_id()
-		if score < best_score or (is_equal_approx(score, best_score) and candidate_id < best_id):
-			best_score = score
+		if best_target == null \
+			or threat_value > best_threat + THREAT_EPSILON \
+			or (is_equal_approx(threat_value, best_threat) and distance_sq < best_distance_sq - 0.01) \
+			or (is_equal_approx(threat_value, best_threat) and is_equal_approx(distance_sq, best_distance_sq) and candidate_id < best_id):
+			best_threat = threat_value
+			best_distance_sq = distance_sq
 			best_target = candidate
 			best_id = candidate_id
 	return best_target
@@ -2454,12 +2481,157 @@ func _update_health_bar() -> void:
 	health_bar_fill.visible = health_ratio > 0.0
 
 
+static func add_healing_threat_to_active_enemies(source_actor: Node2D, heal_amount: float) -> void:
+	if source_actor == null or not is_instance_valid(source_actor):
+		return
+	var applied_heal := maxf(0.0, heal_amount)
+	if applied_heal <= THREAT_EPSILON:
+		return
+	var tree := source_actor.get_tree()
+	if tree == null:
+		return
+	for node in tree.get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		enemy._register_healing_threat(source_actor, applied_heal)
+
+
+func _get_tank_player_target() -> Player:
+	var tank := get_tree().get_first_node_in_group("player") as Player
+	if tank == null or not is_instance_valid(tank) or tank.is_dead:
+		return null
+	return tank
+
+
+func _is_valid_threat_target(target: Node2D) -> bool:
+	if target == null or not is_instance_valid(target):
+		return false
+	if target.is_in_group("shadow_clones"):
+		return false
+	if target.has_method("is_shadow_clone_actor") and bool(target.call("is_shadow_clone_actor")):
+		return false
+	if not _is_friendly_target_alive(target):
+		return false
+	if not target.has_method("receive_hit"):
+		return false
+	var target_player := target as Player
+	var target_healer := target as FriendlyHealer
+	var target_ratfolk := target as FriendlyRatfolk
+	return target_player != null or target_healer != null or target_ratfolk != null
+
+
+func _get_friendly_threat_candidates() -> Array[Node2D]:
+	var targets: Array[Node2D] = []
+	var seen_ids: Dictionary = {}
+	var tank_target := _get_tank_player_target()
+	if tank_target != null and _is_valid_threat_target(tank_target):
+		var tank_id := tank_target.get_instance_id()
+		seen_ids[tank_id] = true
+		targets.append(tank_target)
+	for node in get_tree().get_nodes_in_group("friendly_npcs"):
+		var candidate := node as Node2D
+		if not _is_valid_threat_target(candidate):
+			continue
+		var candidate_id := candidate.get_instance_id()
+		if seen_ids.has(candidate_id):
+			continue
+		seen_ids[candidate_id] = true
+		targets.append(candidate)
+	return targets
+
+
+func _get_threat_for_target(target: Node2D) -> float:
+	if target == null or not is_instance_valid(target):
+		return 0.0
+	return maxf(0.0, float(threat_by_target_id.get(target.get_instance_id(), 0.0)))
+
+
+func _prune_threat_table() -> void:
+	if threat_by_target_id.is_empty():
+		return
+	var stale_keys: Array = []
+	for key in threat_by_target_id.keys():
+		var target_id := int(key)
+		var target_obj := instance_from_id(target_id)
+		var target_node := target_obj as Node2D
+		if not _is_valid_threat_target(target_node):
+			stale_keys.append(key)
+			continue
+		var threat_value := maxf(0.0, float(threat_by_target_id.get(key, 0.0)))
+		if threat_value <= THREAT_EPSILON:
+			stale_keys.append(key)
+	for stale_key in stale_keys:
+		threat_by_target_id.erase(stale_key)
+
+
+func _select_highest_threat_target() -> Node2D:
+	var candidates := _get_friendly_threat_candidates()
+	var best_target: Node2D = null
+	var best_threat := 0.0
+	var best_distance_sq := INF
+	var best_id := INF
+	for candidate in candidates:
+		var threat_value := _get_threat_for_target(candidate)
+		if threat_value <= THREAT_EPSILON:
+			continue
+		var distance_sq := candidate.global_position.distance_squared_to(global_position)
+		var candidate_id := candidate.get_instance_id()
+		if best_target == null \
+			or threat_value > best_threat + THREAT_EPSILON \
+			or (is_equal_approx(threat_value, best_threat) and distance_sq < best_distance_sq - 0.01) \
+			or (is_equal_approx(threat_value, best_threat) and is_equal_approx(distance_sq, best_distance_sq) and candidate_id < best_id):
+			best_target = candidate
+			best_threat = threat_value
+			best_distance_sq = distance_sq
+			best_id = candidate_id
+	return best_target
+
+
+func _resolve_damage_threat_source(source_actor: Node2D, source_position: Vector2) -> Node2D:
+	if _is_valid_threat_target(source_actor):
+		return source_actor
+	var best_target: Node2D = null
+	var best_distance_sq := INF
+	for candidate in _get_friendly_threat_candidates():
+		var distance_sq := candidate.global_position.distance_squared_to(source_position)
+		if best_target == null or distance_sq < best_distance_sq:
+			best_target = candidate
+			best_distance_sq = distance_sq
+	return best_target
+
+
+func _add_threat_for_target(source_actor: Node2D, amount: float) -> void:
+	if not _is_valid_threat_target(source_actor):
+		return
+	var threat_to_add := maxf(0.0, amount)
+	if threat_to_add <= THREAT_EPSILON:
+		return
+	var target_id := source_actor.get_instance_id()
+	var current_threat := maxf(0.0, float(threat_by_target_id.get(target_id, 0.0)))
+	threat_by_target_id[target_id] = current_threat + threat_to_add
+
+
+func _register_damage_threat(source_actor: Node2D, damage_amount: float) -> void:
+	var threat_amount := maxf(0.0, damage_amount)
+	if threat_amount <= THREAT_EPSILON:
+		return
+	if source_actor is Player:
+		threat_amount *= maxf(1.0, tank_damage_threat_multiplier)
+	_add_threat_for_target(source_actor, threat_amount)
+
+
+func _register_healing_threat(source_actor: Node2D, heal_amount: float) -> void:
+	var threat_amount := maxf(0.0, heal_amount) * maxf(0.0, healing_threat_multiplier)
+	_add_threat_for_target(source_actor, threat_amount)
+
+
 func _reacquire_player() -> void:
-	var next_target: Node2D = null
-	if prioritize_companion_targets:
-		next_target = _find_priority_companion_target()
+	_prune_threat_table()
+	var highest_threat_target := _select_highest_threat_target()
+	var next_target: Node2D = highest_threat_target
 	if next_target == null:
-		next_target = get_tree().get_first_node_in_group("player") as Node2D
+		next_target = _get_tank_player_target()
 	player = next_target
 
 
@@ -2621,7 +2793,7 @@ func _perform_spin_attack_hit() -> void:
 			attack_flash_left = maxf(attack_flash_left, 0.08)
 
 
-func receive_hit(amount: float, source_position: Vector2, stun_duration: float = 0.0, apply_hit_stun: bool = true, knockback_scale: float = 1.0) -> bool:
+func receive_hit(amount: float, source_position: Vector2, stun_duration: float = 0.0, apply_hit_stun: bool = true, knockback_scale: float = 1.0, source_actor: Node2D = null) -> bool:
 	if dead:
 		return false
 	if shadow_fear_left > 0.0 and amount > 0.0:
@@ -2653,6 +2825,8 @@ func receive_hit(amount: float, source_position: Vector2, stun_duration: float =
 		knockback_velocity = knockback_direction * (hit_knockback_speed * maxf(0.1, knockback_scale))
 
 	current_health = maxf(0.0, current_health - damage_to_apply)
+	var resolved_threat_source := _resolve_damage_threat_source(source_actor, source_position)
+	_register_damage_threat(resolved_threat_source, damage_to_apply)
 	hit_flash_left = 0.12
 	var applied_stun := 0.0
 	if _is_cacodemon_visual_profile() and cacodemon_combat_lock:
@@ -2865,28 +3039,7 @@ func _query_friendly_hits_for_spin() -> Array[Node2D]:
 
 
 func _get_attackable_friendly_targets() -> Array[Node2D]:
-	var targets: Array[Node2D] = []
-	if not is_instance_valid(player):
-		_reacquire_player()
-	var player_target := player as Node2D
-	if player_target != null and is_instance_valid(player_target) and _is_friendly_target_alive(player_target) and player_target.has_method("receive_hit"):
-		targets.append(player_target)
-	for node in get_tree().get_nodes_in_group("friendly_npcs"):
-		var target := node as Node2D
-		if target == null or not is_instance_valid(target):
-			continue
-		if not _is_friendly_target_alive(target):
-			continue
-		if target == player_target:
-			continue
-		if target.is_in_group("shadow_clones"):
-			continue
-		if target.has_method("is_shadow_clone_actor") and bool(target.call("is_shadow_clone_actor")):
-			continue
-		if not target.has_method("receive_hit"):
-			continue
-		targets.append(target)
-	return targets
+	return _get_friendly_threat_candidates()
 
 
 func _spawn_hit_effect(world_position: Vector2, effect_color: Color, effect_size: float) -> void:
@@ -3109,6 +3262,8 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	else:
 		monster_sprite.rotation = 0.0
 		var non_cacodemon_scale := monster_sprite_default_scale
+		if _is_imp_visual_profile():
+			non_cacodemon_scale *= maxf(0.1, imp_visual_scale_multiplier)
 		if non_cacodemon_scale == Vector2.ZERO:
 			non_cacodemon_scale = Vector2.ONE
 		monster_sprite.scale = monster_sprite.scale.lerp(non_cacodemon_scale, clampf(delta * 14.0, 0.0, 1.0))
@@ -3243,11 +3398,29 @@ func _apply_monster_visual_profile() -> void:
 		monster_sprite.scale = monster_sprite_default_scale
 	elif _is_imp_visual_profile():
 		monster_sprite_base_position = monster_sprite_default_position + Vector2(0.0, -4.0)
-		monster_sprite.scale = monster_sprite_default_scale * 1.7
+		monster_sprite.scale = monster_sprite_default_scale * maxf(0.1, imp_visual_scale_multiplier)
 	else:
 		monster_sprite_base_position = monster_sprite_default_position
 		monster_sprite.scale = monster_sprite_default_scale
 	monster_sprite.position = monster_sprite_base_position
+	_sync_monster_sprite_to_profile("idle")
+
+
+func _sync_monster_sprite_to_profile(action_key: String = "idle") -> void:
+	if not using_external_monster_sprite or monster_sprite == null or not is_instance_valid(monster_sprite):
+		return
+	var sheet := _get_active_monster_sheet(action_key)
+	if sheet != null:
+		monster_sprite.texture = sheet
+	monster_sprite.hframes = maxi(1, _get_active_monster_hframes())
+	monster_sprite.vframes = maxi(1, _get_active_monster_vframes())
+	var row := clampi(_get_active_monster_action_row(action_key), 0, max(0, monster_sprite.vframes - 1))
+	var frame_columns: Array = _get_active_monster_action_frame_columns(action_key)
+	var col := int(frame_columns[0]) if not frame_columns.is_empty() else 0
+	col = clampi(col, 0, max(0, monster_sprite.hframes - 1))
+	monster_sprite.frame_coords = Vector2i(col, row)
+	if _is_imp_visual_profile():
+		monster_sprite.flip_h = false
 
 
 func _cache_collision_shape_defaults() -> void:

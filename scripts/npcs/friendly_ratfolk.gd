@@ -25,7 +25,7 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 }
 
 # Pacing experiment knobs (slow-RPG cadence).
-@export var max_health: float = 86.0
+@export var max_health: float = 43.0
 @export var move_speed: float = 127.5
 @export var breath_stack_move_speed_multiplier: float = 1.75
 @export var use_player_like_movement: bool = true
@@ -36,8 +36,8 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var attack_range: float = 82.0
 @export var attack_arc_degrees: float = 95.0
 @export var attack_depth_tolerance: float = 58.0
-@export var preferred_attack_spacing: float = 48.0
-@export var preferred_attack_spacing_tolerance: float = 8.0
+@export var preferred_attack_spacing: float = 66.0
+@export var preferred_attack_spacing_tolerance: float = 6.0
 @export var attack_range_indicator_duration: float = 0.14
 @export var attack_range_indicator_width: float = 2.6
 @export var run_anim_start_speed: float = 28.0
@@ -69,6 +69,9 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var health_bar_width: float = 56.0
 @export var health_bar_thickness: float = 5.0
 @export var health_bar_y_offset: float = -62.0
+@export var cast_bar_width: float = 52.0
+@export var cast_bar_thickness: float = 3.0
+@export var cast_bar_vertical_offset: float = 8.0
 @export var hit_effect_duration: float = 0.12
 @export var shadow_fear_enabled: bool = true
 @export var shadow_fear_duration: float = 5.0
@@ -144,6 +147,7 @@ var attack_recovery_left: float = 0.0
 var attack_cooldown_left: float = 0.0
 var shadow_fear_cooldown_left: float = 0.0
 var shadow_fear_pending_left: float = -1.0
+var shadow_fear_pending_total: float = 0.0
 var shadow_clone_cast_left: float = 0.0
 var shadow_clone_cast_active: bool = false
 var shadow_clone_cooldown_left: float = 0.0
@@ -173,6 +177,8 @@ var dps_ai_decision_left: float = 0.0
 var health_bar_root: Node2D = null
 var health_bar_background: Line2D = null
 var health_bar_fill: Line2D = null
+var cast_bar_background: Line2D = null
+var cast_bar_fill: Line2D = null
 var ratfolk_sheet_texture: Texture2D = null
 var ratfolk_scene_cache: PackedScene = null
 var shadow_fear_projectile_scene_cache: PackedScene = null
@@ -213,6 +219,7 @@ func _ready() -> void:
 	attack_cooldown_left = attack_cooldown * 0.35
 	shadow_fear_cooldown_left = 0.0
 	shadow_fear_pending_left = -1.0
+	shadow_fear_pending_total = 0.0
 	tracked_enemy_ids.clear()
 	shadow_fear_focus_target = null
 	shadow_fear_resume_target = null
@@ -245,6 +252,7 @@ func setup_as_shadow_clone(owner_player: Player = null) -> void:
 	shadow_fear_enabled = false
 	shadow_fear_cooldown_left = 0.0
 	shadow_fear_pending_left = -1.0
+	shadow_fear_pending_total = 0.0
 	tracked_enemy_ids.clear()
 	shadow_fear_focus_target = null
 	shadow_fear_resume_target = null
@@ -803,8 +811,11 @@ func _compute_reposition_velocity(enemy: EnemyBase, to_enemy: Vector2, distance_
 	return orbit_direction.normalized() * move_speed * 0.34
 
 
-func _compute_attack_hold_spacing_velocity(enemy: EnemyBase) -> Vector2:
-	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+func _compute_attack_hold_spacing_velocity(enemy_candidate) -> Vector2:
+	var enemy := _coerce_enemy_base(enemy_candidate)
+	if enemy == null or enemy.dead:
+		if target_enemy != null and not is_instance_valid(target_enemy):
+			target_enemy = null
 		return Vector2.ZERO
 	var to_enemy := enemy.global_position - global_position
 	var distance_to_enemy := to_enemy.length()
@@ -952,7 +963,9 @@ func _update_shadow_fear_trigger() -> void:
 	shadow_fear_focus_target = newest_enemy
 	shadow_fear_resume_target = _select_shadow_fear_resume_target(newest_enemy)
 	shadow_fear_focus_requires_close = focus_requires_close
-	shadow_fear_pending_left = _roll_shadow_fear_delay()
+	var pending_delay := _roll_shadow_fear_delay()
+	shadow_fear_pending_left = pending_delay
+	shadow_fear_pending_total = maxf(0.01, pending_delay)
 	attack_windup_left = 0.0
 	attack_recovery_left = 0.0
 	if backstab_dash_left > 0.0:
@@ -1029,14 +1042,23 @@ func _try_cast_shadow_fear() -> bool:
 	return true
 
 
-func _is_valid_shadow_fear_resume_target(enemy: EnemyBase) -> bool:
-	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+func _is_valid_shadow_fear_resume_target(enemy) -> bool:
+	var enemy_base := _coerce_enemy_base(enemy)
+	if enemy_base == null or enemy_base.dead:
 		return false
-	if enemy == shadow_fear_focus_target:
+	if enemy_base == shadow_fear_focus_target:
 		return false
-	if _is_enemy_shadow_feared(enemy):
+	if _is_enemy_shadow_feared(enemy_base):
 		return false
 	return true
+
+
+func _coerce_enemy_base(candidate) -> EnemyBase:
+	if candidate == null or not is_instance_valid(candidate):
+		return null
+	if not (candidate is EnemyBase):
+		return null
+	return candidate as EnemyBase
 
 
 func _select_shadow_fear_resume_target(new_enemy: EnemyBase) -> EnemyBase:
@@ -1494,7 +1516,7 @@ func _perform_attack() -> void:
 			continue
 		if not enemy.has_method("receive_hit"):
 			continue
-		var landed := bool(enemy.call("receive_hit", attack_damage, global_position, outgoing_hit_stun_duration, true, attack_knockback_scale))
+		var landed := bool(enemy.call("receive_hit", attack_damage, global_position, outgoing_hit_stun_duration, true, attack_knockback_scale, self))
 		if landed:
 			hit_any = true
 			if enemy.has_method("apply_hitstop"):
@@ -1760,6 +1782,22 @@ func _setup_health_bar() -> void:
 	health_bar_fill.end_cap_mode = Line2D.LINE_CAP_ROUND
 	health_bar_root.add_child(health_bar_fill)
 
+	cast_bar_background = Line2D.new()
+	cast_bar_background.default_color = Color(0.08, 0.08, 0.08, 0.88)
+	cast_bar_background.width = maxf(1.0, cast_bar_thickness)
+	cast_bar_background.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	cast_bar_background.end_cap_mode = Line2D.LINE_CAP_ROUND
+	cast_bar_background.visible = false
+	health_bar_root.add_child(cast_bar_background)
+
+	cast_bar_fill = Line2D.new()
+	cast_bar_fill.default_color = Color(0.68, 0.42, 0.94, 0.95)
+	cast_bar_fill.width = maxf(1.0, cast_bar_thickness - 1.0)
+	cast_bar_fill.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	cast_bar_fill.end_cap_mode = Line2D.LINE_CAP_ROUND
+	cast_bar_fill.visible = false
+	health_bar_root.add_child(cast_bar_fill)
+
 
 func _update_health_bar() -> void:
 	if not is_instance_valid(health_bar_root):
@@ -1773,6 +1811,33 @@ func _update_health_bar() -> void:
 	var fill_x := lerpf(bar_start.x, bar_end.x, health_ratio)
 	health_bar_fill.points = PackedVector2Array([bar_start, Vector2(fill_x, 0.0)])
 	health_bar_fill.visible = health_ratio > 0.0
+
+	if not is_instance_valid(cast_bar_background) or not is_instance_valid(cast_bar_fill):
+		return
+	var cast_half_width := cast_bar_width * 0.5
+	var cast_start := Vector2(-cast_half_width, -cast_bar_vertical_offset)
+	var cast_end := Vector2(cast_half_width, -cast_bar_vertical_offset)
+	cast_bar_background.points = PackedVector2Array([cast_start, cast_end])
+	var cast_ratio := _get_cast_progress_ratio()
+	var show_cast := cast_ratio >= 0.0
+	cast_bar_background.visible = show_cast
+	if show_cast:
+		var cast_fill_x := lerpf(cast_start.x, cast_end.x, cast_ratio)
+		cast_bar_fill.points = PackedVector2Array([cast_start, Vector2(cast_fill_x, cast_start.y)])
+		cast_bar_fill.visible = cast_ratio > 0.0
+	else:
+		cast_bar_fill.visible = false
+
+
+func _get_cast_progress_ratio() -> float:
+	if shadow_clone_cast_active and shadow_clone_cast_duration > 0.01:
+		return clampf(1.0 - (shadow_clone_cast_left / shadow_clone_cast_duration), 0.0, 1.0)
+	var has_pending_shadow_fear := shadow_fear_pending_left >= 0.0 and shadow_fear_focus_target != null and is_instance_valid(shadow_fear_focus_target) and not shadow_fear_focus_target.dead
+	if has_pending_shadow_fear:
+		if shadow_fear_pending_total <= 0.01:
+			return 1.0
+		return clampf(1.0 - (shadow_fear_pending_left / shadow_fear_pending_total), 0.0, 1.0)
+	return -1.0
 
 
 func _setup_breath_safe_indicator() -> void:
