@@ -359,6 +359,13 @@ var health_bar_fill: Line2D = null
 var block_stamina_bar_background: Line2D = null
 var block_stamina_bar_fill: Line2D = null
 var damage_popup_sequence: int = 0
+var hitbox_debug_enabled: bool = false
+var hitbox_debug_overlay_root: Node2D = null
+var hitbox_debug_hurtbox_ring: Line2D = null
+var hitbox_debug_hurtbox_cross_h: Line2D = null
+var hitbox_debug_hurtbox_cross_v: Line2D = null
+var hitbox_debug_shield_ring: Line2D = null
+var hitbox_debug_shield_box: Line2D = null
 
 @onready var shadow_visual: Polygon2D = $Shadow
 @onready var body_visual: Polygon2D = $Body
@@ -392,10 +399,14 @@ var damage_popup_sequence: int = 0
 @onready var attack_telegraph: Polygon2D = $AttackTelegraph
 @onready var character_sprite: Sprite2D = $CharacterSprite
 @onready var camera_2d: Camera2D = $Camera2D
+@onready var collision_shape: CollisionShape2D = get_node_or_null("CollisionShape2D") as CollisionShape2D
 
 
 func _ready() -> void:
 	add_to_group("player")
+	add_to_group("hitbox_debuggable")
+	if get_tree() != null and get_tree().has_meta("debug_hitbox_mode_enabled"):
+		hitbox_debug_enabled = bool(get_tree().get_meta("debug_hitbox_mode_enabled"))
 	current_health = max_health
 	current_block_stamina = block_stamina_max
 	camera_base_offset = camera_2d.offset if is_instance_valid(camera_2d) else Vector2.ZERO
@@ -452,12 +463,14 @@ func _ready() -> void:
 	block_indicator.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	block_indicator.end_cap_mode = Line2D.LINE_CAP_ROUND
 	_setup_block_shield_effect_sprite()
+	_setup_hitbox_debug_overlay()
 	_setup_health_bar()
 	_update_health_bar()
 	emit_initial_state()
 
 
 func _physics_process(delta: float) -> void:
+	_request_hitbox_debug_redraw()
 	if is_dead:
 		return
 
@@ -485,6 +498,17 @@ func _physics_process(delta: float) -> void:
 	_collect_nearby_pickups()
 	_update_visual_feedback(delta)
 	_emit_cooldown_state()
+
+
+func _exit_tree() -> void:
+	if hitbox_debug_overlay_root != null and is_instance_valid(hitbox_debug_overlay_root):
+		hitbox_debug_overlay_root.queue_free()
+	hitbox_debug_overlay_root = null
+	hitbox_debug_hurtbox_ring = null
+	hitbox_debug_hurtbox_cross_h = null
+	hitbox_debug_hurtbox_cross_v = null
+	hitbox_debug_shield_ring = null
+	hitbox_debug_shield_box = null
 
 
 func emit_initial_state() -> void:
@@ -2050,7 +2074,7 @@ func _get_block_shield_facing_sign() -> float:
 
 
 func get_block_shield_center_local() -> Vector2:
-	return Vector2(_get_block_shield_facing_sign() * block_shield_forward_offset, block_shield_y_offset)
+	return get_block_shield_visual_center_local()
 
 
 func get_block_shield_visual_center_local() -> Vector2:
@@ -2079,6 +2103,201 @@ func orient_block_toward(world_source: Vector2) -> void:
 func toggle_debug_auto_block() -> bool:
 	debug_auto_block_enabled = not debug_auto_block_enabled
 	return debug_auto_block_enabled
+
+
+func set_hitbox_debug_enabled(enabled: bool) -> void:
+	var next_enabled := bool(enabled)
+	if hitbox_debug_enabled == next_enabled:
+		return
+	hitbox_debug_enabled = next_enabled
+	_update_hitbox_debug_overlay()
+	queue_redraw()
+
+
+func _request_hitbox_debug_redraw() -> void:
+	_update_hitbox_debug_overlay()
+	if hitbox_debug_enabled:
+		queue_redraw()
+
+
+func _draw() -> void:
+	if not hitbox_debug_enabled:
+		return
+	_draw_hurtbox_debug()
+	_draw_attack_debug()
+	_draw_block_shield_debug()
+
+
+func _draw_hurtbox_debug() -> void:
+	if collision_shape == null or not is_instance_valid(collision_shape):
+		return
+	var circle := collision_shape.shape as CircleShape2D
+	if circle == null:
+		return
+	var center := to_local(collision_shape.global_position)
+	var radius_scale := maxf(absf(collision_shape.global_scale.x), absf(collision_shape.global_scale.y))
+	var radius := maxf(4.0, circle.radius * maxf(0.01, radius_scale))
+	draw_circle(center, radius, Color(0.2, 1.0, 1.0, 0.14))
+	draw_arc(center, radius, 0.0, TAU, 36, Color(0.2, 1.0, 1.0, 0.92), 2.0, true)
+
+
+func _draw_attack_debug() -> void:
+	var facing := facing_direction.normalized()
+	if facing.length_squared() <= 0.0001:
+		facing = Vector2.RIGHT
+	var direction := facing
+	var attack_range := basic_attack_range
+	var attack_arc := basic_attack_arc_degrees
+	var fill_color := Color(1.0, 0.68, 0.18, 0.13)
+	var outline_color := Color(1.0, 0.82, 0.42, 0.95)
+	if is_charging_attack:
+		var charge_ratio := _get_scaled_charge_ratio()
+		attack_range = basic_attack_range + (charge_range_bonus * charge_ratio)
+		attack_arc = basic_attack_arc_degrees + (charge_arc_bonus * charge_ratio)
+		direction = _resolve_charge_release_direction()
+		fill_color = Color(1.0, 0.42, 0.22, 0.18)
+		outline_color = Color(1.0, 0.52, 0.32, 0.96)
+	elif charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0 or charge_attack_recovery_left > 0.0:
+		attack_range = maxf(attack_range, charge_attack_range)
+		attack_arc = maxf(attack_arc, charge_attack_arc)
+		direction = charge_release_direction if charge_release_direction.length_squared() > 0.0001 else direction
+		fill_color = Color(1.0, 0.34, 0.2, 0.2)
+		outline_color = Color(1.0, 0.48, 0.32, 0.96)
+	if direction.length_squared() <= 0.0001:
+		direction = facing
+	var cone := _build_arc_polygon(maxf(8.0, attack_range), clampf(attack_arc, 5.0, 179.0), 28)
+	var rotated_cone := PackedVector2Array()
+	var rotation_angle := direction.angle()
+	for point in cone:
+		rotated_cone.append(point.rotated(rotation_angle))
+	draw_colored_polygon(rotated_cone, fill_color)
+	draw_polyline(rotated_cone, outline_color, 2.0, true)
+
+
+func _draw_block_shield_debug() -> void:
+	var half_extents := get_block_shield_half_extents()
+	var center := get_block_shield_center_local()
+	var shield_points := PackedVector2Array()
+	var segments := maxi(16, block_shield_segments)
+	for i in range(segments):
+		var t := (TAU * float(i)) / float(segments)
+		shield_points.append(center + Vector2(cos(t) * half_extents.x, sin(t) * half_extents.y))
+	draw_colored_polygon(shield_points, Color(0.36, 0.88, 1.0, 0.12))
+	draw_polyline(shield_points, Color(0.54, 0.94, 1.0, 0.92), 2.0, true)
+
+
+func _setup_hitbox_debug_overlay() -> void:
+	if hitbox_debug_overlay_root != null and is_instance_valid(hitbox_debug_overlay_root):
+		return
+	var root := Node2D.new()
+	root.name = "HitboxDebugOverlay"
+	root.top_level = true
+	root.z_index = 420
+	root.visible = false
+	add_child(root)
+	hitbox_debug_overlay_root = root
+
+	var ring := Line2D.new()
+	ring.default_color = Color(0.16, 1.0, 1.0, 0.98)
+	ring.width = 2.4
+	ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	ring.end_cap_mode = Line2D.LINE_CAP_ROUND
+	ring.closed = true
+	ring.round_precision = 8
+	root.add_child(ring)
+	hitbox_debug_hurtbox_ring = ring
+
+	var cross_h := Line2D.new()
+	cross_h.default_color = Color(0.74, 1.0, 1.0, 0.95)
+	cross_h.width = 1.8
+	cross_h.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	cross_h.end_cap_mode = Line2D.LINE_CAP_ROUND
+	root.add_child(cross_h)
+	hitbox_debug_hurtbox_cross_h = cross_h
+
+	var cross_v := Line2D.new()
+	cross_v.default_color = Color(0.74, 1.0, 1.0, 0.95)
+	cross_v.width = 1.8
+	cross_v.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	cross_v.end_cap_mode = Line2D.LINE_CAP_ROUND
+	root.add_child(cross_v)
+	hitbox_debug_hurtbox_cross_v = cross_v
+
+	var shield_ring := Line2D.new()
+	shield_ring.default_color = Color(0.34, 0.9, 1.0, 0.98)
+	shield_ring.width = 2.2
+	shield_ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	shield_ring.end_cap_mode = Line2D.LINE_CAP_ROUND
+	shield_ring.closed = true
+	shield_ring.round_precision = 8
+	shield_ring.visible = false
+	root.add_child(shield_ring)
+	hitbox_debug_shield_ring = shield_ring
+
+	var shield_box := Line2D.new()
+	shield_box.default_color = Color(1.0, 0.32, 0.26, 0.98)
+	shield_box.width = 1.8
+	shield_box.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	shield_box.end_cap_mode = Line2D.LINE_CAP_ROUND
+	shield_box.closed = true
+	shield_box.round_precision = 2
+	shield_box.visible = false
+	root.add_child(shield_box)
+	hitbox_debug_shield_box = shield_box
+
+
+func _update_hitbox_debug_overlay() -> void:
+	if hitbox_debug_overlay_root == null or not is_instance_valid(hitbox_debug_overlay_root):
+		return
+	var visible := hitbox_debug_enabled and collision_shape != null and is_instance_valid(collision_shape)
+	hitbox_debug_overlay_root.visible = visible
+	if not visible:
+		return
+	var circle := collision_shape.shape as CircleShape2D
+	if circle == null:
+		hitbox_debug_overlay_root.visible = false
+		return
+	var radius_scale := maxf(absf(collision_shape.global_scale.x), absf(collision_shape.global_scale.y))
+	var radius := maxf(4.0, circle.radius * maxf(0.01, radius_scale))
+	hitbox_debug_overlay_root.global_position = collision_shape.global_position
+	if hitbox_debug_hurtbox_ring != null and is_instance_valid(hitbox_debug_hurtbox_ring):
+		hitbox_debug_hurtbox_ring.points = _build_circle_line_points(Vector2.ZERO, radius, 30)
+	if hitbox_debug_hurtbox_cross_h != null and is_instance_valid(hitbox_debug_hurtbox_cross_h):
+		hitbox_debug_hurtbox_cross_h.points = PackedVector2Array([Vector2(-radius, 0.0), Vector2(radius, 0.0)])
+	if hitbox_debug_hurtbox_cross_v != null and is_instance_valid(hitbox_debug_hurtbox_cross_v):
+		hitbox_debug_hurtbox_cross_v.points = PackedVector2Array([Vector2(0.0, -radius), Vector2(0.0, radius)])
+	var shield_active := is_block_shield_active()
+	if hitbox_debug_shield_ring != null and is_instance_valid(hitbox_debug_shield_ring):
+		hitbox_debug_shield_ring.visible = shield_active
+	if hitbox_debug_shield_box != null and is_instance_valid(hitbox_debug_shield_box):
+		hitbox_debug_shield_box.visible = shield_active
+	if not shield_active:
+		return
+	var shield_center := get_block_shield_center_global()
+	var local_shield_center := shield_center - hitbox_debug_overlay_root.global_position
+	var half_extents := get_block_shield_half_extents()
+	if hitbox_debug_shield_ring != null and is_instance_valid(hitbox_debug_shield_ring):
+		hitbox_debug_shield_ring.points = _build_ellipse_line_points(local_shield_center, half_extents, 28)
+	if hitbox_debug_shield_box != null and is_instance_valid(hitbox_debug_shield_box):
+		var hx := maxf(1.0, half_extents.x)
+		var hy := maxf(1.0, half_extents.y)
+		hitbox_debug_shield_box.points = PackedVector2Array([
+			local_shield_center + Vector2(-hx, -hy),
+			local_shield_center + Vector2(hx, -hy),
+			local_shield_center + Vector2(hx, hy),
+			local_shield_center + Vector2(-hx, hy)
+		])
+
+
+func _build_ellipse_line_points(center: Vector2, half_extents: Vector2, segments: int) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	var safe_segments := maxi(10, segments)
+	var half_width := maxf(1.0, half_extents.x)
+	var half_height := maxf(1.0, half_extents.y)
+	for i in range(safe_segments):
+		var angle := (TAU * float(i)) / float(safe_segments)
+		points.append(center + Vector2(cos(angle) * half_width, sin(angle) * half_height))
+	return points
 
 
 func _is_point_inside_block_shield_ellipse(world_point: Vector2, half_extents: Vector2) -> bool:

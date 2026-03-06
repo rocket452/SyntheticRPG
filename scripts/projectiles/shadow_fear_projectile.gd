@@ -26,6 +26,7 @@ var projectile_sprite_base_scale: Vector2 = Vector2.ONE
 var projectile_sprite_base_modulate: Color = Color.WHITE
 var projectile_glow_base_scale: Vector2 = Vector2.ONE
 var projectile_glow_base_modulate: Color = Color.WHITE
+var hitbox_debug_enabled: bool = false
 
 @onready var trail: Line2D = $Trail
 @onready var halo: Polygon2D = $Halo
@@ -48,6 +49,10 @@ func setup(source_rat: FriendlyRatfolk, start_position: Vector2, direction_sign:
 
 
 func _ready() -> void:
+	add_to_group("shadow_fear_projectiles")
+	add_to_group("hitbox_debuggable")
+	if get_tree() != null and get_tree().has_meta("debug_hitbox_mode_enabled"):
+		hitbox_debug_enabled = bool(get_tree().get_meta("debug_hitbox_mode_enabled"))
 	var projectile_frames := _get_projectile_frames()
 	if projectile_sprite != null:
 		if projectile_sprite.sprite_frames == null:
@@ -69,6 +74,8 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if hitbox_debug_enabled:
+		queue_redraw()
 	if launch_hold_left > 0.0:
 		launch_hold_left = maxf(0.0, launch_hold_left - maxf(0.0, delta))
 		_update_visuals(delta)
@@ -83,6 +90,22 @@ func _physics_process(delta: float) -> void:
 		return
 	if traveled_distance >= max_travel_distance:
 		queue_free()
+
+
+func set_hitbox_debug_enabled(enabled: bool) -> void:
+	var next_enabled := bool(enabled)
+	if hitbox_debug_enabled == next_enabled:
+		return
+	hitbox_debug_enabled = next_enabled
+	queue_redraw()
+
+
+func _draw() -> void:
+	if not hitbox_debug_enabled:
+		return
+	var radius := maxf(6.0, hit_radius)
+	draw_circle(Vector2.ZERO, radius, Color(0.62, 0.4, 1.0, 0.15))
+	draw_arc(Vector2.ZERO, radius, 0.0, TAU, 24, Color(0.78, 0.54, 1.0, 0.96), 2.0, true)
 
 
 func _refresh_visual_orientation() -> void:

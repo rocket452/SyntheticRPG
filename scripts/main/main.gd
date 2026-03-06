@@ -57,6 +57,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			hud.show_status_message("Auto-block %s" % ("ON" if auto_block_enabled else "OFF"), 0.9)
 			get_viewport().set_input_as_handled()
 		return
+	if key_event.keycode == KEY_F10:
+		if is_instance_valid(arena):
+			var hitbox_debug_enabled := arena.toggle_hitbox_debug_mode()
+			hud.show_status_message("Hit/Hurtbox Debug %s" % ("ON" if hitbox_debug_enabled else "OFF"), 1.0)
+			get_viewport().set_input_as_handled()
+		return
 	if key_event.keycode != KEY_8 and key_event.keycode != KEY_KP_8:
 		return
 	if is_instance_valid(arena):

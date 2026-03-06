@@ -185,9 +185,11 @@ var breath_threat_snapshot: Dictionary = {}
 var breath_safe_indicator_left: float = 0.0
 var breath_safe_indicator: Line2D = null
 var breath_was_safe: bool = false
+var hitbox_debug_enabled: bool = false
 var rng := RandomNumberGenerator.new()
 
 @onready var sprite: Sprite2D = $Sprite2D
+@onready var collision_shape: CollisionShape2D = get_node_or_null("CollisionShape2D") as CollisionShape2D
 
 
 func _ready() -> void:
@@ -195,6 +197,9 @@ func _ready() -> void:
 		add_to_group("shadow_clones")
 	else:
 		add_to_group("friendly_npcs")
+	add_to_group("hitbox_debuggable")
+	if get_tree() != null and get_tree().has_meta("debug_hitbox_mode_enabled"):
+		hitbox_debug_enabled = bool(get_tree().get_meta("debug_hitbox_mode_enabled"))
 	if _is_autoplay_requested():
 		rng.seed = 4242
 	else:
@@ -284,6 +289,8 @@ func _apply_shadow_clone_setup() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if hitbox_debug_enabled:
+		queue_redraw()
 	var previous_position := global_position
 	_tick_timers(delta)
 	if dead:
@@ -1225,16 +1232,20 @@ func _is_enemy_in_shadow_fear_consideration_range(enemy: EnemyBase) -> bool:
 	return enemy.global_position.distance_squared_to(global_position) <= max_distance * max_distance
 
 
-func _is_enemy_shadow_feared(enemy: EnemyBase) -> bool:
+func _is_enemy_shadow_feared(enemy) -> bool:
 	if enemy == null or not is_instance_valid(enemy):
+		return false
+	if enemy is EnemyBase and (enemy as EnemyBase).dead:
 		return false
 	if enemy.has_method("is_shadow_fear_active"):
 		return bool(enemy.call("is_shadow_fear_active"))
 	return false
 
 
-func _enemy_has_hard_cc(enemy: EnemyBase) -> bool:
+func _enemy_has_hard_cc(enemy) -> bool:
 	if enemy == null or not is_instance_valid(enemy):
+		return false
+	if enemy is EnemyBase and (enemy as EnemyBase).dead:
 		return false
 	if enemy.has_method("has_hard_cc_active"):
 		return bool(enemy.call("has_hard_cc_active"))
@@ -1993,6 +2004,45 @@ func _build_attack_arc_points(radius: float, arc_degrees: float, points_count: i
 		var angle := lerpf(-half_arc, half_arc, t)
 		points.append(Vector2.RIGHT.rotated(angle) * safe_radius)
 	return points
+
+
+func set_hitbox_debug_enabled(enabled: bool) -> void:
+	var next_enabled := bool(enabled)
+	if hitbox_debug_enabled == next_enabled:
+		return
+	hitbox_debug_enabled = next_enabled
+	queue_redraw()
+
+
+func _draw() -> void:
+	if not hitbox_debug_enabled or dead:
+		return
+	_draw_rat_hurtbox_debug()
+	_draw_rat_attack_hitbox_debug()
+
+
+func _draw_rat_hurtbox_debug() -> void:
+	if collision_shape == null or not is_instance_valid(collision_shape):
+		return
+	var circle := collision_shape.shape as CircleShape2D
+	if circle == null:
+		return
+	var center := to_local(collision_shape.global_position)
+	var radius_scale := maxf(absf(collision_shape.global_scale.x), absf(collision_shape.global_scale.y))
+	var radius := maxf(4.0, circle.radius * maxf(0.01, radius_scale))
+	draw_circle(center, radius, Color(0.24, 0.98, 1.0, 0.12))
+	draw_arc(center, radius, 0.0, TAU, 28, Color(0.32, 1.0, 1.0, 0.9), 1.8, true)
+
+
+func _draw_rat_attack_hitbox_debug() -> void:
+	var facing_direction := Vector2.LEFT if facing_left else Vector2.RIGHT
+	var attack_radius := maxf(8.0, attack_range * 1.12)
+	var points := PackedVector2Array([Vector2.ZERO])
+	var arc_points := _build_attack_arc_points(attack_radius, attack_arc_degrees, 28)
+	for point in arc_points:
+		points.append(point.rotated(facing_direction.angle()))
+	draw_colored_polygon(points, Color(1.0, 0.78, 0.3, 0.12))
+	draw_polyline(points, Color(1.0, 0.88, 0.5, 0.92), 1.8, true)
 
 
 func _is_autoplay_requested() -> bool:

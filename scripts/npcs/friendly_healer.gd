@@ -196,12 +196,17 @@ var breath_threat_snapshot: Dictionary = {}
 var breath_safe_indicator_left: float = 0.0
 var breath_safe_indicator: Line2D = null
 var breath_was_safe: bool = false
+var hitbox_debug_enabled: bool = false
 
 @onready var sprite: Sprite2D = $Sprite2D
+@onready var collision_shape: CollisionShape2D = get_node_or_null("CollisionShape2D") as CollisionShape2D
 
 
 func _ready() -> void:
 	add_to_group("friendly_npcs")
+	add_to_group("hitbox_debuggable")
+	if get_tree() != null and get_tree().has_meta("debug_hitbox_mode_enabled"):
+		hitbox_debug_enabled = bool(get_tree().get_meta("debug_hitbox_mode_enabled"))
 	if _is_autoplay_requested():
 		rng.seed = 2026
 	else:
@@ -247,6 +252,8 @@ func _exit_tree() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if hitbox_debug_enabled:
+		queue_redraw()
 	if dead:
 		_tick_death(delta)
 		return
@@ -1339,7 +1346,7 @@ func _spawn_tidal_wave(target: Node2D = null) -> void:
 	var wave_node := Node2D.new()
 	wave_node.top_level = true
 	wave_node.global_position = global_position + Vector2(0.0, -14.0) + (wave_direction * 18.0)
-	wave_node.rotation = 0.0 if wave_direction.x >= 0.0 else PI
+	wave_node.rotation = 0.0
 	wave_node.z_index = 236
 	scene_root.add_child(wave_node)
 
@@ -1361,6 +1368,7 @@ func _spawn_tidal_wave(target: Node2D = null) -> void:
 	wave_sprite.centered = true
 	wave_sprite.position = Vector2(0.0, -2.0)
 	wave_sprite.scale = base_scale
+	wave_sprite.flip_h = wave_direction.x < 0.0
 	wave_sprite.modulate = Color(0.92, 0.98, 1.0, 0.92)
 	wave_node.add_child(wave_sprite)
 	wave_sprite.play("startup")
@@ -1542,13 +1550,14 @@ func _spawn_tidal_wave_end_effect(world_position: Vector2, base_scale: Vector2, 
 	var end_sprite := AnimatedSprite2D.new()
 	end_sprite.top_level = true
 	end_sprite.global_position = world_position
-	end_sprite.rotation = 0.0 if wave_direction.x >= 0.0 else PI
+	end_sprite.rotation = 0.0
 	end_sprite.z_index = 236
 	end_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	end_sprite.centered = true
 	end_sprite.sprite_frames = sprite_frames
 	end_sprite.animation = "end"
 	end_sprite.scale = base_scale
+	end_sprite.flip_h = wave_direction.x < 0.0
 	end_sprite.modulate = Color(0.92, 0.98, 1.0, 0.95)
 	scene_root.add_child(end_sprite)
 	end_sprite.play("end")
@@ -2215,6 +2224,53 @@ func _build_ring_points(radius: float, segments: int) -> PackedVector2Array:
 		var angle := (TAU * float(i)) / float(maxi(3, segments))
 		points.append(Vector2.RIGHT.rotated(angle) * radius)
 	return points
+
+
+func set_hitbox_debug_enabled(enabled: bool) -> void:
+	var next_enabled := bool(enabled)
+	if hitbox_debug_enabled == next_enabled:
+		return
+	hitbox_debug_enabled = next_enabled
+	queue_redraw()
+
+
+func _draw() -> void:
+	if not hitbox_debug_enabled or dead:
+		return
+	_draw_healer_hurtbox_debug()
+	_draw_healer_cast_hitbox_debug()
+
+
+func _draw_healer_hurtbox_debug() -> void:
+	if collision_shape == null or not is_instance_valid(collision_shape):
+		return
+	var circle := collision_shape.shape as CircleShape2D
+	if circle == null:
+		return
+	var center := to_local(collision_shape.global_position)
+	var radius_scale := maxf(absf(collision_shape.global_scale.x), absf(collision_shape.global_scale.y))
+	var radius := maxf(4.0, circle.radius * maxf(0.01, radius_scale))
+	draw_circle(center, radius, Color(0.24, 0.98, 1.0, 0.12))
+	draw_arc(center, radius, 0.0, TAU, 28, Color(0.32, 1.0, 1.0, 0.9), 1.8, true)
+
+
+func _draw_healer_cast_hitbox_debug() -> void:
+	if pending_cast_action == CastAction.LIGHT_BOLT:
+		var bolt_target := _resolve_attack_target(pending_cast_target)
+		if bolt_target != null and is_instance_valid(bolt_target):
+			var from_point := Vector2.ZERO
+			var to_point := to_local(bolt_target.global_position)
+			draw_line(from_point, to_point, Color(1.0, 0.92, 0.44, 0.92), 2.0, true)
+			draw_circle(to_point, 7.0, Color(1.0, 0.92, 0.44, 0.18))
+			draw_arc(to_point, 7.0, 0.0, TAU, 20, Color(1.0, 0.96, 0.62, 0.94), 1.6, true)
+	if pending_cast_action == CastAction.TIDAL_WAVE and pending_cast_target != null and is_instance_valid(pending_cast_target):
+		var wave_direction := _get_tidal_wave_direction(pending_cast_target)
+		var sweep_start := Vector2.ZERO - (wave_direction * (tidal_wave_hit_length * 0.3))
+		var sweep_end := Vector2.ZERO + (wave_direction * (tidal_wave_hit_length * 0.7))
+		var half_width := maxf(6.0, tidal_wave_hit_half_width)
+		draw_line(sweep_start, sweep_end, Color(0.42, 0.9, 1.0, 0.16), half_width * 2.0, true)
+		draw_arc(sweep_start, half_width, 0.0, TAU, 24, Color(0.56, 0.94, 1.0, 0.88), 1.8, true)
+		draw_arc(sweep_end, half_width, 0.0, TAU, 24, Color(0.56, 0.94, 1.0, 0.88), 1.8, true)
 
 
 func _is_autoplay_requested() -> bool:

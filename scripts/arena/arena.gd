@@ -23,6 +23,7 @@ const FRIENDLY_RATFOLK_SCENE: PackedScene = preload("res://scenes/npcs/FriendlyR
 const MELEE_ENEMY_SCENE: PackedScene = preload("res://scenes/enemies/MeleeEnemy.tscn")
 const ITEM_SCENE: PackedScene = preload("res://scenes/items/ItemPickup.tscn")
 const COMPANION_BREATH_RESPONSE_SCRIPT := preload("res://ai/CompanionBreathResponse.gd")
+const IMP_SUMMON_PENTAGRAM_EFFECT_SCRIPT := preload("res://scripts/effects/imp_summon_pentagram.gd")
 
 @export var regular_enemy_count: int = 1
 @export var allow_multiple_minotaurs: bool = true
@@ -42,6 +43,8 @@ const COMPANION_BREATH_RESPONSE_SCRIPT := preload("res://ai/CompanionBreathRespo
 @export var summoned_minion_damage_scale: float = 0.82
 @export var summoned_minion_xp_scale: float = 0.35
 @export var miniboss_health_scale: float = 4.0
+@export var imp_summon_pentagram_enabled: bool = true
+@export var imp_summon_pentagram_y_offset: float = 12.0
 
 @onready var actors: Node2D = $Actors
 @onready var drops: Node2D = $Drops
@@ -62,6 +65,8 @@ var initial_minotaur_spawn_on_left: bool = false
 var spawned_minotaurs_total: int = 0
 var selected_encounter: int = EncounterType.MINOTAUR
 var rng := RandomNumberGenerator.new()
+var hitbox_debug_mode_enabled: bool = false
+var hitbox_debug_sync_left: float = 0.0
 
 
 func _ready() -> void:
@@ -75,6 +80,11 @@ func _process(delta: float) -> void:
 	if not demo_started:
 		return
 	demo_elapsed += maxf(0.0, delta)
+	if hitbox_debug_mode_enabled:
+		hitbox_debug_sync_left = maxf(0.0, hitbox_debug_sync_left - maxf(0.0, delta))
+		if hitbox_debug_sync_left <= 0.0:
+			hitbox_debug_sync_left = 0.2
+			_sync_hitbox_debug_mode()
 	_try_spawn_timed_extra_minotaur()
 	_emit_combat_debug()
 
@@ -105,6 +115,7 @@ func start_demo() -> void:
 	_spawn_friendly_healer()
 	_spawn_friendly_ratfolk()
 	_spawn_regular_enemies()
+	_sync_hitbox_debug_mode()
 	_update_objective()
 	broadcast_current_state()
 
@@ -123,6 +134,7 @@ func _spawn_player() -> void:
 	actors.add_child(player)
 	player.global_position = player_spawn.global_position
 	_apply_bounds_to_player(player)
+	_apply_hitbox_debug_to_node(player)
 
 	player.health_changed.connect(_on_player_health_changed)
 	player.xp_changed.connect(_on_player_xp_changed)
@@ -140,6 +152,7 @@ func _spawn_friendly_healer() -> void:
 		return
 	actors.add_child(healer)
 	healer.global_position = healer_spawn.global_position
+	_apply_hitbox_debug_to_node(healer)
 	if healer.has_method("set_player") and is_instance_valid(player):
 		healer.set_player(player)
 
@@ -153,6 +166,7 @@ func _spawn_friendly_ratfolk() -> void:
 		return
 	actors.add_child(ratfolk)
 	ratfolk.global_position = ratfolk_spawn.global_position
+	_apply_hitbox_debug_to_node(ratfolk)
 	if ratfolk.has_method("set_player") and is_instance_valid(player):
 		ratfolk.set_player(player)
 	if ratfolk.has_method("set_arena_bounds"):
@@ -333,6 +347,7 @@ func _spawn_enemy(scene: PackedScene, spawn_position: Vector2) -> EnemyBase:
 		return null
 	actors.add_child(enemy)
 	enemy.global_position = spawn_position
+	_apply_hitbox_debug_to_node(enemy)
 	_apply_bounds_to_enemy(enemy)
 	enemy.died.connect(_on_enemy_died)
 	if not enemy.summon_minions_requested.is_connected(_on_enemy_summon_minions_requested):
@@ -358,6 +373,8 @@ func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> 
 		var y_offset := (float(i) - (float(total_to_spawn - 1) * 0.5)) * summoned_minion_y_spacing
 		var spawn_y := clampf(source_local.y + y_offset, min_y + 10.0, max_y - 10.0)
 		var spawn_position := to_global(Vector2(spawn_x, spawn_y))
+		if use_imp_profile:
+			_spawn_imp_summon_pentagram(spawn_position)
 		var minion := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position)
 		if minion == null:
 			continue
@@ -376,6 +393,16 @@ func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> 
 		alive_regular_enemies += 1
 		spawn_next_debug_enemy_on_left = not spawn_next_debug_enemy_on_left
 	_update_objective()
+
+
+func _spawn_imp_summon_pentagram(spawn_position: Vector2) -> void:
+	if not imp_summon_pentagram_enabled:
+		return
+	var effect := IMP_SUMMON_PENTAGRAM_EFFECT_SCRIPT.new() as Node2D
+	if effect == null:
+		return
+	actors.add_child(effect)
+	effect.global_position = spawn_position + Vector2(0.0, imp_summon_pentagram_y_offset)
 
 
 func _on_enemy_breath_threat(active: bool, boss_pos: Vector2, dir: Vector2, time_remaining: float, source_enemy: EnemyBase) -> void:
@@ -615,6 +642,33 @@ func toggle_player_auto_block() -> bool:
 	if player.has_method("toggle_debug_auto_block"):
 		return bool(player.call("toggle_debug_auto_block"))
 	return false
+
+
+func toggle_hitbox_debug_mode() -> bool:
+	hitbox_debug_mode_enabled = not hitbox_debug_mode_enabled
+	hitbox_debug_sync_left = 0.0
+	_sync_hitbox_debug_mode()
+	return hitbox_debug_mode_enabled
+
+
+func _sync_hitbox_debug_mode() -> void:
+	var tree := get_tree()
+	if tree == null:
+		return
+	tree.debug_collisions_hint = hitbox_debug_mode_enabled
+	tree.set_meta("debug_hitbox_mode_enabled", hitbox_debug_mode_enabled)
+	_apply_hitbox_debug_to_node(player)
+	_apply_hitbox_debug_to_node(healer)
+	_apply_hitbox_debug_to_node(ratfolk)
+	for node in tree.get_nodes_in_group("hitbox_debuggable"):
+		_apply_hitbox_debug_to_node(node as Node)
+
+
+func _apply_hitbox_debug_to_node(node: Node) -> void:
+	if node == null or not is_instance_valid(node):
+		return
+	if node.has_method("set_hitbox_debug_enabled"):
+		node.call("set_hitbox_debug_enabled", hitbox_debug_mode_enabled)
 
 
 func _on_player_health_changed(current: float, maximum: float) -> void:

@@ -178,8 +178,10 @@ const BOSS_LOOP_STATE_NAMES: Dictionary = {
 @export var debug_orientation_overlay: bool = false
 @export var debug_focus_nearest_enemy_only: bool = true
 @export var monster_visual_profile: MonsterVisualProfile = MonsterVisualProfile.MINOTAUR
-@export var cacodemon_hurtbox_radius: float = 24.0
-@export var cacodemon_hurtbox_y_offset: float = -16.0
+@export var minotaur_hurtbox_radius: float = 38.0
+@export var minotaur_hurtbox_y_offset: float = -6.0
+@export var cacodemon_hurtbox_radius: float = 36.0
+@export var cacodemon_hurtbox_y_offset: float = -26.0
 
 const MONSTER_HD_HFRAMES: int = 10
 const MONSTER_HD_VFRAMES: int = 20
@@ -377,6 +379,7 @@ var debug_last_row: int = 5
 var debug_last_action: String = "idle"
 var debug_last_facing: Vector2 = Vector2.DOWN
 var debug_last_to_player: Vector2 = Vector2.ZERO
+var hitbox_debug_enabled: bool = false
 var health_bar_root: Node2D = null
 var health_bar_background: Line2D = null
 var health_bar_fill: Line2D = null
@@ -476,6 +479,9 @@ var collision_shape_base_radius: float = -1.0
 func _ready() -> void:
 	boss_lunge_debug_logging_enabled = _is_env_flag_enabled("BOSS_LUNGE_DEBUG")
 	add_to_group("enemies")
+	add_to_group("hitbox_debuggable")
+	if get_tree() != null and get_tree().has_meta("debug_hitbox_mode_enabled"):
+		hitbox_debug_enabled = bool(get_tree().get_meta("debug_hitbox_mode_enabled"))
 	current_health = max_health
 	attack_cooldown_left = randf_range(0.1, attack_cooldown)
 	spin_attack_cooldown_left = randf_range(spin_attack_cooldown * 0.35, spin_attack_cooldown * 0.8)
@@ -739,6 +745,8 @@ func _exit_tree() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if hitbox_debug_enabled:
+		queue_redraw()
 	if dead:
 		return
 	if use_single_phase_loop:
@@ -926,6 +934,8 @@ func _physics_process(delta: float) -> void:
 
 
 func _physics_process_single_phase(delta: float) -> void:
+	if hitbox_debug_enabled:
+		queue_redraw()
 	if hitstop_left > 0.0:
 		hitstop_left = maxf(0.0, hitstop_left - delta)
 		_tick_cacodemon_fireball_during_hitstop(delta)
@@ -3258,9 +3268,37 @@ func _apply_profile_hurtbox() -> void:
 	var base_radius := collision_shape_base_radius if collision_shape_base_radius > 0.0 else circle.radius
 	collision_shape.position = collision_shape_base_position
 	circle.radius = maxf(4.0, base_radius)
+	if monster_visual_profile == MonsterVisualProfile.MINOTAUR:
+		if not using_external_monster_sprite or monster_sprite == null or not is_instance_valid(monster_sprite):
+			return
+		var frame_width := 96.0
+		var frame_height := 96.0
+		if monster_sprite.texture != null:
+			frame_width = float(monster_sprite.texture.get_width()) / float(max(1, monster_sprite.hframes))
+			frame_height = float(monster_sprite.texture.get_height()) / float(max(1, monster_sprite.vframes))
+		var sprite_scale := maxf(absf(monster_sprite.scale.x), absf(monster_sprite.scale.y))
+		var resolved_radius := maxf(minotaur_hurtbox_radius, minf(frame_width, frame_height) * sprite_scale * 0.20)
+		var resolved_y_offset := monster_sprite.position.y + (frame_height * sprite_scale * 0.03)
+		if absf(resolved_y_offset) <= 0.001:
+			resolved_y_offset = minotaur_hurtbox_y_offset
+		collision_shape.position = collision_shape_base_position + Vector2(0.0, resolved_y_offset)
+		circle.radius = maxf(4.0, resolved_radius)
+		return
 	if _is_exact_cacodemon_visual_profile():
-		collision_shape.position = collision_shape_base_position + Vector2(0.0, cacodemon_hurtbox_y_offset)
-		circle.radius = maxf(4.0, cacodemon_hurtbox_radius)
+		var resolved_y_offset := cacodemon_hurtbox_y_offset
+		var resolved_radius := cacodemon_hurtbox_radius
+		if using_external_monster_sprite and monster_sprite != null and is_instance_valid(monster_sprite):
+			var frame_width := 64.0
+			var frame_height := 64.0
+			if monster_sprite.texture != null:
+				frame_width = float(monster_sprite.texture.get_width()) / float(max(1, monster_sprite.hframes))
+				frame_height = float(monster_sprite.texture.get_height()) / float(max(1, monster_sprite.vframes))
+			var sprite_scale := maxf(absf(monster_sprite.scale.x), absf(monster_sprite.scale.y))
+			var visual_radius := minf(frame_width, frame_height) * sprite_scale * 0.28
+			resolved_radius = maxf(resolved_radius, visual_radius)
+			resolved_y_offset = monster_sprite.position.y + (frame_height * sprite_scale * 0.02)
+		collision_shape.position = collision_shape_base_position + Vector2(0.0, resolved_y_offset)
+		circle.radius = maxf(4.0, resolved_radius)
 
 
 func _get_active_monster_sheet(action_key: String) -> Texture2D:
@@ -3437,6 +3475,148 @@ func _is_debug_focus_enemy() -> bool:
 			closest_distance_sq = dist_sq
 			closest_enemy = enemy
 	return closest_enemy == self
+
+
+func set_hitbox_debug_enabled(enabled: bool) -> void:
+	var next_enabled := bool(enabled)
+	if hitbox_debug_enabled == next_enabled:
+		return
+	hitbox_debug_enabled = next_enabled
+	queue_redraw()
+
+
+func _draw() -> void:
+	if not hitbox_debug_enabled:
+		return
+	_draw_hurtbox_debug()
+	_draw_basic_attack_hitbox_debug()
+	_draw_spin_hitbox_debug()
+	_draw_lunge_hitbox_debug()
+	_draw_breath_hitbox_debug()
+
+
+func _draw_hurtbox_debug() -> void:
+	if collision_shape == null or not is_instance_valid(collision_shape):
+		return
+	var circle := collision_shape.shape as CircleShape2D
+	if circle == null:
+		return
+	var center := to_local(collision_shape.global_position)
+	var radius_scale := maxf(absf(collision_shape.global_scale.x), absf(collision_shape.global_scale.y))
+	var radius := maxf(4.0, circle.radius * maxf(0.01, radius_scale))
+	draw_circle(center, radius, Color(0.22, 1.0, 1.0, 0.12))
+	draw_arc(center, radius, 0.0, TAU, 28, Color(0.24, 1.0, 1.0, 0.95), 2.0, true)
+
+
+func _draw_basic_attack_hitbox_debug() -> void:
+	var attack_active := pending_attack \
+		or attack_windup_left > 0.0 \
+		or attack_prestrike_hold_left > 0.0 \
+		or attack_anim_left > 0.0
+	if not attack_active:
+		return
+	var attack_direction := _get_basic_attack_direction()
+	if attack_direction.length_squared() <= 0.0001:
+		attack_direction = Vector2.RIGHT
+	var segment_start := global_position + (attack_direction * basic_attack_hit_start_offset)
+	var segment_end := global_position + (attack_direction * (attack_range + basic_attack_hit_end_bonus))
+	_draw_segment_hitbox_debug(
+		segment_start,
+		segment_end,
+		maxf(6.0, basic_attack_hit_half_width),
+		maxf(8.0, basic_attack_tip_radius),
+		Color(1.0, 0.64, 0.22, 0.14),
+		Color(1.0, 0.86, 0.44, 0.96)
+	)
+
+
+func _draw_spin_hitbox_debug() -> void:
+	if spin_charge_left <= 0.0 and spin_active_left <= 0.0:
+		return
+	var spin_center := to_local(_get_spin_attack_center())
+	var spin_radii := _get_spin_hit_radii()
+	var ring_points := PackedVector2Array()
+	for point in _build_ellipse_polygon(spin_radii.x, spin_radii.y, 40):
+		ring_points.append(spin_center + point)
+	if ring_points.size() < 3:
+		return
+	draw_colored_polygon(ring_points, Color(1.0, 0.34, 0.2, 0.12))
+	draw_polyline(ring_points, Color(1.0, 0.48, 0.3, 0.94), 2.0, true)
+	draw_line(ring_points[ring_points.size() - 1], ring_points[0], Color(1.0, 0.48, 0.3, 0.94), 2.0, true)
+
+
+func _draw_lunge_hitbox_debug() -> void:
+	var lunge_active := use_single_phase_loop and (boss_loop_state == BossLoopState.WINDUP or boss_loop_state == BossLoopState.LUNGE)
+	if not lunge_active:
+		return
+	var direction := boss_lunge_direction
+	if direction.length_squared() <= 0.0001:
+		direction = committed_attack_facing_direction
+	if direction.length_squared() <= 0.0001:
+		direction = Vector2.RIGHT
+	direction = direction.normalized()
+	var segment_start := global_position + (direction * boss_lunge_hit_start_offset)
+	var segment_end := segment_start + (direction * maxf(18.0, boss_lunge_hit_length * 0.34))
+	_draw_segment_hitbox_debug(
+		segment_start,
+		segment_end,
+		maxf(10.0, boss_lunge_hit_half_width * 0.5),
+		maxf(10.0, boss_lunge_tip_radius * 0.75),
+		Color(1.0, 0.2, 0.16, 0.18),
+		Color(1.0, 0.42, 0.32, 0.96)
+	)
+
+
+func _draw_breath_hitbox_debug() -> void:
+	if not _uses_breath_weapon_profile() or breath_attack == null:
+		return
+	if not breath_attack.is_threat_active():
+		return
+	var direction: Vector2 = breath_attack.get_direction() as Vector2
+	if direction.length_squared() <= 0.0001:
+		direction = Vector2.RIGHT
+	var segment_start: Vector2 = _get_cacodemon_breath_origin()
+	var segment_end: Vector2 = segment_start + (direction * maxf(48.0, cacodemon_breath_range))
+	var half_width := maxf(10.0, cacodemon_breath_half_width)
+	_draw_segment_hitbox_debug(
+		segment_start,
+		segment_end,
+		half_width,
+		half_width,
+		Color(1.0, 0.46, 0.2, 0.1),
+		Color(1.0, 0.68, 0.28, 0.92)
+	)
+	var snapshot: Dictionary = breath_attack.build_threat_snapshot(segment_start) as Dictionary
+	if not bool(snapshot.get("safe_pocket_valid", false)):
+		return
+	var pocket_center := snapshot.get("safe_pocket_center", global_position) as Vector2
+	var pocket_half_width := maxf(8.0, float(snapshot.get("safe_pocket_half_width", cacodemon_breath_pocket_half_width)))
+	var pocket_half_depth := maxf(8.0, float(snapshot.get("safe_pocket_half_depth", cacodemon_breath_pocket_half_depth)))
+	var pocket_points := PackedVector2Array()
+	var forward: Vector2 = direction.normalized()
+	var right := Vector2(-forward.y, forward.x)
+	for i in range(40):
+		var angle := (TAU * float(i)) / 40.0
+		var local_x := cos(angle) * pocket_half_depth
+		var local_y := sin(angle) * pocket_half_width
+		var world_point: Vector2 = pocket_center + ((-forward) * local_x) + (right * local_y)
+		pocket_points.append(to_local(world_point))
+	if pocket_points.size() >= 3:
+		draw_colored_polygon(pocket_points, Color(0.4, 0.86, 1.0, 0.16))
+		draw_polyline(pocket_points, Color(0.56, 0.94, 1.0, 0.95), 2.0, true)
+		draw_line(pocket_points[pocket_points.size() - 1], pocket_points[0], Color(0.56, 0.94, 1.0, 0.95), 2.0, true)
+
+
+func _draw_segment_hitbox_debug(segment_start: Vector2, segment_end: Vector2, half_width: float, tip_radius: float, fill_color: Color, outline_color: Color) -> void:
+	var local_start := to_local(segment_start)
+	var local_end := to_local(segment_end)
+	var safe_half_width := maxf(2.0, half_width)
+	var safe_tip_radius := maxf(safe_half_width, tip_radius)
+	draw_line(local_start, local_end, fill_color, safe_half_width * 2.0, true)
+	draw_circle(local_start, safe_half_width, fill_color)
+	draw_circle(local_end, safe_tip_radius, fill_color)
+	draw_arc(local_start, safe_half_width, 0.0, TAU, 28, outline_color, 1.8, true)
+	draw_arc(local_end, safe_tip_radius, 0.0, TAU, 28, outline_color, 1.8, true)
 
 
 func _update_attack_telegraph(to_player: Vector2) -> void:

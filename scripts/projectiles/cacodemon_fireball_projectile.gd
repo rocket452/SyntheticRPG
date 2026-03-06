@@ -15,8 +15,10 @@ const IMPACT_FRAME_PATHS: Array[String] = [
 ]
 const TRAVEL_ANIM: StringName = &"travel"
 const IMPACT_ANIM: StringName = &"impact"
+const IMPACT_LOCAL_AWAY_DIR: Vector2 = Vector2.LEFT
 
 static var _cached_texture_by_path: Dictionary = {}
+static var _cached_texture_vflip_by_path: Dictionary = {}
 static var _cached_travel_frames: SpriteFrames = null
 static var _cached_impact_frames: SpriteFrames = null
 
@@ -26,6 +28,7 @@ static var _cached_impact_frames: SpriteFrames = null
 @export var blocked_stamina_cost: float = 7.0
 @export var visual_hit_radius_scale: float = 0.30
 @export var player_hit_radius_scale: float = 1.0
+@export var impact_outward_offset: float = 10.0
 
 var source_enemy: Node2D = null
 var target_player: Player = null
@@ -36,6 +39,7 @@ var knockback_scale: float = 0.35
 var remaining_distance: float = 0.0
 var impact_finished: bool = false
 var live_collision_radius: float = 16.0
+var hitbox_debug_enabled: bool = false
 
 var fireball_sprite: AnimatedSprite2D = null
 
@@ -68,6 +72,9 @@ func configure(
 
 func _ready() -> void:
 	add_to_group("cacodemon_fireballs")
+	add_to_group("hitbox_debuggable")
+	if get_tree() != null and get_tree().has_meta("debug_hitbox_mode_enabled"):
+		hitbox_debug_enabled = bool(get_tree().get_meta("debug_hitbox_mode_enabled"))
 	_ensure_sprite()
 	if fireball_sprite == null:
 		queue_free()
@@ -76,13 +83,15 @@ func _ready() -> void:
 	fireball_sprite.play(TRAVEL_ANIM)
 	fireball_sprite.scale = Vector2(absf(visual_scale.x), absf(visual_scale.y))
 	fireball_sprite.flip_v = false
-	fireball_sprite.rotation = PI
+	fireball_sprite.rotation = 0.0
 	_refresh_live_collision_radius()
 	if absf(velocity.x) > 0.01:
 		fireball_sprite.flip_h = velocity.x < 0.0
 
 
 func _process(delta: float) -> void:
+	if hitbox_debug_enabled:
+		queue_redraw()
 	if impact_finished:
 		return
 	if fireball_sprite == null or not is_instance_valid(fireball_sprite):
@@ -99,7 +108,25 @@ func _process(delta: float) -> void:
 	global_position = next_position
 	remaining_distance = maxf(0.0, remaining_distance - move_delta.length())
 	if remaining_distance <= 0.0:
-		_begin_impact(global_position)
+		_begin_impact(global_position, -_get_travel_direction())
+
+
+func set_hitbox_debug_enabled(enabled: bool) -> void:
+	var next_enabled := bool(enabled)
+	if hitbox_debug_enabled == next_enabled:
+		return
+	hitbox_debug_enabled = next_enabled
+	queue_redraw()
+
+
+func _draw() -> void:
+	if not hitbox_debug_enabled:
+		return
+	var radius := live_collision_radius
+	if fireball_sprite != null and is_instance_valid(fireball_sprite) and fireball_sprite.animation == IMPACT_ANIM:
+		radius = maxf(8.0, radius * maxf(1.0, impact_scale_multiplier))
+	draw_circle(Vector2.ZERO, radius, Color(1.0, 0.26, 0.18, 0.16))
+	draw_arc(Vector2.ZERO, radius, 0.0, TAU, 30, Color(1.0, 0.44, 0.32, 0.96), 2.0, true)
 
 
 func _ensure_sprite() -> void:
@@ -127,7 +154,11 @@ func _try_block_on_player(world_start: Vector2, world_end: Vector2) -> bool:
 			var center_variant: Variant = target_player.call("get_block_shield_center_global")
 			if center_variant is Vector2:
 				impact_position = center_variant
-		_begin_impact(impact_position)
+		var player_center := _get_player_collision_center(target_player)
+		var away_direction := impact_position - player_center
+		if away_direction.length_squared() <= 0.0001:
+			away_direction = -_get_travel_direction()
+		_begin_impact(impact_position, away_direction)
 		return true
 	return false
 
@@ -149,21 +180,43 @@ func _try_hit_player(next_position: Vector2) -> bool:
 	if target_player.has_method("receive_hit"):
 		var source_position := source_enemy.global_position if source_enemy != null and is_instance_valid(source_enemy) else global_position
 		target_player.call("receive_hit", damage, source_position, false, stun_duration, knockback_scale)
-	_begin_impact(global_position)
+	var away_direction := impact_position - hitbox_center
+	if away_direction.length_squared() <= 0.0001:
+		away_direction = -hit_direction
+	_begin_impact(global_position, away_direction)
 	return true
 
 
-func _begin_impact(world_position: Vector2) -> void:
-	global_position = world_position
+func _begin_impact(world_position: Vector2, away_direction: Vector2 = Vector2.ZERO) -> void:
+	var away := away_direction
+	if away.length_squared() <= 0.0001:
+		away = -_get_travel_direction()
+	if away.length_squared() <= 0.0001:
+		away = Vector2.RIGHT
+	away = away.normalized()
+	global_position = world_position + (away * maxf(0.0, impact_outward_offset))
 	velocity = Vector2.ZERO
 	fireball_sprite.sprite_frames = _get_impact_frames()
 	var impact_scale := visual_scale * maxf(1.0, impact_scale_multiplier)
 	fireball_sprite.scale = Vector2(absf(impact_scale.x), absf(impact_scale.y))
+	var away_horizontal := Vector2(signf(away.x), 0.0)
+	if absf(away_horizontal.x) <= 0.0001:
+		away_horizontal = Vector2.RIGHT
+	# Orient the impact using the art-authored "away" axis instead of relying on flip quirks.
 	fireball_sprite.flip_h = false
 	fireball_sprite.flip_v = false
-	fireball_sprite.rotation = PI
+	fireball_sprite.rotation = away_horizontal.angle() - IMPACT_LOCAL_AWAY_DIR.angle()
 	fireball_sprite.play(IMPACT_ANIM)
 	fireball_sprite.animation_finished.connect(_on_impact_finished, CONNECT_ONE_SHOT)
+
+
+func _get_travel_direction() -> Vector2:
+	var direction := velocity.normalized()
+	if direction.length_squared() <= 0.0001 and source_enemy != null and is_instance_valid(source_enemy):
+		direction = (global_position - source_enemy.global_position).normalized()
+	if direction.length_squared() <= 0.0001:
+		direction = Vector2.RIGHT
+	return direction
 
 
 func _refresh_live_collision_radius() -> void:
@@ -240,7 +293,7 @@ static func _get_impact_frames() -> SpriteFrames:
 	frames.set_animation_speed(IMPACT_ANIM, 16.0)
 	frames.set_animation_loop(IMPACT_ANIM, false)
 	for frame_path in IMPACT_FRAME_PATHS:
-		var texture := _load_texture(frame_path)
+		var texture := _load_texture_vflip(frame_path)
 		if texture != null:
 			frames.add_frame(IMPACT_ANIM, texture)
 	_cached_impact_frames = frames
@@ -256,4 +309,17 @@ static func _load_texture(resource_path: String) -> Texture2D:
 		return null
 	var texture := ImageTexture.create_from_image(image)
 	_cached_texture_by_path[resource_path] = texture
+	return texture
+
+
+static func _load_texture_vflip(resource_path: String) -> Texture2D:
+	if _cached_texture_vflip_by_path.has(resource_path):
+		return _cached_texture_vflip_by_path.get(resource_path) as Texture2D
+	var global_path := ProjectSettings.globalize_path(resource_path)
+	var image := Image.new()
+	if image.load(global_path) != OK:
+		return null
+	image.flip_y()
+	var texture := ImageTexture.create_from_image(image)
+	_cached_texture_vflip_by_path[resource_path] = texture
 	return texture
