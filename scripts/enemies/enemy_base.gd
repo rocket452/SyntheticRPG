@@ -4,6 +4,7 @@ class_name EnemyBase
 const BREATH_ATTACK_SCRIPT := preload("res://combat/boss/BreathAttack.gd")
 const BREATH_VFX_SCRIPT := preload("res://vfx/breath/BreathVFX.gd")
 const CACODEMON_FIREBALL_PROJECTILE_SCRIPT := preload("res://scripts/projectiles/cacodemon_fireball_projectile.gd")
+const IMP_FIREBALL_PROJECTILE_SCRIPT := preload("res://scripts/projectiles/imp_fireball_projectile.gd")
 
 const SHADOW_FEAR_DEBUFF_TEXTURE_PATH: String = "res://assets/external/DarkEffects/Dark VFX 2 (48x64).png"
 const SHADOW_FEAR_DEBUFF_FRAME_SIZE: Vector2i = Vector2i(48, 64)
@@ -48,6 +49,9 @@ const THREAT_EPSILON: float = 0.001
 @export var global_enemy_health_multiplier: float = 0.5
 @export var global_enemy_damage_multiplier: float = 1.5
 @export var move_speed: float = 89.25
+@export var player_weapon_debuff_debug_logging: bool = false
+@export var player_weapon_dot_tint_strength: float = 0.62
+@export var player_weapon_slow_tint_strength: float = 0.58
 @export var attack_damage: float = 12.0
 @export var attack_range: float = 46.0
 @export var basic_attack_hit_start_offset: float = 6.0
@@ -155,7 +159,10 @@ const THREAT_EPSILON: float = 0.001
 @export var cacodemon_facing_flip_min_horizontal_delta: float = 120.0
 @export var cacodemon_side_swap_edge_padding: float = 72.0
 @export var cacodemon_side_swap_vertical_padding: float = 18.0
+@export var cacodemon_side_swap_corner_horizontal_inset: float = 90.0
 @export var cacodemon_side_swap_corner_vertical_inset: float = 58.0
+@export var cacodemon_side_swap_min_wall_gap_x: float = 128.0
+@export var cacodemon_side_swap_min_wall_gap_y: float = 76.0
 @export var cacodemon_side_swap_corner_edge_zone: float = 78.0
 @export var cacodemon_side_swap_target_distance: float = 420.0
 @export var cacodemon_side_swap_min_target_distance: float = 240.0
@@ -221,6 +228,7 @@ const THREAT_EPSILON: float = 0.001
 @export var soft_collision_friendly_spacing_enabled: bool = true
 @export var soft_collision_friendly_min_spacing: float = 60.0
 @export var soft_collision_friendly_push_strength: float = 0.62
+@export var soft_collision_ignore_ratfolk: bool = true
 @export var soft_collision_push_speed: float = 300.0
 @export var soft_collision_max_push_per_frame: float = 5.6
 @export var approach_slotting_enabled: bool = true
@@ -241,6 +249,15 @@ const THREAT_EPSILON: float = 0.001
 @export var minotaur_hurtbox_y_offset: float = -6.0
 @export var cacodemon_hurtbox_radius: float = 36.0
 @export var cacodemon_hurtbox_y_offset: float = -26.0
+@export var imp_fireball_enabled: bool = true
+@export var imp_fireball_speed: float = 190.0
+@export var imp_fireball_max_distance: float = 360.0
+@export var imp_fireball_damage_multiplier: float = 0.78
+@export var imp_fireball_stun_scale: float = 0.55
+@export var imp_fireball_knockback_scale: float = 0.42
+@export var imp_fireball_hit_radius: float = 10.0
+@export var imp_fireball_release_delay: float = 0.2
+@export var imp_fireball_attack_anim_duration: float = 0.56
 @export var imp_visual_scale_multiplier: float = 1.0
 
 const MONSTER_HD_HFRAMES: int = 10
@@ -352,10 +369,10 @@ const SHARDSOUL_ACTION_FRAME_COUNTS: Dictionary = {
 	"death": 6
 }
 const IMP_ACTION_FRAME_COUNTS: Dictionary = {
-	"idle": 7,
-	"run": 7,
-	"attack": 6,
-	"spin": 6,
+	"idle": 8,
+	"run": 8,
+	"attack": 8,
+	"spin": 8,
 	"hurt": 4,
 	"death": 6
 }
@@ -374,10 +391,10 @@ const SHARDSOUL_ACTION_FRAME_COLUMNS: Dictionary = {
 	"death": [0, 1, 2, 3, 4, 5]
 }
 const IMP_ACTION_FRAME_COLUMNS: Dictionary = {
-	"idle": [0, 1, 2, 3, 4, 5, 6],
-	"run": [0, 1, 2, 3, 4, 5, 6],
-	"attack": [0, 1, 2, 3, 4, 5],
-	"spin": [0, 1, 2, 3, 4, 5],
+	"idle": [0, 1, 2, 3, 4, 5, 6, 7],
+	"run": [0, 1, 2, 3, 4, 5, 6, 7],
+	"attack": [0, 1, 2, 3, 4, 5, 6, 7],
+	"spin": [0, 1, 2, 3, 4, 5, 6, 7],
 	"hurt": [0, 1, 2, 3],
 	"death": [0, 1, 2, 3, 4, 5]
 }
@@ -507,6 +524,18 @@ var shadow_fear_apply_count: int = 0
 var shadow_fear_vfx_time: float = 0.0
 var shadow_fear_vfx_root: Node2D = null
 var shadow_fear_vfx_sprite: AnimatedSprite2D = null
+var imp_fireball_release_left: float = 0.0
+var imp_fireball_release_pending: bool = false
+var imp_fireball_release_direction: Vector2 = Vector2.ZERO
+var imp_fireball_release_target: Node2D = null
+var player_weapon_slow_left: float = 0.0
+var player_weapon_slow_multiplier: float = 1.0
+var player_weapon_dot_left: float = 0.0
+var player_weapon_dot_tick_left: float = 0.0
+var player_weapon_dot_tick_interval: float = 0.5
+var player_weapon_dot_damage_per_stack: float = 0.0
+var player_weapon_dot_stacks: int = 0
+var player_weapon_dot_source: Node2D = null
 var cacodemon_breath_vfx: Node2D = null
 var breath_attack: RefCounted = null
 var breath_threat_was_active: bool = false
@@ -641,6 +670,19 @@ func _ready() -> void:
 	cacodemon_facing_debug_enabled = OS.get_environment("CACODEMON_FACING_DEBUG").strip_edges().to_lower() in ["1", "true", "yes", "on"]
 	cacodemon_runtime_elapsed = 0.0
 	cacodemon_health_summon_used = false
+	imp_fireball_release_left = 0.0
+	imp_fireball_release_pending = false
+	imp_fireball_release_direction = Vector2.ZERO
+	imp_fireball_release_target = null
+	player_weapon_slow_left = 0.0
+	player_weapon_slow_multiplier = 1.0
+	player_weapon_dot_left = 0.0
+	player_weapon_dot_tick_left = 0.0
+	player_weapon_dot_tick_interval = 0.5
+	player_weapon_dot_damage_per_stack = 0.0
+	player_weapon_dot_stacks = 0
+	player_weapon_dot_source = null
+	player_weapon_debuff_debug_logging = player_weapon_debuff_debug_logging or _is_env_flag_enabled("SWORD_DEBUG")
 	_reset_periodic_hurt_anim_cooldown()
 	_set_boss_loop_state(BossLoopState.IDLE, 0.0)
 	boss_charge_basic_attacks_since_last_shockwave = 0
@@ -749,6 +791,7 @@ func apply_shadow_fear(duration: float) -> bool:
 	shadow_fear_apply_count += 1
 	shadow_fear_vfx_time = 0.0
 	_cancel_spin_attack()
+	_cancel_imp_fireball_release()
 	pending_attack = false
 	attack_windup_left = 0.0
 	attack_prestrike_hold_left = 0.0
@@ -786,13 +829,95 @@ func _tick_shadow_fear_status(delta: float) -> void:
 		_clear_shadow_fear(false)
 
 
+func apply_player_weapon_slow(duration: float, speed_multiplier: float) -> void:
+	if dead:
+		return
+	var applied_duration := maxf(0.0, duration)
+	if applied_duration <= THREAT_EPSILON:
+		return
+	player_weapon_slow_left = maxf(player_weapon_slow_left, applied_duration)
+	player_weapon_slow_multiplier = minf(player_weapon_slow_multiplier, clampf(speed_multiplier, 0.1, 1.0))
+	if player_weapon_debuff_debug_logging:
+		print("[SWORD_DEBUFF] SLOW enemy=%s duration=%.2f speed_mult=%.2f" % [name, player_weapon_slow_left, player_weapon_slow_multiplier])
+	_spawn_hit_effect(global_position + Vector2(0.0, -14.0), Color(0.56, 0.82, 1.0, 0.92), 8.0)
+
+
+func apply_player_weapon_dot(duration: float, tick_interval: float, damage_per_stack: float, max_stacks: int, source_actor: Node2D = null) -> void:
+	if dead:
+		return
+	var applied_duration := maxf(0.0, duration)
+	var applied_interval := maxf(0.1, tick_interval)
+	var applied_damage := maxf(0.0, damage_per_stack)
+	var clamped_max_stacks := maxi(1, max_stacks)
+	if applied_duration <= THREAT_EPSILON or applied_damage <= THREAT_EPSILON:
+		return
+	player_weapon_dot_left = maxf(player_weapon_dot_left, applied_duration)
+	player_weapon_dot_tick_interval = applied_interval
+	player_weapon_dot_tick_left = minf(player_weapon_dot_tick_left, applied_interval) if player_weapon_dot_tick_left > 0.0 else applied_interval
+	player_weapon_dot_damage_per_stack = applied_damage
+	player_weapon_dot_stacks = mini(clamped_max_stacks, player_weapon_dot_stacks + 1)
+	if source_actor != null and is_instance_valid(source_actor):
+		player_weapon_dot_source = source_actor
+	if player_weapon_debuff_debug_logging:
+		print("[SWORD_DEBUFF] DOT_APPLY enemy=%s stacks=%d duration=%.2f tick=%.2f damage_per_stack=%.2f" % [name, player_weapon_dot_stacks, player_weapon_dot_left, player_weapon_dot_tick_interval, player_weapon_dot_damage_per_stack])
+	_spawn_hit_effect(global_position + Vector2(0.0, -12.0), Color(0.98, 0.46, 0.88, 0.9), 8.5)
+
+
+func _tick_player_weapon_debuffs(delta: float) -> void:
+	var clamped_delta := maxf(0.0, delta)
+	if player_weapon_slow_left > 0.0:
+		player_weapon_slow_left = maxf(0.0, player_weapon_slow_left - clamped_delta)
+		if player_weapon_slow_left <= 0.0:
+			player_weapon_slow_multiplier = 1.0
+	if player_weapon_dot_left <= 0.0:
+		return
+	if dead:
+		player_weapon_dot_left = 0.0
+		player_weapon_dot_tick_left = 0.0
+		player_weapon_dot_stacks = 0
+		return
+	player_weapon_dot_left = maxf(0.0, player_weapon_dot_left - clamped_delta)
+	player_weapon_dot_tick_left = maxf(0.0, player_weapon_dot_tick_left - clamped_delta)
+	if player_weapon_dot_tick_left > 0.0:
+		return
+	if player_weapon_dot_stacks <= 0 or player_weapon_dot_damage_per_stack <= THREAT_EPSILON:
+		player_weapon_dot_tick_left = player_weapon_dot_tick_interval
+		return
+	var dot_damage := player_weapon_dot_damage_per_stack * float(player_weapon_dot_stacks)
+	var source_position := global_position
+	if is_instance_valid(player_weapon_dot_source):
+		source_position = player_weapon_dot_source.global_position
+	var source_actor := player_weapon_dot_source if is_instance_valid(player_weapon_dot_source) else null
+	receive_hit(dot_damage, source_position, 0.0, false, 0.0, source_actor)
+	_spawn_hit_effect(global_position + Vector2(0.0, -14.0), Color(1.0, 0.56, 0.96, 0.92), 7.0 + (0.6 * float(player_weapon_dot_stacks)))
+	if player_weapon_debuff_debug_logging:
+		print("[SWORD_DEBUFF] DOT_TICK enemy=%s stacks=%d damage=%.2f remaining=%.2f" % [name, player_weapon_dot_stacks, dot_damage, player_weapon_dot_left])
+	player_weapon_dot_tick_left = player_weapon_dot_tick_interval
+	if player_weapon_dot_left <= 0.0:
+		player_weapon_dot_stacks = 0
+		player_weapon_dot_tick_left = 0.0
+
+
+func _get_current_player_weapon_slow_multiplier() -> float:
+	if player_weapon_slow_left <= 0.0:
+		return 1.0
+	return clampf(player_weapon_slow_multiplier, 0.1, 1.0)
+
+
+func _move_and_slide_with_debuffs() -> void:
+	var slow_multiplier := _get_current_player_weapon_slow_multiplier()
+	if slow_multiplier < 0.999 and velocity.length_squared() > 0.0001:
+		velocity *= slow_multiplier
+	move_and_slide()
+
+
 func _hold_shadow_fear_state(delta: float, to_player: Vector2) -> void:
 	velocity = Vector2.ZERO
 	knockback_velocity = Vector2.ZERO
 	attack_telegraph.visible = false
 	weapon_trail.visible = false
 	slash_effect.visible = false
-	move_and_slide()
+	_move_and_slide_with_debuffs()
 	_clamp_to_arena()
 	_update_visuals(delta, to_player)
 	_update_health_bar()
@@ -879,13 +1004,14 @@ func _physics_process(delta: float) -> void:
 	if hitstop_left > 0.0:
 		hitstop_left = maxf(0.0, hitstop_left - delta)
 		_tick_shadow_fear_status(delta)
+		_tick_player_weapon_debuffs(delta)
 		if not is_instance_valid(player):
 			_reacquire_player()
 		var freeze_to_player := Vector2.RIGHT
 		if is_instance_valid(player):
 			freeze_to_player = player.global_position - global_position
 		velocity = Vector2.ZERO
-		move_and_slide()
+		_move_and_slide_with_debuffs()
 		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(0.0, freeze_to_player)
@@ -903,6 +1029,8 @@ func _physics_process(delta: float) -> void:
 	spin_attack_cooldown_left = maxf(0.0, spin_attack_cooldown_left - delta)
 	_tick_pending_basic_block_success_fx(delta)
 	_tick_shadow_fear_status(delta)
+	_tick_player_weapon_debuffs(delta)
+	_tick_imp_fireball_release(delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.45))
 	if _is_exact_cacodemon_visual_profile():
 		cacodemon_runtime_elapsed += maxf(0.0, delta)
@@ -954,7 +1082,7 @@ func _physics_process(delta: float) -> void:
 		velocity = knockback_velocity
 		knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
 		attack_telegraph.visible = false
-		move_and_slide()
+		_move_and_slide_with_debuffs()
 		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
@@ -970,7 +1098,7 @@ func _physics_process(delta: float) -> void:
 		spin_charge_left = maxf(0.0, spin_charge_left - delta)
 		if spin_charge_left <= 0.0:
 			_begin_spin_attack()
-		move_and_slide()
+		_move_and_slide_with_debuffs()
 		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
@@ -986,7 +1114,7 @@ func _physics_process(delta: float) -> void:
 			spin_hit_tick_left = spin_hit_interval
 		if spin_active_left <= 0.0:
 			_finish_spin_attack()
-		move_and_slide()
+		_move_and_slide_with_debuffs()
 		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
@@ -1009,7 +1137,7 @@ func _physics_process(delta: float) -> void:
 			pending_attack = false
 			attack_cooldown_left = _get_basic_attack_cooldown_duration()
 			_perform_attack()
-		move_and_slide()
+		_move_and_slide_with_debuffs()
 		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
@@ -1018,7 +1146,7 @@ func _physics_process(delta: float) -> void:
 
 	if attack_recovery_hold_left > 0.0:
 		velocity = Vector2.ZERO
-		move_and_slide()
+		_move_and_slide_with_debuffs()
 		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
@@ -1051,7 +1179,7 @@ func _physics_process(delta: float) -> void:
 					initial_attack_facing = Vector2.RIGHT
 				committed_attack_facing_direction = initial_attack_facing.normalized()
 
-	move_and_slide()
+	_move_and_slide_with_debuffs()
 	_apply_soft_enemy_separation(delta)
 	_clamp_to_arena()
 	knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
@@ -1068,13 +1196,14 @@ func _physics_process_single_phase(delta: float) -> void:
 		hitstop_left = maxf(0.0, hitstop_left - delta)
 		_tick_cacodemon_fireball_during_hitstop(delta)
 		_tick_shadow_fear_status(delta)
+		_tick_player_weapon_debuffs(delta)
 		if not is_instance_valid(player):
 			_reacquire_player()
 		var freeze_to_player := Vector2.RIGHT
 		if is_instance_valid(player):
 			freeze_to_player = player.global_position - global_position
 		velocity = Vector2.ZERO
-		move_and_slide()
+		_move_and_slide_with_debuffs()
 		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(0.0, freeze_to_player)
@@ -1100,7 +1229,7 @@ func _physics_process_single_phase(delta: float) -> void:
 		velocity = knockback_velocity
 		knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
 		attack_telegraph.visible = false
-		move_and_slide()
+		_move_and_slide_with_debuffs()
 		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
@@ -1113,7 +1242,7 @@ func _physics_process_single_phase(delta: float) -> void:
 
 	if _uses_breath_weapon_profile() and is_miniboss:
 		_tick_cacodemon_breath_loop(delta, to_player)
-		move_and_slide()
+		_move_and_slide_with_debuffs()
 		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
@@ -1122,7 +1251,7 @@ func _physics_process_single_phase(delta: float) -> void:
 		return
 	if _is_exact_cacodemon_visual_profile() and is_miniboss:
 		_tick_cacodemon_fireball_loop(delta, to_player)
-		move_and_slide()
+		_move_and_slide_with_debuffs()
 		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
@@ -1146,7 +1275,7 @@ func _physics_process_single_phase(delta: float) -> void:
 			pending_attack = false
 			attack_cooldown_left = _get_basic_attack_cooldown_duration()
 			_perform_attack()
-		move_and_slide()
+		_move_and_slide_with_debuffs()
 		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
@@ -1155,7 +1284,7 @@ func _physics_process_single_phase(delta: float) -> void:
 
 	if attack_recovery_hold_left > 0.0 and boss_loop_state == BossLoopState.IDLE:
 		velocity = Vector2.ZERO
-		move_and_slide()
+		_move_and_slide_with_debuffs()
 		_apply_soft_enemy_separation(delta)
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
@@ -1166,7 +1295,7 @@ func _physics_process_single_phase(delta: float) -> void:
 	_apply_idle_cooldown_melee_hold(to_player)
 	_tick_periodic_hurt_animation()
 
-	move_and_slide()
+	_move_and_slide_with_debuffs()
 	_apply_soft_enemy_separation(delta)
 	_clamp_to_arena()
 	knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
@@ -1243,6 +1372,8 @@ func _tick_enemy_runtime_timers(delta: float) -> void:
 	periodic_hurt_anim_cooldown_left = maxf(0.0, periodic_hurt_anim_cooldown_left - delta)
 	_tick_pending_basic_block_success_fx(delta)
 	_tick_shadow_fear_status(delta)
+	_tick_player_weapon_debuffs(delta)
+	_tick_imp_fireball_release(delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.45))
 	cacodemon_fireball_cooldown_left = maxf(0.0, cacodemon_fireball_cooldown_left - delta)
 	cacodemon_fireball_cast_left = maxf(0.0, cacodemon_fireball_cast_left - delta)
@@ -1295,6 +1426,11 @@ func _try_cacodemon_side_swap(preferred_target: Node2D) -> bool:
 		return false
 	var min_x := minf(lane_min_x, lane_max_x)
 	var max_x := maxf(lane_min_x, lane_max_x)
+	var local_position := position
+	var has_preferred_target := _is_valid_cacodemon_fireball_target(preferred_target)
+	var preferred_target_local := Vector2.ZERO
+	if has_preferred_target:
+		preferred_target_local = to_local(preferred_target.global_position)
 	var edge_padding := maxf(0.0, cacodemon_side_swap_edge_padding)
 	min_x += edge_padding
 	max_x -= edge_padding
@@ -1306,11 +1442,11 @@ func _try_cacodemon_side_swap(preferred_target: Node2D) -> bool:
 		return false
 	var midpoint := (min_x + max_x) * 0.5
 	var anchor_x := midpoint
-	if _is_valid_cacodemon_fireball_target(preferred_target):
-		anchor_x = preferred_target.global_position.x
-	var current_side_sign := signf(global_position.x - anchor_x)
+	if has_preferred_target:
+		anchor_x = preferred_target_local.x
+	var current_side_sign := signf(local_position.x - anchor_x)
 	if absf(current_side_sign) <= 0.01:
-		current_side_sign = signf(global_position.x - midpoint)
+		current_side_sign = signf(local_position.x - midpoint)
 	if absf(current_side_sign) <= 0.01:
 		current_side_sign = 1.0
 	var destination_side_sign := -current_side_sign
@@ -1318,10 +1454,16 @@ func _try_cacodemon_side_swap(preferred_target: Node2D) -> bool:
 		maxf(0.0, cacodemon_side_swap_min_target_distance),
 		maxf(0.0, cacodemon_side_swap_target_distance)
 	)
+	var corner_horizontal_inset := maxf(0.0, cacodemon_side_swap_corner_horizontal_inset)
+	var corner_min_x := min_x
+	var corner_max_x := max_x
+	if corner_horizontal_inset > 0.0 and (max_x - min_x) > (corner_horizontal_inset * 2.0 + 8.0):
+		corner_min_x = min_x + corner_horizontal_inset
+		corner_max_x = max_x - corner_horizontal_inset
 	var destination_x := anchor_x + (destination_side_sign * desired_distance)
-	destination_x = clampf(destination_x, min_x, max_x)
+	destination_x = clampf(destination_x, corner_min_x, corner_max_x)
 	if absf(destination_x - anchor_x) < maxf(40.0, cacodemon_side_swap_min_target_distance * 0.5):
-		destination_x = max_x if destination_side_sign > 0.0 else min_x
+		destination_x = corner_max_x if destination_side_sign > 0.0 else corner_min_x
 	var min_y := minf(lane_min_y, lane_max_y)
 	var max_y := maxf(lane_min_y, lane_max_y)
 	var y_padding := maxf(0.0, cacodemon_side_swap_vertical_padding)
@@ -1352,9 +1494,9 @@ func _try_cacodemon_side_swap(preferred_target: Node2D) -> bool:
 		if max_y <= min_y + 2.0:
 			min_y = lane_low
 			max_y = lane_high
-	var destination_y := clampf(global_position.y, min_y, max_y)
-	if _is_valid_cacodemon_fireball_target(preferred_target):
-		destination_y = clampf(preferred_target.global_position.y, min_y, max_y)
+	var destination_y := clampf(local_position.y, min_y, max_y)
+	if has_preferred_target:
+		destination_y = clampf(preferred_target_local.y, min_y, max_y)
 	if near_side_edge:
 		var lane_low := minf(lane_min_y, lane_max_y)
 		var lane_high := maxf(lane_min_y, lane_max_y)
@@ -1364,9 +1506,27 @@ func _try_cacodemon_side_swap(preferred_target: Node2D) -> bool:
 		if guard_max > guard_min + 2.0:
 			destination_y = clampf(destination_y, guard_min, guard_max)
 	var origin_position := global_position
-	var destination_position := Vector2(destination_x, destination_y)
+	var wall_gap_x := maxf(0.0, cacodemon_side_swap_min_wall_gap_x)
+	var lane_low_x := minf(lane_min_x, lane_max_x)
+	var lane_high_x := maxf(lane_min_x, lane_max_x)
+	var visual_half_extents := _get_cacodemon_visual_half_extents_local()
+	var requested_gap_x := wall_gap_x + maxf(0.0, visual_half_extents.x)
+	var max_supported_gap_x := maxf(0.0, ((lane_high_x - lane_low_x) * 0.5) - 4.0)
+	var effective_gap_x := minf(requested_gap_x, max_supported_gap_x)
+	if effective_gap_x > 0.0:
+		destination_x = clampf(destination_x, lane_low_x + effective_gap_x, lane_high_x - effective_gap_x)
+	var wall_gap_y := maxf(0.0, cacodemon_side_swap_min_wall_gap_y)
+	var lane_low_y := minf(lane_min_y, lane_max_y)
+	var lane_high_y := maxf(lane_min_y, lane_max_y)
+	var requested_gap_y := wall_gap_y + maxf(0.0, visual_half_extents.y)
+	var max_supported_gap_y := maxf(0.0, ((lane_high_y - lane_low_y) * 0.5) - 4.0)
+	var effective_gap_y := minf(requested_gap_y, max_supported_gap_y)
+	if effective_gap_y > 0.0:
+		destination_y = clampf(destination_y, lane_low_y + effective_gap_y, lane_high_y - effective_gap_y)
+	var destination_position_local := Vector2(destination_x, destination_y)
+	var destination_position := to_global(destination_position_local)
 	_spawn_cacodemon_side_swap_effect(origin_position, destination_position)
-	global_position = destination_position
+	position = destination_position_local
 	velocity = Vector2.ZERO
 	cacodemon_side_swap_pending = false
 	return true
@@ -2243,6 +2403,20 @@ func _get_cacodemon_breath_origin() -> Vector2:
 		var forward_offset := maxf(36.0, frame_width * absf(monster_sprite.scale.x) * 0.56)
 		return monster_sprite.global_position + Vector2(direction.x * forward_offset, 2.0)
 	return global_position + Vector2(direction.x * 36.0, -14.0)
+
+
+func _get_cacodemon_visual_half_extents_local() -> Vector2:
+	var half_width := maxf(10.0, cacodemon_hurtbox_radius)
+	var half_height := maxf(10.0, cacodemon_hurtbox_radius)
+	if using_external_monster_sprite and monster_sprite != null and is_instance_valid(monster_sprite):
+		var frame_width := 64.0
+		var frame_height := 64.0
+		if monster_sprite.texture != null:
+			frame_width = float(monster_sprite.texture.get_width()) / float(maxi(1, monster_sprite.hframes))
+			frame_height = float(monster_sprite.texture.get_height()) / float(maxi(1, monster_sprite.vframes))
+		half_width = maxf(half_width, frame_width * absf(monster_sprite.scale.x) * 0.5)
+		half_height = maxf(half_height, frame_height * absf(monster_sprite.scale.y) * 0.5)
+	return Vector2(half_width, half_height)
 
 
 func _get_cacodemon_breath_blocking_player(segment_start: Vector2, segment_end: Vector2, half_width: float) -> Player:
@@ -3366,6 +3540,8 @@ func _apply_soft_enemy_separation(delta: float) -> void:
 			for target in friendly_targets:
 				if target == null or not is_instance_valid(target):
 					continue
+				if soft_collision_ignore_ratfolk and target is FriendlyRatfolk:
+					continue
 				var to_self := global_position - target.global_position
 				var distance_sq := to_self.length_squared()
 				if distance_sq <= 0.0001:
@@ -3767,6 +3943,9 @@ func _teardown_debug_overlay() -> void:
 
 
 func _perform_attack() -> void:
+	if _is_imp_visual_profile():
+		_perform_imp_fireball_attack()
+		return
 	if _is_cacodemon_visual_profile():
 		_perform_cacodemon_bite_hit()
 		return
@@ -3784,6 +3963,146 @@ func _perform_attack() -> void:
 		return
 	for target in hit_targets:
 		_attempt_friendly_hit(target, attack_damage, false, outgoing_hit_stun_duration, 1.0, true)
+
+
+func _perform_imp_fireball_attack() -> void:
+	attack_flash_left = 0.1
+	_start_attack_animation(maxf(0.12, imp_fireball_attack_anim_duration), 1.05)
+	basic_attacks_since_last_spin += 1
+
+	var cast_target := _select_highest_threat_target() as Node2D
+	if cast_target == null or not is_instance_valid(cast_target):
+		cast_target = player as Node2D
+	if cast_target == null or not is_instance_valid(cast_target):
+		var attackable_targets := _get_attackable_friendly_targets()
+		var nearest_distance_sq := INF
+		for candidate in attackable_targets:
+			if candidate == null or not is_instance_valid(candidate):
+				continue
+			var dist_sq := candidate.global_position.distance_squared_to(global_position)
+			if dist_sq < nearest_distance_sq:
+				nearest_distance_sq = dist_sq
+				cast_target = candidate
+	var cast_direction := committed_attack_facing_direction
+	if cast_target != null and is_instance_valid(cast_target):
+		cast_direction = cast_target.global_position - global_position
+	if cast_direction.length_squared() <= 0.0001:
+		cast_direction = _get_basic_attack_direction()
+	if cast_direction.length_squared() <= 0.0001:
+		cast_direction = external_sprite_facing_direction
+	if cast_direction.length_squared() <= 0.0001:
+		cast_direction = Vector2.RIGHT
+	cast_direction = cast_direction.normalized()
+	committed_attack_facing_direction = cast_direction
+
+	if not imp_fireball_enabled:
+		var hit_targets := _query_friendly_hits_for_basic()
+		for target in hit_targets:
+			_attempt_friendly_hit(target, attack_damage, false, outgoing_hit_stun_duration, 1.0, true)
+		return
+
+	imp_fireball_release_pending = true
+	imp_fireball_release_left = maxf(0.0, imp_fireball_release_delay)
+	imp_fireball_release_direction = cast_direction
+	imp_fireball_release_target = cast_target
+	if _is_env_flag_enabled("IMP_FIREBALL_DEBUG"):
+		print("[IMP_FIREBALL] PREP enemy=%s target=%s delay=%.2f dir=%s" % [
+			name,
+			cast_target.name if cast_target != null and is_instance_valid(cast_target) else "none",
+			imp_fireball_release_left,
+			cast_direction
+		])
+	if imp_fireball_release_left <= THREAT_EPSILON:
+		_release_imp_fireball()
+
+
+func _tick_imp_fireball_release(delta: float) -> void:
+	if not imp_fireball_release_pending:
+		return
+	if dead or shadow_fear_left > 0.0 or stun_left > 0.0:
+		_cancel_imp_fireball_release()
+		return
+	imp_fireball_release_left = maxf(0.0, imp_fireball_release_left - maxf(0.0, delta))
+	if imp_fireball_release_left <= THREAT_EPSILON:
+		_release_imp_fireball()
+
+
+func _cancel_imp_fireball_release() -> void:
+	imp_fireball_release_pending = false
+	imp_fireball_release_left = 0.0
+	imp_fireball_release_direction = Vector2.ZERO
+	imp_fireball_release_target = null
+
+
+func _release_imp_fireball() -> void:
+	if not imp_fireball_release_pending:
+		return
+	imp_fireball_release_pending = false
+	var direction := imp_fireball_release_direction
+	var target := imp_fireball_release_target
+	if direction.length_squared() <= 0.0001 and target != null and is_instance_valid(target):
+		direction = target.global_position - global_position
+	if direction.length_squared() <= 0.0001:
+		direction = _get_basic_attack_direction()
+	if direction.length_squared() <= 0.0001:
+		direction = external_sprite_facing_direction
+	if direction.length_squared() <= 0.0001:
+		direction = Vector2.RIGHT
+	direction = direction.normalized()
+	imp_fireball_release_direction = Vector2.ZERO
+	imp_fireball_release_target = null
+	_spawn_imp_fireball(direction, target)
+	if _is_env_flag_enabled("IMP_FIREBALL_DEBUG"):
+		print("[IMP_FIREBALL] CAST enemy=%s dir=%s" % [name, direction])
+
+
+func _spawn_imp_fireball(direction: Vector2, target: Node2D = null) -> void:
+	if IMP_FIREBALL_PROJECTILE_SCRIPT == null:
+		return
+	var projectile := IMP_FIREBALL_PROJECTILE_SCRIPT.new()
+	if projectile == null:
+		return
+	var tree := get_tree()
+	if tree == null:
+		return
+	var scene_root := tree.current_scene
+	if scene_root == null:
+		scene_root = tree.root
+	scene_root.add_child(projectile)
+	var projectile_direction := direction.normalized()
+	if projectile_direction.length_squared() <= 0.0001:
+		projectile_direction = Vector2.RIGHT
+	var spawn_position := _get_imp_fireball_origin(projectile_direction)
+	var projectile_damage := maxf(1.0, attack_damage * maxf(0.0, imp_fireball_damage_multiplier))
+	var projectile_stun := maxf(0.0, outgoing_hit_stun_duration * maxf(0.0, imp_fireball_stun_scale))
+	projectile.configure(
+		self,
+		target,
+		spawn_position,
+		projectile_direction,
+		maxf(1.0, imp_fireball_speed),
+		maxf(32.0, imp_fireball_max_distance),
+		projectile_damage,
+		projectile_stun,
+		maxf(0.1, imp_fireball_knockback_scale),
+		maxf(6.0, imp_fireball_hit_radius)
+	)
+	if tree.has_meta("debug_hitbox_mode_enabled") and projectile.has_method("set_hitbox_debug_enabled"):
+		projectile.call("set_hitbox_debug_enabled", bool(tree.get_meta("debug_hitbox_mode_enabled")))
+
+
+func _get_imp_fireball_origin(direction: Vector2) -> Vector2:
+	var facing := direction.normalized()
+	if facing.length_squared() <= 0.0001:
+		facing = committed_attack_facing_direction
+	if facing.length_squared() <= 0.0001:
+		facing = external_sprite_facing_direction
+	if facing.length_squared() <= 0.0001:
+		facing = Vector2.RIGHT
+	var horizontal_sign := -1.0 if facing.x < 0.0 else 1.0
+	if using_external_monster_sprite and monster_sprite != null and is_instance_valid(monster_sprite):
+		return global_position + monster_sprite.position + Vector2(10.0 * horizontal_sign, -5.0)
+	return global_position + Vector2(16.0 * horizontal_sign, -18.0)
 
 
 func _begin_spin_charge(to_player: Vector2) -> void:
@@ -3898,6 +4217,7 @@ func receive_hit(amount: float, source_position: Vector2, stun_duration: float =
 	if applied_stun > 0.0:
 		_end_cacodemon_breath_attack()
 		_cancel_spin_attack()
+		_cancel_imp_fireball_release()
 		pending_attack = false
 		attack_windup_left = 0.0
 		attack_prestrike_hold_left = 0.0
@@ -4429,7 +4749,15 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		var fade := 1.0 - (hit_flash_strength * 0.62)
 		monster_sprite.modulate = Color(1.0, fade, fade, 1.0)
 	else:
-		monster_sprite.modulate = Color(1.0, 1.0, 1.0, 1.0)
+		var sprite_tint := Color(1.0, 1.0, 1.0, 1.0)
+		if player_weapon_slow_left > 0.0:
+			var slow_tint_strength := clampf(player_weapon_slow_tint_strength, 0.0, 0.95)
+			sprite_tint = sprite_tint.lerp(Color(0.62, 0.82, 1.0, 1.0), slow_tint_strength)
+		if player_weapon_dot_left > 0.0 and player_weapon_dot_stacks > 0:
+			var stack_ratio := clampf(float(player_weapon_dot_stacks) / 5.0, 0.0, 1.0)
+			var dot_tint_strength := clampf(player_weapon_dot_tint_strength * lerpf(0.65, 1.0, stack_ratio), 0.0, 0.95)
+			sprite_tint = sprite_tint.lerp(Color(1.0, 0.62, 0.9, 1.0), dot_tint_strength)
+		monster_sprite.modulate = sprite_tint
 
 
 func _pick_debug_facing_row(direction: Vector2, fallback_row: int = 6) -> int:
@@ -5035,6 +5363,7 @@ func _die() -> void:
 	shadow_fear_left = 0.0
 	_shadow_fear_teardown_vfx()
 	_end_cacodemon_breath_attack()
+	_cancel_imp_fireball_release()
 	if is_instance_valid(cacodemon_breath_vfx):
 		cacodemon_breath_vfx.queue_free()
 	cacodemon_breath_vfx = null
@@ -5329,3 +5658,4 @@ func _build_slash_points(attack_distance: float, arc_degrees: float, segments: i
 		var angle := lerpf(-half_arc, half_arc, t)
 		points.append(Vector2.RIGHT.rotated(angle) * radius)
 	return points
+

@@ -5,15 +5,15 @@
 
 [node name="Arena" type="Node2D"]
 script = ExtResource("1_mk3ox")
-arena_min_x = -560.0
-arena_max_x = 560.0
+arena_min_x = -431.2
+arena_max_x = 431.2
 arena_min_y = -135.0
 arena_max_y = 135.0
 camera_limit_padding = Vector2(58, 60)
 
 [node name="Floor" type="Node2D" parent="."]
 script = ExtResource("2_xv3s0")
-arena_width = 1160.0
+arena_width = 893.2
 arena_height = 400.0
 sidewalk_height = 52.0
 lane_count = 3
@@ -25,33 +25,33 @@ vertical_grid_step = 120.0
 position = Vector2(0, 0)
 
 [node name="PlayerSpawn" type="Marker2D" parent="."]
-position = Vector2(-500, 78)
+position = Vector2(-385, 78)
 
 [node name="HealerSpawn" type="Marker2D" parent="."]
-position = Vector2(-370, -78)
+position = Vector2(-284.9, -78)
 
 [node name="RatfolkSpawn" type="Marker2D" parent="."]
-position = Vector2(-392, 16)
+position = Vector2(-301.84, 16)
 
 [node name="SpawnPoints" type="Node2D" parent="."]
 
 [node name="SpawnA" type="Marker2D" parent="SpawnPoints"]
-position = Vector2(80, -76)
+position = Vector2(61.6, -76)
 
 [node name="SpawnB" type="Marker2D" parent="SpawnPoints"]
-position = Vector2(220, 66)
+position = Vector2(169.4, 66)
 
 [node name="SpawnC" type="Marker2D" parent="SpawnPoints"]
-position = Vector2(330, -58)
+position = Vector2(254.1, -58)
 
 [node name="SpawnD" type="Marker2D" parent="SpawnPoints"]
-position = Vector2(430, 84)
+position = Vector2(331.1, 84)
 
 [node name="SpawnE" type="Marker2D" parent="SpawnPoints"]
-position = Vector2(520, -24)
+position = Vector2(400.4, -24)
 
 [node name="SpawnF" type="Marker2D" parent="SpawnPoints"]
-position = Vector2(540, 112)
+position = Vector2(415.8, 112)
 
 [node name="Actors" type="Node2D" parent="."]
 

@@ -95,6 +95,9 @@ func _ready() -> void:
 	cacodemon_fireball_pressure_seen = false
 	var layout_variant_env := OS.get_environment("AUTOPLAY_LAYOUT_VARIANT").strip_edges()
 	shadow_fear_layout_variant = int(layout_variant_env) if layout_variant_env.is_valid_int() else 0
+	var charge_hold_env := OS.get_environment("AUTOPLAY_CHARGE_HOLD").strip_edges()
+	if charge_hold_env.is_valid_float():
+		charge_hold_duration = maxf(0.05, float(charge_hold_env))
 	if autoplay_scenario == "lunge_block" or autoplay_scenario == "basic_block" or autoplay_scenario == "shadow_fear" or autoplay_scenario == "shadow_fear_break" or autoplay_scenario == "shadow_fear_new_enemy" or autoplay_scenario == "healer_tidal_wave" or autoplay_scenario == "healer_respects_fear" or autoplay_scenario == "cacodemon_breath_block" or autoplay_scenario == "cacodemon_breath_stack" or autoplay_scenario == "cacodemon_fireball_block" or autoplay_scenario == "cacodemon_summon_imps" or autoplay_scenario == "cacodemon_player_hit" or autoplay_scenario == "cacodemon_fireball_natural" or autoplay_scenario == "cacodemon_fireball_pressure":
 		timeout_seconds = maxf(timeout_seconds, 45.0)
 	autoplay_log_path = OS.get_environment("AUTOPLAY_LOG_PATH")

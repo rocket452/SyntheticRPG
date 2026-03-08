@@ -461,7 +461,15 @@ func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> 
 			minion.attack_windup_left = 0.0
 			minion.attack_prestrike_hold_left = 0.0
 			minion.attack_recovery_hold_left = 0.0
-			minion.attack_cooldown_left = maxf(minion.attack_cooldown_left, 0.45)
+			minion.attack_prestrike_hold_duration = maxf(minion.attack_prestrike_hold_duration, 0.06)
+			minion.attack_hold_frame = 2
+			# Let summoned imps start threatening quickly instead of idling post-spawn.
+			minion.attack_cooldown_left = minf(minion.attack_cooldown_left, 0.2)
+			minion.attack_cooldown = minf(minion.attack_cooldown, 1.2)
+			minion.attack_windup = minf(minion.attack_windup, 0.2)
+			# Summoned imps are ranged attackers; keep them at cast distance so their throw anim/projectile is visible.
+			minion.attack_range = maxf(minion.attack_range, 180.0)
+			minion.imp_fireball_speed = minf(minion.imp_fireball_speed, 190.0)
 			minion.velocity = Vector2.ZERO
 			if is_instance_valid(player):
 				var to_player := player.global_position - minion.global_position
