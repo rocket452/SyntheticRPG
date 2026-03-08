@@ -1,6 +1,14 @@
 extends CanvasLayer
 class_name HUD
 
+const ABILITY_BAR_SLOTS: Array[Dictionary] = [
+	{"id": "basic", "icon": "ATK", "name": "Swing", "key": "J", "accent": Color(0.94, 0.64, 0.33, 1.0), "uses_cooldown": true},
+	{"id": "ability_1", "icon": "CHG", "name": "Charge", "key": "K", "accent": Color(0.98, 0.74, 0.3, 1.0), "uses_cooldown": true},
+	{"id": "ability_2", "icon": "DSH", "name": "Dash", "key": "L", "accent": Color(0.42, 0.88, 1.0, 1.0), "uses_cooldown": true},
+	{"id": "roll", "icon": "RLL", "name": "Roll", "key": "Space", "accent": Color(0.78, 0.93, 1.0, 1.0), "uses_cooldown": true},
+	{"id": "block", "icon": "BLK", "name": "Block", "key": "I", "accent": Color(0.56, 0.88, 1.0, 1.0), "uses_cooldown": false}
+]
+
 @onready var health_label: Label = $HealthLabel
 @onready var xp_label: Label = $XPLabel
 @onready var cooldown_label: Label = $CooldownLabel
@@ -11,6 +19,9 @@ class_name HUD
 @onready var victory_label: Label = $VictoryPanel/Message
 @onready var status_timer: Timer = $StatusTimer
 var combat_debug_label: Label = null
+var ability_slot_views: Dictionary = {}
+var ability_slot_ready_flags: Dictionary = {}
+var ready_pulse_time: float = 0.0
 
 
 func _ready() -> void:
@@ -27,6 +38,31 @@ func _ready() -> void:
 	combat_debug_label.modulate = Color(0.88, 0.97, 1.0, 0.94)
 	combat_debug_label.text = ""
 	add_child(combat_debug_label)
+	_build_ability_bar()
+	set_process(true)
+
+
+func _process(delta: float) -> void:
+	if ability_slot_views.is_empty():
+		return
+	ready_pulse_time += maxf(0.0, delta)
+	var pulse := 0.68 + (0.22 * (0.5 + (0.5 * sin(ready_pulse_time * 4.2))))
+	for slot_def in ABILITY_BAR_SLOTS:
+		var slot_id := String(slot_def.get("id", ""))
+		if slot_id.is_empty():
+			continue
+		var slot := ability_slot_views.get(slot_id, {}) as Dictionary
+		if slot.is_empty():
+			continue
+		var ready_border := slot.get("ready_border") as Panel
+		if ready_border == null or not is_instance_valid(ready_border):
+			continue
+		if not bool(ability_slot_ready_flags.get(slot_id, false)):
+			continue
+		var border_color := Color(0.34, 0.96, 0.5, pulse)
+		if slot_id == "block" and bool(slot.get("block_active", false)):
+			border_color = Color(0.48, 0.92, 1.0, pulse)
+		ready_border.self_modulate = border_color
 
 
 func update_health(current: float, maximum: float) -> void:
@@ -44,6 +80,11 @@ func update_cooldowns(values: Dictionary) -> void:
 	var roll_text := _format_cooldown(float(values.get("roll", 0.0)))
 	var blocking_text := " | Blocking" if bool(values.get("block_active", false)) else ""
 	cooldown_label.text = "Swing %s  Charge %s  Dash %s  Roll %s%s" % [basic_text, ability_1_text, ability_2_text, roll_text, blocking_text]
+	_update_ability_slot("basic", float(values.get("basic", 0.0)), false)
+	_update_ability_slot("ability_1", float(values.get("ability_1", 0.0)), false)
+	_update_ability_slot("ability_2", float(values.get("ability_2", 0.0)), false)
+	_update_ability_slot("roll", float(values.get("roll", 0.0)), false)
+	_update_ability_slot("block", 0.0, bool(values.get("block_active", false)))
 
 
 func update_objective(text: String) -> void:
@@ -119,3 +160,194 @@ func _format_cooldown(value: float) -> String:
 	if value <= 0.05:
 		return "Ready"
 	return "%.1fs" % value
+
+
+func _build_ability_bar() -> void:
+	var bottom_strip := Control.new()
+	bottom_strip.name = "AbilityBarStrip"
+	bottom_strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bottom_strip.anchor_left = 0.0
+	bottom_strip.anchor_right = 1.0
+	bottom_strip.anchor_top = 1.0
+	bottom_strip.anchor_bottom = 1.0
+	bottom_strip.offset_left = 0.0
+	bottom_strip.offset_right = 0.0
+	bottom_strip.offset_top = -116.0
+	bottom_strip.offset_bottom = -14.0
+	add_child(bottom_strip)
+
+	var center_container := CenterContainer.new()
+	center_container.set_anchors_preset(Control.PRESET_FULL_RECT)
+	center_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bottom_strip.add_child(center_container)
+
+	var row := HBoxContainer.new()
+	row.name = "AbilityBarRow"
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 10)
+	center_container.add_child(row)
+
+	for slot_def in ABILITY_BAR_SLOTS:
+		var slot_view := _create_ability_slot(slot_def)
+		var slot_id := String(slot_def.get("id", ""))
+		if slot_id.is_empty():
+			continue
+		row.add_child(slot_view.get("root") as Control)
+		ability_slot_views[slot_id] = slot_view
+		ability_slot_ready_flags[slot_id] = false
+	for slot_def in ABILITY_BAR_SLOTS:
+		var slot_id := String(slot_def.get("id", ""))
+		if slot_id.is_empty():
+			continue
+		_update_ability_slot(slot_id, 0.0, false)
+
+
+func _create_ability_slot(slot_def: Dictionary) -> Dictionary:
+	var root := PanelContainer.new()
+	root.custom_minimum_size = Vector2(78.0, 78.0)
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_theme_stylebox_override("panel", _make_slot_stylebox(Color(0.08, 0.1, 0.14, 0.92), Color(0.3, 0.4, 0.5, 0.95), 2))
+
+	var content := Control.new()
+	content.set_anchors_preset(Control.PRESET_FULL_RECT)
+	content.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(content)
+
+	var icon_label := Label.new()
+	icon_label.text = String(slot_def.get("icon", "?"))
+	icon_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	icon_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	icon_label.anchor_left = 0.0
+	icon_label.anchor_right = 1.0
+	icon_label.anchor_top = 0.0
+	icon_label.anchor_bottom = 0.0
+	icon_label.offset_top = 8.0
+	icon_label.offset_bottom = 32.0
+	icon_label.add_theme_font_size_override("font_size", 14)
+	icon_label.modulate = Color(0.95, 0.97, 1.0, 0.98)
+	content.add_child(icon_label)
+
+	var name_label := Label.new()
+	name_label.text = String(slot_def.get("name", "-"))
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	name_label.anchor_left = 0.0
+	name_label.anchor_right = 1.0
+	name_label.anchor_top = 0.0
+	name_label.anchor_bottom = 0.0
+	name_label.offset_top = 30.0
+	name_label.offset_bottom = 50.0
+	name_label.add_theme_font_size_override("font_size", 11)
+	name_label.modulate = Color(0.8, 0.88, 0.98, 0.9)
+	content.add_child(name_label)
+
+	var key_label := Label.new()
+	key_label.text = String(slot_def.get("key", ""))
+	key_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	key_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	key_label.anchor_left = 0.0
+	key_label.anchor_right = 1.0
+	key_label.anchor_top = 1.0
+	key_label.anchor_bottom = 1.0
+	key_label.offset_top = -20.0
+	key_label.offset_bottom = -4.0
+	key_label.add_theme_font_size_override("font_size", 10)
+	key_label.modulate = Color(0.73, 0.85, 0.94, 0.96)
+	content.add_child(key_label)
+
+	var cooldown_overlay := ColorRect.new()
+	cooldown_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	cooldown_overlay.color = Color(0.02, 0.02, 0.03, 0.64)
+	cooldown_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cooldown_overlay.visible = false
+	content.add_child(cooldown_overlay)
+
+	var cooldown_label := Label.new()
+	cooldown_label.text = ""
+	cooldown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	cooldown_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	cooldown_label.set_anchors_preset(Control.PRESET_FULL_RECT)
+	cooldown_label.add_theme_font_size_override("font_size", 15)
+	cooldown_label.modulate = Color(1.0, 0.95, 0.84, 0.98)
+	cooldown_label.visible = false
+	content.add_child(cooldown_label)
+
+	var ready_border := Panel.new()
+	ready_border.set_anchors_preset(Control.PRESET_FULL_RECT)
+	ready_border.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ready_border.add_theme_stylebox_override("panel", _make_slot_stylebox(Color(0.0, 0.0, 0.0, 0.0), Color(0.34, 0.96, 0.5, 0.9), 2))
+	ready_border.visible = false
+	content.add_child(ready_border)
+
+	return {
+		"root": root,
+		"icon_label": icon_label,
+		"name_label": name_label,
+		"key_label": key_label,
+		"cooldown_overlay": cooldown_overlay,
+		"cooldown_label": cooldown_label,
+		"ready_border": ready_border,
+		"block_active": false,
+		"accent": slot_def.get("accent", Color(0.9, 0.9, 0.9, 1.0)),
+		"uses_cooldown": bool(slot_def.get("uses_cooldown", true))
+	}
+
+
+func _update_ability_slot(slot_id: String, cooldown_left: float, block_active: bool) -> void:
+	var slot := ability_slot_views.get(slot_id, {}) as Dictionary
+	if slot.is_empty():
+		return
+	var uses_cooldown := bool(slot.get("uses_cooldown", true))
+	var icon_label := slot.get("icon_label") as Label
+	var key_label := slot.get("key_label") as Label
+	var cooldown_overlay := slot.get("cooldown_overlay") as ColorRect
+	var cooldown_label := slot.get("cooldown_label") as Label
+	var ready_border := slot.get("ready_border") as Panel
+	var root := slot.get("root") as PanelContainer
+	if icon_label == null or key_label == null or cooldown_overlay == null or cooldown_label == null or ready_border == null or root == null:
+		return
+
+	var ready := true
+	if uses_cooldown:
+		ready = cooldown_left <= 0.05
+
+	if uses_cooldown and not ready:
+		cooldown_overlay.visible = true
+		cooldown_label.visible = true
+		cooldown_label.text = "%.1f" % maxf(0.0, cooldown_left)
+		ready_border.visible = false
+		root.self_modulate = Color(0.74, 0.74, 0.77, 1.0)
+		icon_label.modulate = Color(0.9, 0.91, 0.95, 0.9)
+		key_label.modulate = Color(0.62, 0.72, 0.8, 0.95)
+	else:
+		cooldown_overlay.visible = false
+		cooldown_label.visible = false
+		ready_border.visible = true
+		root.self_modulate = Color(1.0, 1.0, 1.0, 1.0)
+		var accent_variant: Variant = slot.get("accent", Color(0.95, 0.97, 1.0, 1.0))
+		var accent: Color = Color(0.95, 0.97, 1.0, 1.0)
+		if accent_variant is Color:
+			accent = accent_variant
+		icon_label.modulate = accent
+		key_label.modulate = Color(0.8, 0.95, 0.84, 0.98)
+	ability_slot_ready_flags[slot_id] = ready
+	slot["block_active"] = block_active
+	ability_slot_views[slot_id] = slot
+
+	if slot_id == "block":
+		var border_color := Color(0.48, 0.92, 1.0, 0.9) if block_active else Color(0.34, 0.96, 0.5, 0.9)
+		ready_border.self_modulate = border_color
+		icon_label.modulate = Color(0.64, 0.92, 1.0, 1.0) if block_active else Color(0.56, 0.88, 1.0, 1.0)
+
+
+func _make_slot_stylebox(background: Color, border: Color, border_width: int) -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = background
+	style.border_color = border
+	style.set_border_width_all(maxi(1, border_width))
+	style.corner_radius_top_left = 6
+	style.corner_radius_top_right = 6
+	style.corner_radius_bottom_left = 6
+	style.corner_radius_bottom_right = 6
+	return style

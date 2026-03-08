@@ -31,6 +31,17 @@ const IMP_SUMMON_PENTAGRAM_EFFECT_SCRIPT := preload("res://scripts/effects/imp_s
 @export var timed_extra_minotaur_enabled: bool = true
 @export var timed_extra_minotaur_delay: float = 12.0
 @export var spawn_jitter: float = 18.0
+@export var encounter_initial_enemy_distance_scale: float = 1.55
+@export var encounter_initial_enemy_min_party_distance: float = 360.0
+@export var encounter_initial_enemy_max_party_distance: float = 700.0
+@export var encounter_initial_enemy_min_enemy_distance: float = 132.0
+@export var encounter_spawn_reposition_step: float = 52.0
+@export var encounter_spawn_reposition_attempts: int = 12
+@export var encounter_pair_vertical_spacing: float = 124.0
+@export var encounter_edge_spawn_inset: float = 22.0
+@export var encounter_spacing_debug_logging: bool = false
+@export var encounter_spacing_debug_opening_window: float = 6.0
+@export var encounter_spacing_debug_log_interval: float = 0.85
 @export var arena_min_x: float = -760.0
 @export var arena_max_x: float = 760.0
 @export var arena_min_y: float = -165.0
@@ -72,6 +83,8 @@ var selected_encounter: int = EncounterType.MINOTAUR
 var rng := RandomNumberGenerator.new()
 var hitbox_debug_mode_enabled: bool = false
 var hitbox_debug_sync_left: float = 0.0
+var spacing_debug_runtime_enabled: bool = false
+var spacing_debug_next_log_at: float = 0.0
 
 
 func _ready() -> void:
@@ -79,6 +92,7 @@ func _ready() -> void:
 		rng.seed = 1337
 	else:
 		rng.randomize()
+	spacing_debug_runtime_enabled = encounter_spacing_debug_logging or _is_env_flag_enabled("ENCOUNTER_SPACING_DEBUG")
 
 
 func _process(delta: float) -> void:
@@ -90,6 +104,7 @@ func _process(delta: float) -> void:
 		if hitbox_debug_sync_left <= 0.0:
 			hitbox_debug_sync_left = 0.2
 			_sync_hitbox_debug_mode()
+	_maybe_log_opening_spacing()
 	_try_spawn_timed_extra_minotaur()
 	_emit_combat_debug()
 
@@ -113,6 +128,7 @@ func start_demo() -> void:
 		return
 	demo_started = true
 	demo_elapsed = 0.0
+	spacing_debug_next_log_at = 0.0
 	timed_extra_minotaur_spawned = false
 	initial_minotaur_spawn_on_left = false
 	spawned_minotaurs_total = 0
@@ -121,6 +137,7 @@ func start_demo() -> void:
 	_spawn_friendly_ratfolk()
 	_prewarm_imp_summon_effect_cache()
 	_spawn_regular_enemies()
+	_log_encounter_spacing_snapshot("spawn_init")
 	_sync_hitbox_debug_mode()
 	_update_objective()
 	broadcast_current_state()
@@ -191,8 +208,9 @@ func _spawn_regular_enemies() -> void:
 	var minotaur_cap := _get_minotaur_spawn_cap()
 	spawn_count = mini(spawn_count, minotaur_cap)
 	if spawn_count >= 2:
-		_spawn_edge_minotaur_on_side(false, -24.0)
-		_spawn_edge_minotaur_on_side(false, 24.0)
+		var pair_offset := maxf(20.0, encounter_pair_vertical_spacing * 0.5)
+		_spawn_edge_minotaur_on_side(false, -pair_offset)
+		_spawn_edge_minotaur_on_side(false, pair_offset)
 		spawn_count -= 2
 	if spawn_count <= 0:
 		return
@@ -207,6 +225,7 @@ func _spawn_regular_enemies() -> void:
 			rng.randf_range(-spawn_jitter, spawn_jitter),
 			rng.randf_range(-spawn_jitter, spawn_jitter)
 		)
+		spawn_position = _resolve_encounter_spawn_position(spawn_position)
 		var enemy := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position)
 		if enemy == null:
 			continue
@@ -257,11 +276,12 @@ func _spawn_air_boss_encounter(visual_profile: int) -> void:
 	var max_x := maxf(arena_min_x, arena_max_x)
 	var min_y := minf(arena_min_y, arena_max_y)
 	var max_y := maxf(arena_min_y, arena_max_y)
-	var spawn_x := max_x - 42.0
+	var edge_inset := maxf(8.0, encounter_edge_spawn_inset)
+	var spawn_x := max_x - edge_inset
 	var spawn_y := lerpf(min_y, max_y, 0.5)
 	if is_instance_valid(player):
 		spawn_y = clampf(player.position.y, min_y + 10.0, max_y - 10.0)
-	var spawn_position := to_global(Vector2(spawn_x, spawn_y))
+	var spawn_position := _resolve_encounter_spawn_position(to_global(Vector2(spawn_x, spawn_y)))
 	var enemy := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position, visual_profile)
 	if enemy == null:
 		return
@@ -296,13 +316,13 @@ func _spawn_edge_minotaur_on_side(spawn_on_left: bool, vertical_offset: float = 
 	var max_x := maxf(arena_min_x, arena_max_x)
 	var min_y := minf(arena_min_y, arena_max_y)
 	var max_y := maxf(arena_min_y, arena_max_y)
-	var edge_inset := 26.0
+	var edge_inset := maxf(8.0, encounter_edge_spawn_inset)
 	var spawn_x := min_x + edge_inset if spawn_on_left else max_x - edge_inset
 	var spawn_y := lerpf(min_y, max_y, 0.5)
 	if is_instance_valid(player):
 		spawn_y = clampf(player.position.y, min_y + 8.0, max_y - 8.0)
 	spawn_y = clampf(spawn_y + vertical_offset, min_y + 8.0, max_y - 8.0)
-	var spawn_position := to_global(Vector2(spawn_x, spawn_y))
+	var spawn_position := _resolve_encounter_spawn_position(to_global(Vector2(spawn_x, spawn_y)))
 	var enemy := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position)
 	if enemy == null:
 		return
@@ -366,31 +386,40 @@ func _spawn_enemy(scene: PackedScene, spawn_position: Vector2, visual_profile_ov
 func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> void:
 	if not demo_started:
 		return
-	var total_to_spawn := maxi(1, count)
 	var use_imp_profile := source_enemy != null and is_instance_valid(source_enemy) and source_enemy.monster_visual_profile == EnemyBase.MonsterVisualProfile.CACODEMON
+	var total_to_spawn := 4 if use_imp_profile else maxi(1, count)
 	var min_x := minf(arena_min_x, arena_max_x)
 	var max_x := maxf(arena_min_x, arena_max_x)
 	var min_y := minf(arena_min_y, arena_max_y)
 	var max_y := maxf(arena_min_y, arena_max_y)
 	var source_local := to_local(source_enemy.global_position) if is_instance_valid(source_enemy) else Vector2.ZERO
 	var spawn_positions: Array[Vector2] = []
-	for i in range(total_to_spawn):
-		var spawn_on_left := spawn_next_debug_enemy_on_left
-		var spawn_x := (min_x + summoned_minion_edge_inset) if spawn_on_left else (max_x - summoned_minion_edge_inset)
-		if use_imp_profile and is_instance_valid(source_enemy):
-			var horizontal_slot_sign := -1.0 if (i % 2) == 0 else 1.0
-			var horizontal_layer := float(i / 2)
-			var imp_offset_x := maxf(12.0, summoned_imp_spawn_distance_x) + (horizontal_layer * maxf(0.0, summoned_imp_spawn_x_stagger))
-			spawn_x = clampf(
-				source_local.x + (horizontal_slot_sign * imp_offset_x),
-				min_x + summoned_minion_edge_inset,
-				max_x - summoned_minion_edge_inset
-			)
-		var y_offset := (float(i) - (float(total_to_spawn - 1) * 0.5)) * summoned_minion_y_spacing
-		var spawn_y := clampf(source_local.y + y_offset, min_y + 10.0, max_y - 10.0)
-		var spawn_position := to_global(Vector2(spawn_x, spawn_y))
-		spawn_positions.append(spawn_position)
-		spawn_next_debug_enemy_on_left = not spawn_next_debug_enemy_on_left
+	if use_imp_profile and is_instance_valid(source_enemy):
+		var center_local := Vector2((min_x + max_x) * 0.5, (min_y + max_y) * 0.5)
+		source_enemy.global_position = to_global(center_local)
+		source_enemy.velocity = Vector2.ZERO
+		source_enemy.knockback_velocity = Vector2.ZERO
+		source_local = center_local
+		var edge_inset := maxf(8.0, maxf(summoned_minion_edge_inset, encounter_edge_spawn_inset))
+		var left_x := min_x + edge_inset
+		var right_x := max_x - edge_inset
+		var top_y := min_y + edge_inset
+		var bottom_y := max_y - edge_inset
+		spawn_positions = [
+			to_global(Vector2(left_x, top_y)),
+			to_global(Vector2(right_x, top_y)),
+			to_global(Vector2(left_x, bottom_y)),
+			to_global(Vector2(right_x, bottom_y))
+		]
+	else:
+		for i in range(total_to_spawn):
+			var spawn_on_left := spawn_next_debug_enemy_on_left
+			var spawn_x := (min_x + summoned_minion_edge_inset) if spawn_on_left else (max_x - summoned_minion_edge_inset)
+			var y_offset := (float(i) - (float(total_to_spawn - 1) * 0.5)) * summoned_minion_y_spacing
+			var spawn_y := clampf(source_local.y + y_offset, min_y + 10.0, max_y - 10.0)
+			var spawn_position := to_global(Vector2(spawn_x, spawn_y))
+			spawn_positions.append(spawn_position)
+			spawn_next_debug_enemy_on_left = not spawn_next_debug_enemy_on_left
 
 	if use_imp_profile:
 		var summon_delay := 0.0
@@ -725,6 +754,198 @@ func _sync_hitbox_debug_mode() -> void:
 		_apply_hitbox_debug_to_node(node as Node)
 
 
+func _resolve_encounter_spawn_position(start_global_position: Vector2) -> Vector2:
+	var resolved := _clamp_global_position_to_arena(start_global_position)
+	var desired_party_distance := _get_desired_initial_enemy_party_distance()
+	var desired_enemy_distance := maxf(12.0, encounter_initial_enemy_min_enemy_distance)
+	var reposition_step := maxf(6.0, encounter_spawn_reposition_step)
+	var max_attempts := maxi(0, encounter_spawn_reposition_attempts)
+	var original := resolved
+	var party_nodes := _get_alive_party_nodes()
+	var party_distance_targets: Dictionary = {}
+	var distance_scale := maxf(1.0, encounter_initial_enemy_distance_scale)
+	var distance_cap := maxf(desired_party_distance, encounter_initial_enemy_max_party_distance)
+	var max_party_target_distance := desired_party_distance
+	for ally in party_nodes:
+		var ally_id := ally.get_instance_id()
+		var baseline_distance := original.distance_to(ally.global_position)
+		var target_distance := clampf(maxf(desired_party_distance, baseline_distance * distance_scale), desired_party_distance, distance_cap)
+		party_distance_targets[ally_id] = target_distance
+		max_party_target_distance = maxf(max_party_target_distance, target_distance)
+	for attempt in range(max_attempts):
+		var adjusted := false
+		var fallback_angle := float(attempt) * 0.78
+		for ally in party_nodes:
+			var to_candidate := resolved - ally.global_position
+			var distance := to_candidate.length()
+			var ally_id := ally.get_instance_id()
+			var ally_target_distance := float(party_distance_targets.get(ally_id, desired_party_distance))
+			if distance >= ally_target_distance:
+				continue
+			var push_direction := to_candidate.normalized() if distance > 0.001 else _get_spawn_fallback_direction(fallback_angle)
+			var deficit := ally_target_distance - distance
+			resolved += push_direction * (deficit + (reposition_step * 0.12))
+			adjusted = true
+		for enemy in _get_alive_enemy_nodes():
+			var to_candidate := resolved - enemy.global_position
+			var distance := to_candidate.length()
+			if distance >= desired_enemy_distance:
+				continue
+			var push_direction := to_candidate.normalized() if distance > 0.001 else _get_spawn_fallback_direction(fallback_angle + 1.17)
+			var deficit := desired_enemy_distance - distance
+			resolved += push_direction * (deficit + (reposition_step * 0.16))
+			adjusted = true
+		resolved = _clamp_global_position_to_arena(resolved)
+		if not adjusted:
+			break
+	if spacing_debug_runtime_enabled:
+		var moved_distance := original.distance_to(resolved)
+		if moved_distance >= 1.0:
+			print(
+				"[SPACING] spawn_adjust moved=%.1f party_min=%.1f enemy_min=%.1f from=%s to=%s" % [
+					moved_distance,
+					max_party_target_distance,
+					desired_enemy_distance,
+					original,
+					resolved
+				]
+			)
+	return resolved
+
+
+func _get_desired_initial_enemy_party_distance() -> float:
+	var base_distance := maxf(0.0, encounter_initial_enemy_min_party_distance)
+	var scaled_distance := base_distance * maxf(0.1, encounter_initial_enemy_distance_scale)
+	return maxf(base_distance, scaled_distance)
+
+
+func _clamp_global_position_to_arena(world_position: Vector2) -> Vector2:
+	var min_x := minf(arena_min_x, arena_max_x)
+	var max_x := maxf(arena_min_x, arena_max_x)
+	var min_y := minf(arena_min_y, arena_max_y)
+	var max_y := maxf(arena_min_y, arena_max_y)
+	var local := to_local(world_position)
+	local.x = clampf(local.x, min_x, max_x)
+	local.y = clampf(local.y, min_y, max_y)
+	return to_global(local)
+
+
+func _get_alive_party_nodes() -> Array[Node2D]:
+	var party_nodes: Array[Node2D] = []
+	if is_instance_valid(player):
+		party_nodes.append(player)
+	if is_instance_valid(healer):
+		party_nodes.append(healer)
+	if is_instance_valid(ratfolk):
+		party_nodes.append(ratfolk)
+	return party_nodes
+
+
+func _get_alive_enemy_nodes() -> Array[EnemyBase]:
+	var enemies: Array[EnemyBase] = []
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		enemies.append(enemy)
+	return enemies
+
+
+func _get_spawn_fallback_direction(angle_offset: float = 0.0) -> Vector2:
+	var avg_party_position := Vector2.ZERO
+	var party_nodes := _get_alive_party_nodes()
+	if party_nodes.is_empty():
+		return Vector2.RIGHT.rotated(angle_offset)
+	for ally in party_nodes:
+		avg_party_position += ally.global_position
+	avg_party_position /= float(party_nodes.size())
+	var away_from_party := global_position - avg_party_position
+	if away_from_party.length_squared() <= 0.0001:
+		away_from_party = Vector2.RIGHT
+	return away_from_party.normalized().rotated(angle_offset)
+
+
+func _maybe_log_opening_spacing() -> void:
+	if not spacing_debug_runtime_enabled:
+		return
+	var opening_window := maxf(0.0, encounter_spacing_debug_opening_window)
+	if demo_elapsed > opening_window:
+		return
+	if demo_elapsed + 0.0001 < spacing_debug_next_log_at:
+		return
+	_log_encounter_spacing_snapshot("t=%.2f" % demo_elapsed)
+	spacing_debug_next_log_at = demo_elapsed + maxf(0.2, encounter_spacing_debug_log_interval)
+
+
+func _log_encounter_spacing_snapshot(label: String) -> void:
+	if not spacing_debug_runtime_enabled:
+		return
+	var enemies := _get_alive_enemy_nodes()
+	var party_nodes := _get_alive_party_nodes()
+	var min_enemy_to_party := INF
+	var avg_enemy_to_party := 0.0
+	var enemy_to_party_samples := 0
+	for enemy in enemies:
+		if party_nodes.is_empty():
+			continue
+		var nearest_party_distance := INF
+		for ally in party_nodes:
+			nearest_party_distance = minf(nearest_party_distance, enemy.global_position.distance_to(ally.global_position))
+		if nearest_party_distance < INF:
+			min_enemy_to_party = minf(min_enemy_to_party, nearest_party_distance)
+			avg_enemy_to_party += nearest_party_distance
+			enemy_to_party_samples += 1
+	var min_enemy_to_enemy := INF
+	for i in range(enemies.size()):
+		for j in range(i + 1, enemies.size()):
+			var separation := enemies[i].global_position.distance_to(enemies[j].global_position)
+			min_enemy_to_enemy = minf(min_enemy_to_enemy, separation)
+	var separation_active_count := 0
+	var separation_push_sum := 0.0
+	var approach_slot_active_count := 0
+	var approach_slot_offset_sum := 0.0
+	for enemy in enemies:
+		if not enemy.has_method("get_soft_separation_debug_snapshot"):
+			continue
+		var snapshot_variant: Variant = enemy.call("get_soft_separation_debug_snapshot")
+		if not (snapshot_variant is Dictionary):
+			continue
+		var snapshot := snapshot_variant as Dictionary
+		if bool(snapshot.get("applied", false)):
+			separation_active_count += 1
+			separation_push_sum += float(snapshot.get("push_magnitude", 0.0))
+		if bool(snapshot.get("approach_slot_applied", false)):
+			approach_slot_active_count += 1
+			var slot_offset_variant: Variant = snapshot.get("approach_slot_offset", Vector2.ZERO)
+			if slot_offset_variant is Vector2:
+				approach_slot_offset_sum += (slot_offset_variant as Vector2).length()
+	var avg_enemy_to_party_text := "-"
+	if enemy_to_party_samples > 0:
+		avg_enemy_to_party_text = "%.1f" % (avg_enemy_to_party / float(enemy_to_party_samples))
+	var min_enemy_to_party_text := "-" if min_enemy_to_party == INF else "%.1f" % min_enemy_to_party
+	var min_enemy_to_enemy_text := "-" if min_enemy_to_enemy == INF else "%.1f" % min_enemy_to_enemy
+	var avg_push_text := "-"
+	if separation_active_count > 0:
+		avg_push_text = "%.2f" % (separation_push_sum / float(separation_active_count))
+	var avg_slot_offset_text := "-"
+	if approach_slot_active_count > 0:
+		avg_slot_offset_text = "%.1f" % (approach_slot_offset_sum / float(approach_slot_active_count))
+	print(
+		"[SPACING] snapshot=%s enemies=%d party=%d min_enemy_party=%s avg_enemy_party=%s min_enemy_enemy=%s sep_active=%d sep_avg_push=%s slot_active=%d slot_avg_offset=%s" % [
+			label,
+			enemies.size(),
+			party_nodes.size(),
+			min_enemy_to_party_text,
+			avg_enemy_to_party_text,
+			min_enemy_to_enemy_text,
+			separation_active_count,
+			avg_push_text,
+			approach_slot_active_count,
+			avg_slot_offset_text
+		]
+	)
+
+
 func _apply_hitbox_debug_to_node(node: Node) -> void:
 	if node == null or not is_instance_valid(node):
 		return
@@ -762,3 +983,8 @@ func _is_autoplay_requested() -> bool:
 		if normalized == "--autoplay_test" or normalized == "autoplay_test" or normalized == "--autoplay_test=1":
 			return true
 	return false
+
+
+func _is_env_flag_enabled(env_key: String) -> bool:
+	var raw := OS.get_environment(env_key).strip_edges().to_lower()
+	return not raw.is_empty() and raw not in ["0", "false", "off", "no"]

@@ -31,7 +31,7 @@ static var _cached_impact_frames: SpriteFrames = null
 @export var impact_outward_offset: float = 10.0
 
 var source_enemy: Node2D = null
-var target_player: Player = null
+var target_actor: Node2D = null
 var velocity: Vector2 = Vector2.ZERO
 var damage: float = 10.0
 var stun_duration: float = 0.08
@@ -46,7 +46,7 @@ var fireball_sprite: AnimatedSprite2D = null
 
 func configure(
 	source_enemy_node: Node2D,
-	player_target: Player,
+	primary_target: Node2D,
 	spawn_position: Vector2,
 	direction: Vector2,
 	speed: float,
@@ -56,7 +56,7 @@ func configure(
 	hit_knockback: float
 ) -> void:
 	source_enemy = source_enemy_node
-	target_player = player_target
+	target_actor = primary_target
 	global_position = spawn_position
 	var normalized_direction := direction.normalized()
 	if normalized_direction.length_squared() <= 0.0001:
@@ -103,7 +103,7 @@ func _process(delta: float) -> void:
 	var next_position := global_position + move_delta
 	if _try_block_on_player(global_position, next_position):
 		return
-	if _try_hit_player(next_position):
+	if _try_hit_friendly_target(next_position):
 		return
 	global_position = next_position
 	remaining_distance = maxf(0.0, remaining_distance - move_delta.length())
@@ -139,22 +139,23 @@ func _ensure_sprite() -> void:
 
 
 func _try_block_on_player(world_start: Vector2, world_end: Vector2) -> bool:
-	if target_player == null or not is_instance_valid(target_player) or target_player.is_dead:
+	var block_player := _get_live_tank_player()
+	if block_player == null:
 		return false
-	var shield_active := target_player.is_blocking
-	if target_player.has_method("is_block_shield_active"):
-		shield_active = bool(target_player.call("is_block_shield_active"))
+	var shield_active := block_player.is_blocking
+	if block_player.has_method("is_block_shield_active"):
+		shield_active = bool(block_player.call("is_block_shield_active"))
 	if not shield_active:
 		return false
-	if target_player.has_method("is_segment_intersecting_block_shield") and bool(target_player.call("is_segment_intersecting_block_shield", world_start, world_end, live_collision_radius)):
-		if target_player.has_method("drain_block_stamina"):
-			target_player.call("drain_block_stamina", blocked_stamina_cost)
-		var impact_position := target_player.global_position
-		if target_player.has_method("get_block_shield_center_global"):
-			var center_variant: Variant = target_player.call("get_block_shield_center_global")
+	if block_player.has_method("is_segment_intersecting_block_shield") and bool(block_player.call("is_segment_intersecting_block_shield", world_start, world_end, live_collision_radius)):
+		if block_player.has_method("drain_block_stamina"):
+			block_player.call("drain_block_stamina", blocked_stamina_cost)
+		var impact_position := block_player.global_position
+		if block_player.has_method("get_block_shield_center_global"):
+			var center_variant: Variant = block_player.call("get_block_shield_center_global")
 			if center_variant is Vector2:
 				impact_position = center_variant
-		var player_center := _get_player_collision_center(target_player)
+		var player_center := _get_player_collision_center(block_player)
 		var away_direction := impact_position - player_center
 		if away_direction.length_squared() <= 0.0001:
 			away_direction = -_get_travel_direction()
@@ -163,28 +164,122 @@ func _try_block_on_player(world_start: Vector2, world_end: Vector2) -> bool:
 	return false
 
 
-func _try_hit_player(next_position: Vector2) -> bool:
-	if target_player == null or not is_instance_valid(target_player) or target_player.is_dead:
-		return false
-	var hitbox_center := _get_player_collision_center(target_player)
+func _try_hit_friendly_target(next_position: Vector2) -> bool:
 	var projectile_radius := maxf(6.0, live_collision_radius)
-	var player_radius := _get_player_collision_radius(target_player)
-	var total_radius := projectile_radius + player_radius
-	if _distance_to_segment(hitbox_center, global_position, next_position) > total_radius:
-		return false
 	var hit_direction := velocity.normalized()
 	if hit_direction.length_squared() <= 0.0001:
 		hit_direction = Vector2.RIGHT
-	var impact_position := hitbox_center - (hit_direction * player_radius)
+	var nearest_target: Node2D = null
+	var nearest_progress := INF
+	var nearest_center := Vector2.ZERO
+	var nearest_radius := 0.0
+	var segment := next_position - global_position
+	var segment_len_sq := segment.length_squared()
+	for candidate in _get_friendly_hit_candidates():
+		var target_center := _get_target_collision_center(candidate)
+		var target_radius := _get_target_collision_radius(candidate)
+		var total_radius := projectile_radius + target_radius
+		var progress := 0.0
+		if segment_len_sq > 0.0001:
+			progress = clampf((target_center - global_position).dot(segment) / segment_len_sq, 0.0, 1.0)
+		var closest := global_position + (segment * progress)
+		if target_center.distance_to(closest) > total_radius:
+			continue
+		if nearest_target == null or progress < nearest_progress:
+			nearest_target = candidate
+			nearest_progress = progress
+			nearest_center = target_center
+			nearest_radius = target_radius
+	if nearest_target == null:
+		return false
+	var impact_position := nearest_center - (hit_direction * nearest_radius)
 	global_position = impact_position
-	if target_player.has_method("receive_hit"):
+	if nearest_target.has_method("receive_hit"):
 		var source_position := source_enemy.global_position if source_enemy != null and is_instance_valid(source_enemy) else global_position
-		target_player.call("receive_hit", damage, source_position, false, stun_duration, knockback_scale)
-	var away_direction := impact_position - hitbox_center
+		nearest_target.call("receive_hit", damage, source_position, false, stun_duration, knockback_scale)
+	var away_direction := impact_position - nearest_center
 	if away_direction.length_squared() <= 0.0001:
 		away_direction = -hit_direction
 	_begin_impact(global_position, away_direction)
 	return true
+
+
+func _get_live_tank_player() -> Player:
+	var tank := get_tree().get_first_node_in_group("player") as Player
+	if tank == null or not is_instance_valid(tank) or tank.is_dead:
+		return null
+	return tank
+
+
+func _get_friendly_hit_candidates() -> Array[Node2D]:
+	var targets: Array[Node2D] = []
+	var seen_ids: Dictionary = {}
+	var tank := _get_live_tank_player()
+	if _is_valid_hit_target(tank):
+		var tank_id := tank.get_instance_id()
+		seen_ids[tank_id] = true
+		targets.append(tank)
+	for node in get_tree().get_nodes_in_group("friendly_npcs"):
+		var candidate := node as Node2D
+		if candidate == null or not is_instance_valid(candidate):
+			continue
+		if candidate.is_in_group("shadow_clones"):
+			continue
+		if candidate.has_method("is_shadow_clone_actor") and bool(candidate.call("is_shadow_clone_actor")):
+			continue
+		if not _is_valid_hit_target(candidate):
+			continue
+		var candidate_id := candidate.get_instance_id()
+		if seen_ids.has(candidate_id):
+			continue
+		seen_ids[candidate_id] = true
+		targets.append(candidate)
+	if _is_valid_hit_target(target_actor):
+		var target_id := target_actor.get_instance_id()
+		if not seen_ids.has(target_id):
+			targets.append(target_actor)
+	return targets
+
+
+func _is_valid_hit_target(target: Node2D) -> bool:
+	if target == null or not is_instance_valid(target):
+		return false
+	if not target.has_method("receive_hit"):
+		return false
+	var target_player := target as Player
+	if target_player != null:
+		return not target_player.is_dead
+	var target_healer := target as FriendlyHealer
+	if target_healer != null:
+		return not target_healer.dead
+	var target_rat := target as FriendlyRatfolk
+	if target_rat != null:
+		return not target_rat.dead
+	return true
+
+
+func _get_target_collision_radius(target: Node2D) -> float:
+	var target_player := target as Player
+	if target_player != null:
+		return _get_player_collision_radius(target_player)
+	var collision_shape := target.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if collision_shape == null:
+		return 12.0
+	var circle := collision_shape.shape as CircleShape2D
+	if circle == null:
+		return 12.0
+	var radius_scale := maxf(absf(collision_shape.global_scale.x), absf(collision_shape.global_scale.y))
+	return maxf(4.0, circle.radius * maxf(0.01, radius_scale))
+
+
+func _get_target_collision_center(target: Node2D) -> Vector2:
+	var target_player := target as Player
+	if target_player != null:
+		return _get_player_collision_center(target_player)
+	var collision_shape := target.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if collision_shape != null and is_instance_valid(collision_shape):
+		return collision_shape.global_position
+	return target.global_position
 
 
 func _begin_impact(world_position: Vector2, away_direction: Vector2 = Vector2.ZERO) -> void:

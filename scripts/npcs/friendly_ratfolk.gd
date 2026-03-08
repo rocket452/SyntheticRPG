@@ -82,6 +82,7 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var shadow_fear_consideration_distance: float = 420.0
 @export var shadow_fear_projectile_speed: float = 340.0
 @export var shadow_fear_projectile_max_distance: float = 980.0
+@export var shadow_fear_cast_duration: float = 0.28
 @export var shadow_clone_enabled: bool = true
 @export var shadow_clone_count: int = 2
 @export var shadow_clone_cast_duration: float = 0.5
@@ -109,6 +110,9 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var backstab_dash_depth_offset: float = 18.0
 @export_range(0.0, 0.95, 0.01) var backstab_required_behind_dot: float = 0.12
 @export var avoid_tank_frontline_distance: float = 34.0
+@export var marked_lunge_panic_freeze_duration: float = 0.22
+@export var marked_lunge_move_speed_multiplier: float = 0.72
+@export var marked_lunge_hold_radius: float = 20.0
 
 const RATFOLK_SHEET_PATH: String = "res://assets/external/ElthenAssets/ratfolk/Ratfolk Rogue Sprite Sheet.png"
 const RATFOLK_SCENE_PATH: String = "res://scenes/npcs/FriendlyRatfolk.tscn"
@@ -148,6 +152,9 @@ var attack_cooldown_left: float = 0.0
 var shadow_fear_cooldown_left: float = 0.0
 var shadow_fear_pending_left: float = -1.0
 var shadow_fear_pending_total: float = 0.0
+var shadow_fear_cast_left: float = 0.0
+var shadow_fear_cast_active: bool = false
+var shadow_fear_cast_target: EnemyBase = null
 var shadow_clone_cast_left: float = 0.0
 var shadow_clone_cast_active: bool = false
 var shadow_clone_cooldown_left: float = 0.0
@@ -191,6 +198,8 @@ var breath_threat_snapshot: Dictionary = {}
 var breath_safe_indicator_left: float = 0.0
 var breath_safe_indicator: Line2D = null
 var breath_was_safe: bool = false
+var marked_lunge_panic_left: float = 0.0
+var marked_lunge_enemy_id: int = -1
 var hitbox_debug_enabled: bool = false
 var rng := RandomNumberGenerator.new()
 
@@ -220,10 +229,15 @@ func _ready() -> void:
 	shadow_fear_cooldown_left = 0.0
 	shadow_fear_pending_left = -1.0
 	shadow_fear_pending_total = 0.0
+	shadow_fear_cast_left = 0.0
+	shadow_fear_cast_active = false
+	shadow_fear_cast_target = null
 	tracked_enemy_ids.clear()
 	shadow_fear_focus_target = null
 	shadow_fear_resume_target = null
 	shadow_fear_focus_requires_close = true
+	marked_lunge_panic_left = 0.0
+	marked_lunge_enemy_id = -1
 	boss_mark_cooldown_left = 0.0
 	dps_ai_state = DPSAIState.FOLLOWING
 	dps_ai_state_name = String(DPS_AI_STATE_NAMES.get(dps_ai_state, "FOLLOWING"))
@@ -253,6 +267,9 @@ func setup_as_shadow_clone(owner_player: Player = null) -> void:
 	shadow_fear_cooldown_left = 0.0
 	shadow_fear_pending_left = -1.0
 	shadow_fear_pending_total = 0.0
+	shadow_fear_cast_left = 0.0
+	shadow_fear_cast_active = false
+	shadow_fear_cast_target = null
 	tracked_enemy_ids.clear()
 	shadow_fear_focus_target = null
 	shadow_fear_resume_target = null
@@ -371,6 +388,8 @@ func _tick_timers(delta: float) -> void:
 	shadow_fear_cooldown_left = maxf(0.0, shadow_fear_cooldown_left - delta)
 	if shadow_fear_pending_left >= 0.0:
 		shadow_fear_pending_left = maxf(0.0, shadow_fear_pending_left - delta)
+	if shadow_fear_cast_active:
+		shadow_fear_cast_left = maxf(0.0, shadow_fear_cast_left - delta)
 	if shadow_clone_cast_active:
 		shadow_clone_cast_left = maxf(0.0, shadow_clone_cast_left - delta)
 	shadow_clone_cooldown_left = maxf(0.0, shadow_clone_cooldown_left - delta)
@@ -378,6 +397,7 @@ func _tick_timers(delta: float) -> void:
 	shadow_clone_scatter_left = maxf(0.0, shadow_clone_scatter_left - delta)
 	backstab_dash_cooldown_left = maxf(0.0, backstab_dash_cooldown_left - delta)
 	backstab_dash_left = maxf(0.0, backstab_dash_left - delta)
+	marked_lunge_panic_left = maxf(0.0, marked_lunge_panic_left - delta)
 	stun_left = maxf(0.0, stun_left - delta)
 	hurt_anim_left = maxf(0.0, hurt_anim_left - delta)
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
@@ -391,8 +411,12 @@ func _tick_timers(delta: float) -> void:
 		if hit_flash_left > 0.0:
 			base_modulate = base_modulate.lerp(Color(1.0, 0.7, 0.7, base_modulate.a), 0.78)
 		sprite.modulate = base_modulate
-		if shadow_clone_cast_active and shadow_clone_cast_duration > 0.01:
-			var cast_ratio := clampf(1.0 - (shadow_clone_cast_left / shadow_clone_cast_duration), 0.0, 1.0)
+		var cast_ratio := -1.0
+		if shadow_fear_cast_active and shadow_fear_cast_duration > 0.01:
+			cast_ratio = clampf(1.0 - (shadow_fear_cast_left / shadow_fear_cast_duration), 0.0, 1.0)
+		elif shadow_clone_cast_active and shadow_clone_cast_duration > 0.01:
+			cast_ratio = clampf(1.0 - (shadow_clone_cast_left / shadow_clone_cast_duration), 0.0, 1.0)
+		if cast_ratio >= 0.0:
 			var pulse := 1.0 + (sin(cast_ratio * TAU * 3.0) * 0.06)
 			sprite.scale = sprite_base_scale * pulse
 		else:
@@ -438,6 +462,71 @@ func _handle_breath_threat() -> bool:
 	return true
 
 
+func _get_enemy_marking_self_for_lunge() -> EnemyBase:
+	var self_id := get_instance_id()
+	for enemy_node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := enemy_node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if not enemy.has_method("is_lunge_threatening_marked_ally"):
+			continue
+		if not bool(enemy.call("is_lunge_threatening_marked_ally")):
+			continue
+		if not enemy.has_method("get_marked_ally_node"):
+			continue
+		var marked_target := enemy.call("get_marked_ally_node") as Node2D
+		if marked_target == null or not is_instance_valid(marked_target):
+			continue
+		if marked_target.get_instance_id() == self_id:
+			return enemy
+	return null
+
+
+func _handle_marked_lunge_threat(delta: float) -> bool:
+	if is_shadow_clone:
+		marked_lunge_enemy_id = -1
+		marked_lunge_panic_left = 0.0
+		return false
+	var threat_enemy := _get_enemy_marking_self_for_lunge()
+	if threat_enemy == null:
+		marked_lunge_enemy_id = -1
+		marked_lunge_panic_left = 0.0
+		return false
+
+	var enemy_id := threat_enemy.get_instance_id()
+	if marked_lunge_enemy_id != enemy_id:
+		marked_lunge_enemy_id = enemy_id
+		marked_lunge_panic_left = maxf(marked_lunge_panic_left, maxf(0.0, marked_lunge_panic_freeze_duration))
+
+	_interrupt_attack()
+	backstab_dash_left = 0.0
+	backstab_dash_target_enemy = null
+	shadow_fear_pending_left = -1.0
+	shadow_fear_focus_target = null
+	_set_dps_ai_state(DPSAIState.REPOSITIONING, threat_enemy)
+	dps_ai_state_name = "MARKED_PANIC"
+
+	if marked_lunge_panic_left > 0.0:
+		velocity = Vector2.ZERO
+		_update_facing(threat_enemy.global_position - global_position)
+		return true
+
+	var desired_world := player.global_position if is_instance_valid(player) else global_position
+	if threat_enemy.has_method("get_marked_ally_protection_point"):
+		var protection_variant: Variant = threat_enemy.call("get_marked_ally_protection_point")
+		if protection_variant is Vector2:
+			desired_world = protection_variant
+	var to_safe := desired_world - global_position
+	var hold_radius := maxf(6.0, marked_lunge_hold_radius)
+	if to_safe.length() <= hold_radius:
+		velocity = Vector2.ZERO
+	else:
+		var speed := maxf(20.0, move_speed * maxf(0.1, marked_lunge_move_speed_multiplier))
+		velocity = to_safe.normalized() * speed
+	_update_facing(threat_enemy.global_position - global_position)
+	return true
+
+
 func _tick_combat_logic(delta: float) -> void:
 	if shadow_clone_cast_active:
 		velocity = Vector2.ZERO
@@ -448,6 +537,13 @@ func _tick_combat_logic(delta: float) -> void:
 		return
 
 	if _handle_breath_threat():
+		return
+	if _handle_marked_lunge_threat(delta):
+		return
+	if shadow_fear_cast_active:
+		velocity = Vector2.ZERO
+		if shadow_fear_cast_left <= 0.0001:
+			_finish_shadow_fear_cast()
 		return
 
 	if _is_enemy_shadow_feared(target_enemy) or _is_enemy_shadow_feared(backstab_dash_target_enemy):
@@ -1026,11 +1122,43 @@ func _try_cast_shadow_fear() -> bool:
 	if backstab_dash_left > 0.0:
 		backstab_dash_left = 0.0
 		backstab_dash_target_enemy = null
+	_start_shadow_fear_cast(focus_enemy)
+	return true
+
+
+func _start_shadow_fear_cast(focus_enemy: EnemyBase) -> void:
+	if focus_enemy == null or not is_instance_valid(focus_enemy) or focus_enemy.dead:
+		return
+	shadow_fear_cast_active = true
+	shadow_fear_cast_left = maxf(0.01, shadow_fear_cast_duration)
+	shadow_fear_cast_target = focus_enemy
+	velocity = Vector2.ZERO
+	_set_dps_ai_state(DPSAIState.MARKING, focus_enemy)
+	_log_shadow_fear("CAST_START rat=%s target=%s cast=%.2f" % [name, focus_enemy.name, shadow_fear_cast_left])
+	_spawn_hit_effect(global_position + Vector2(0.0, -15.0), Color(0.54, 0.24, 0.76, 0.9), 5.6)
+
+
+func _finish_shadow_fear_cast() -> void:
+	var focus_enemy := shadow_fear_cast_target
+	shadow_fear_cast_active = false
+	shadow_fear_cast_left = 0.0
+	shadow_fear_cast_target = null
+	if focus_enemy == null or not is_instance_valid(focus_enemy) or focus_enemy.dead:
+		shadow_fear_focus_target = null
+		shadow_fear_pending_left = -1.0
+		shadow_fear_focus_requires_close = true
+		return
+	if _is_enemy_shadow_feared(focus_enemy):
+		shadow_fear_focus_target = null
+		shadow_fear_pending_left = -1.0
+		shadow_fear_focus_requires_close = true
+		return
 	if not _spawn_shadow_fear_projectile(focus_enemy):
 		shadow_fear_focus_target = null
 		shadow_fear_pending_left = -1.0
 		shadow_fear_focus_requires_close = true
-		return false
+		return
+	_log_shadow_fear("CAST_RELEASE rat=%s target=%s" % [name, focus_enemy.name])
 	shadow_fear_cooldown_left = maxf(0.1, shadow_fear_cooldown)
 	velocity = Vector2.ZERO
 	shadow_fear_pending_left = -1.0
@@ -1039,7 +1167,6 @@ func _try_cast_shadow_fear() -> bool:
 	if shadow_fear_resume_target != null and _is_valid_shadow_fear_resume_target(shadow_fear_resume_target):
 		target_enemy = shadow_fear_resume_target
 		_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
-	return true
 
 
 func _is_valid_shadow_fear_resume_target(enemy) -> bool:
@@ -1579,6 +1706,9 @@ func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = f
 func _interrupt_attack() -> void:
 	attack_windup_left = 0.0
 	attack_recovery_left = 0.0
+	shadow_fear_cast_active = false
+	shadow_fear_cast_left = 0.0
+	shadow_fear_cast_target = null
 	shadow_clone_cast_active = false
 	shadow_clone_cast_left = 0.0
 	backstab_dash_left = 0.0
@@ -1631,6 +1761,11 @@ func _update_animation(delta: float) -> void:
 		var hurt_duration := _get_hurt_animation_duration()
 		var hurt_progress := clampf(1.0 - (hurt_anim_left / maxf(0.01, hurt_duration)), 0.0, 1.0)
 		_set_non_loop_anim("hurt", hurt_progress)
+		return
+	if shadow_fear_cast_active:
+		var cast_duration := maxf(0.01, shadow_fear_cast_duration)
+		var cast_progress := clampf(1.0 - (shadow_fear_cast_left / cast_duration), 0.0, 1.0)
+		_set_non_loop_anim("attack", cast_progress * 0.55)
 		return
 	if shadow_clone_cast_active:
 		_set_loop_anim("idle", delta * 0.24)
@@ -1830,6 +1965,8 @@ func _update_health_bar() -> void:
 
 
 func _get_cast_progress_ratio() -> float:
+	if shadow_fear_cast_active and shadow_fear_cast_duration > 0.01:
+		return clampf(1.0 - (shadow_fear_cast_left / shadow_fear_cast_duration), 0.0, 1.0)
 	if shadow_clone_cast_active and shadow_clone_cast_duration > 0.01:
 		return clampf(1.0 - (shadow_clone_cast_left / shadow_clone_cast_duration), 0.0, 1.0)
 	var has_pending_shadow_fear := shadow_fear_pending_left >= 0.0 and shadow_fear_focus_target != null and is_instance_valid(shadow_fear_focus_target) and not shadow_fear_focus_target.dead

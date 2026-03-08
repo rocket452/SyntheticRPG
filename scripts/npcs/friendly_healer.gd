@@ -74,6 +74,9 @@ enum CastAction {
 @export var orbit_lateral_distance: float = 14.0
 @export var orbit_depth_distance: float = 8.0
 @export var orbit_speed: float = 1.25
+@export var marked_lunge_panic_freeze_duration: float = 0.24
+@export var marked_lunge_move_speed_multiplier: float = 0.65
+@export var marked_lunge_hold_radius: float = 22.0
 @export var move_facing_threshold: float = 20.0
 @export var facing_flip_deadzone: float = 10.0
 @export var pixel_snap_movement: bool = false
@@ -197,6 +200,8 @@ var knockback_velocity: Vector2 = Vector2.ZERO
 var dead: bool = false
 var death_anim_time: float = 0.0
 var death_cleanup_started: bool = false
+var marked_lunge_panic_left: float = 0.0
+var marked_lunge_enemy_id: int = -1
 var breath_threat_snapshot: Dictionary = {}
 var breath_safe_indicator_left: float = 0.0
 var breath_safe_indicator: Line2D = null
@@ -240,6 +245,8 @@ func _ready() -> void:
 	healer_ai_desired_position = position
 	pending_cast_action = CastAction.NONE
 	pending_cast_target = null
+	marked_lunge_panic_left = 0.0
+	marked_lunge_enemy_id = -1
 	_setup_breath_safe_indicator()
 	_prepare_frame_alignment()
 	_set_anim_frame("idle", 0)
@@ -281,9 +288,15 @@ func _physics_process(delta: float) -> void:
 	_refresh_breath_threat()
 	if _is_breath_threat_active() and is_casting:
 		_cancel_cast_for_breath()
+	var marked_lunge_active := false
+	if not _is_breath_threat_active():
+		marked_lunge_active = _handle_marked_lunge_threat(delta)
+		if marked_lunge_active and is_casting:
+			_cancel_cast_for_lunge_mark()
 	var primary_enemy := _find_primary_enemy()
-	_update_healer_ai_state(delta, primary_enemy)
-	_update_tactical_positioning(delta)
+	if not marked_lunge_active:
+		_update_healer_ai_state(delta, primary_enemy)
+		_update_tactical_positioning(delta)
 	_apply_miniboss_soft_separation(delta)
 	_update_facing()
 	_update_breath_safe_indicator()
@@ -300,7 +313,7 @@ func _physics_process(delta: float) -> void:
 	if is_casting:
 		_tick_cast(delta)
 		return
-	if _is_breath_threat_active():
+	if _is_breath_threat_active() or marked_lunge_active:
 		return
 
 	if _is_tactically_moving():
@@ -385,6 +398,81 @@ func _cancel_cast_for_breath() -> void:
 	pending_cast_target = null
 	_set_anim_frame("idle", 0)
 	heal_timer_left = minf(heal_timer_left, react_heal_delay)
+
+
+func _cancel_cast_for_lunge_mark() -> void:
+	is_casting = false
+	cast_anim_time = 0.0
+	heal_applied_this_cast = false
+	pending_cast_action = CastAction.NONE
+	pending_cast_target = null
+	_set_anim_frame("idle", 0)
+	heal_timer_left = minf(heal_timer_left, react_heal_delay)
+
+
+func _get_enemy_marking_self_for_lunge() -> EnemyBase:
+	var self_id := get_instance_id()
+	for enemy_node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := enemy_node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if not enemy.has_method("is_lunge_threatening_marked_ally"):
+			continue
+		if not bool(enemy.call("is_lunge_threatening_marked_ally")):
+			continue
+		if not enemy.has_method("get_marked_ally_node"):
+			continue
+		var marked_target := enemy.call("get_marked_ally_node") as Node2D
+		if marked_target == null or not is_instance_valid(marked_target):
+			continue
+		if marked_target.get_instance_id() == self_id:
+			return enemy
+	return null
+
+
+func _handle_marked_lunge_threat(delta: float) -> bool:
+	var threat_enemy := _get_enemy_marking_self_for_lunge()
+	if threat_enemy == null:
+		marked_lunge_enemy_id = -1
+		marked_lunge_panic_left = 0.0
+		return false
+
+	var enemy_id := threat_enemy.get_instance_id()
+	if marked_lunge_enemy_id != enemy_id:
+		marked_lunge_enemy_id = enemy_id
+		marked_lunge_panic_left = maxf(marked_lunge_panic_left, maxf(0.0, marked_lunge_panic_freeze_duration))
+
+	move_velocity = Vector2.ZERO
+	healer_ai_state = HealerAIState.REPOSITIONING
+	healer_ai_target = threat_enemy
+	healer_ai_state_name = "MARKED_PANIC"
+	marked_lunge_panic_left = maxf(0.0, marked_lunge_panic_left - maxf(0.0, delta))
+	if marked_lunge_panic_left > 0.0:
+		return true
+
+	var desired_world := player.global_position if is_instance_valid(player) else global_position
+	if threat_enemy.has_method("get_marked_ally_protection_point"):
+		var protection_variant: Variant = threat_enemy.call("get_marked_ally_protection_point")
+		if protection_variant is Vector2:
+			desired_world = protection_variant
+	var desired_local := _clamp_to_bounds(desired_world)
+	var to_safe := desired_local - position
+	var hold_radius := maxf(6.0, marked_lunge_hold_radius)
+	if to_safe.length() <= hold_radius:
+		move_velocity = Vector2.ZERO
+		position = _clamp_to_bounds(position)
+		return true
+
+	var speed := maxf(18.0, move_speed * maxf(0.1, marked_lunge_move_speed_multiplier))
+	var move_dir := to_safe.normalized()
+	if use_player_like_movement:
+		move_dir = _quantize_player_like_direction(move_dir)
+	move_velocity = move_dir * speed
+	position += move_velocity * maxf(0.0, delta)
+	position = _clamp_to_bounds(position)
+	if pixel_snap_movement:
+		position = position.round()
+	return true
 
 
 func _update_healer_ai_state(delta: float, primary_enemy: EnemyBase) -> void:
