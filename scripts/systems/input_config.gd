@@ -11,7 +11,8 @@ static func ensure_actions() -> void:
 		"ability_1": [_make_key(KEY_K)],
 		"ability_2": [_make_key(KEY_L)],
 		"roll": [_make_key(KEY_SPACE)],
-		"block": [_make_key(KEY_I)]
+		"block": [_make_key(KEY_I)],
+		"inventory_toggle": [_make_key(KEY_TAB)]
 	}
 
 	for action_name in action_map.keys():

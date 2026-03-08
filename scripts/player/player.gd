@@ -1,6 +1,8 @@
 extends CharacterBody2D
 class_name Player
 
+const SWORD_DEFINITIONS := preload("res://scripts/systems/sword_definitions.gd")
+
 enum QueuedAttack {
 	NONE,
 	BASIC,
@@ -21,6 +23,7 @@ signal xp_changed(current: int, needed: int, level: int)
 signal cooldowns_changed(values: Dictionary)
 signal died
 signal item_looted(item_name: String, total_owned: int)
+signal equipped_sword_changed(sword_id: String, sword_name: String)
 
 # Pacing experiment knobs (slow-RPG cadence).
 @export var move_speed: float = 82.9
@@ -31,6 +34,7 @@ signal item_looted(item_name: String, total_owned: int)
 @export var basic_attack_cooldown: float = 1.35
 @export var basic_attack_input_buffer_window: float = 0.15
 @export var basic_attack_cadence_debug_logging: bool = false
+@export var sword_combat_debug_logging: bool = true
 @export var basic_attack_windup: float = 0.2
 @export var basic_combo_chain_window: float = 0.42
 @export var basic_combo_end_cooldown: float = 0.8
@@ -228,6 +232,11 @@ var current_xp: int = 0
 var xp_to_next_level: int = 100
 var level: int = 1
 var inventory: Dictionary = {}
+var available_sword_ids: Array[String] = []
+var equipped_sword_id: String = ""
+var equipped_sword_definition: Dictionary = {}
+var gameplay_input_blocked: bool = false
+var last_charge_attack_raw_ratio: float = 0.0
 
 var facing_direction: Vector2 = Vector2.RIGHT
 var is_blocking: bool = false
@@ -265,6 +274,7 @@ var queued_melee_hit_stun_duration: float = 0.0
 var queued_melee_hit_knockback_scale: float = 1.0
 var queued_melee_hit_hitstop: float = 0.0
 var queued_melee_hit_vfx_scale: float = 1.0
+var queued_melee_hit_apply_sword_effect: bool = false
 
 var lunge_time_left: float = 0.0
 var lunge_total_duration: float = 0.0
@@ -413,6 +423,14 @@ func _ready() -> void:
 		hitbox_debug_enabled = bool(get_tree().get_meta("debug_hitbox_mode_enabled"))
 	current_health = max_health
 	current_block_stamina = block_stamina_max
+	available_sword_ids = SWORD_DEFINITIONS.get_sword_ids()
+	equipped_sword_id = String(SWORD_DEFINITIONS.DEFAULT_SWORD_ID)
+	if available_sword_ids.find(equipped_sword_id) == -1 and not available_sword_ids.is_empty():
+		equipped_sword_id = available_sword_ids[0]
+	var env_sword_id := OS.get_environment("EQUIPPED_SWORD_ID").strip_edges().to_lower()
+	if not env_sword_id.is_empty() and available_sword_ids.find(env_sword_id) != -1:
+		equipped_sword_id = env_sword_id
+	_refresh_equipped_sword_visuals()
 	camera_base_offset = camera_2d.offset if is_instance_valid(camera_2d) else Vector2.ZERO
 	_configure_autoplay_logging()
 	_set_combat_state(CombatState.IDLE_MOVE)
@@ -470,6 +488,7 @@ func _ready() -> void:
 	_setup_hitbox_debug_overlay()
 	_setup_health_bar()
 	_update_health_bar()
+	equipped_sword_changed.emit(equipped_sword_id, get_equipped_sword_name())
 	emit_initial_state()
 
 
@@ -626,6 +645,48 @@ func collect_item(item_id: String, value: int) -> void:
 	_apply_item_bonus(item_id, value)
 	item_looted.emit(String(ITEM_NAMES.get(item_id, item_id)), total)
 	health_changed.emit(current_health, max_health)
+
+
+func get_available_sword_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	for sword_id in available_sword_ids:
+		entries.append(SWORD_DEFINITIONS.get_definition(sword_id))
+	return entries
+
+
+func get_equipped_sword_id() -> String:
+	return equipped_sword_id
+
+
+func get_equipped_sword_name() -> String:
+	return SWORD_DEFINITIONS.get_display_name(equipped_sword_id)
+
+
+func equip_sword(sword_id: String) -> bool:
+	if sword_id.is_empty():
+		return false
+	if available_sword_ids.find(sword_id) == -1:
+		return false
+	if equipped_sword_id == sword_id:
+		return false
+	equipped_sword_id = sword_id
+	_refresh_equipped_sword_visuals()
+	equipped_sword_changed.emit(equipped_sword_id, get_equipped_sword_name())
+	_emit_cooldown_state()
+	_log_sword_effect("EQUIP id=%s name=%s" % [equipped_sword_id, get_equipped_sword_name()])
+	return true
+
+
+func set_gameplay_input_blocked(blocked: bool) -> void:
+	gameplay_input_blocked = blocked
+	if not gameplay_input_blocked:
+		_emit_cooldown_state()
+		return
+	is_blocking = false
+	is_charging_attack = false
+	_cancel_charge_attack()
+	_reset_basic_combo_state()
+	_emit_cooldown_state()
 
 
 func needs_healing(threshold_ratio: float = 0.999) -> bool:
@@ -832,6 +893,7 @@ func drain_block_stamina(amount: float) -> float:
 
 func _configure_autoplay_logging() -> void:
 	basic_attack_cadence_debug_logging = basic_attack_cadence_debug_logging or _is_env_enabled("TANK_BASIC_ATTACK_DEBUG")
+	sword_combat_debug_logging = sword_combat_debug_logging or _is_env_enabled("SWORD_DEBUG")
 	autoplay_test_enabled = _is_autoplay_requested()
 	if not autoplay_test_enabled:
 		autoplay_log_path = ""
@@ -978,7 +1040,7 @@ func _start_charge_attack() -> void:
 	_clear_queued_melee_hit()
 	_set_combat_state(CombatState.CHARGING_ATTACK)
 	_autoplay_log("CHARGE_START")
-	_show_attack_telegraph(basic_attack_range, basic_attack_arc_degrees, Color(0.9, 0.78, 0.3, 0.35))
+	_show_attack_telegraph(basic_attack_range, basic_attack_arc_degrees, _get_equipped_sword_charge_preview_color(0.35))
 
 
 func _cancel_charge_attack() -> void:
@@ -1017,6 +1079,7 @@ func _release_charge_attack() -> void:
 	charge_attack_vfx_scale = lerpf(1.0, 1.95, scaled_ratio)
 	charge_attack_enemy_stun = lerpf(charge_enemy_stun_min, charge_enemy_stun_max, scaled_ratio)
 	charge_attack_anim_strength = lerpf(1.22, 2.08, scaled_ratio)
+	last_charge_attack_raw_ratio = charge_ratio
 	charge_release_windup_left = maxf(0.01, charge_windup_duration)
 	charge_attack_active_left = 0.0
 	charge_attack_recovery_left = 0.0
@@ -1025,7 +1088,7 @@ func _release_charge_attack() -> void:
 	basic_attack_cooldown_left = maxf(basic_attack_cooldown_left, basic_attack_cooldown)
 	_set_combat_state(CombatState.ATTACK_WINDUP)
 	_autoplay_log("CHARGE_RELEASE time=%.3f ratio=%.3f type=heavy" % [release_time, charge_ratio])
-	_show_attack_telegraph(charge_attack_range, charge_attack_arc, Color(1.0, 0.58, 0.3, 0.42))
+	_show_attack_telegraph(charge_attack_range, charge_attack_arc, _get_equipped_sword_charge_release_color(0.42))
 	_update_attack_telegraph_progress()
 
 
@@ -1040,10 +1103,11 @@ func _tick_charge_attack_state(delta: float) -> void:
 		if is_charging_attack:
 			var charge_ratio := _get_charge_ratio()
 			var scaled_ratio := _get_scaled_charge_ratio()
+			var preview_color := _get_equipped_sword_charge_preview_color(lerpf(0.28, 0.6, charge_ratio))
 			_show_attack_telegraph(
 				basic_attack_range + (charge_range_bonus * scaled_ratio * 0.6),
 				basic_attack_arc_degrees + (charge_arc_bonus * scaled_ratio * 0.5),
-				Color(0.96, 0.74, 0.34, lerpf(0.28, 0.55, charge_ratio))
+				preview_color
 			)
 			attack_telegraph.rotation = _resolve_charge_release_direction().angle()
 			attack_telegraph.modulate.a = lerpf(0.35, 0.92, charge_ratio)
@@ -1052,6 +1116,7 @@ func _tick_charge_attack_state(delta: float) -> void:
 	if charge_release_windup_left > 0.0:
 		charge_release_windup_left = maxf(0.0, charge_release_windup_left - delta)
 		var windup_progress := 1.0 - (charge_release_windup_left / maxf(0.01, charge_windup_duration))
+		attack_telegraph.color = _get_equipped_sword_charge_release_color(lerpf(0.45, 0.85, windup_progress))
 		attack_telegraph.rotation = charge_release_direction.angle()
 		attack_telegraph.modulate.a = lerpf(0.45, 0.96, windup_progress)
 		attack_telegraph.scale = Vector2.ONE * lerpf(1.0, 1.18, windup_progress)
@@ -1076,10 +1141,11 @@ func _tick_charge_attack_state(delta: float) -> void:
 func _begin_charge_attack_active() -> void:
 	charge_attack_active_left = maxf(0.01, charge_active_duration)
 	_set_combat_state(CombatState.ATTACK_ACTIVE)
+	var charge_flash_color := _get_equipped_sword_charge_release_color(0.46)
 	_show_instant_attack_flash(
 		charge_attack_range,
 		charge_attack_arc,
-		Color(1.0, 0.58, 0.32, 0.42),
+		charge_flash_color,
 		charge_release_direction
 	)
 	_start_attack_animation(lerpf(0.24, 0.34, _get_scaled_charge_ratio()), charge_attack_anim_strength)
@@ -1087,7 +1153,7 @@ func _begin_charge_attack_active() -> void:
 		_trigger_slash_effect(
 			charge_attack_range,
 			charge_attack_arc,
-			Color(1.0, 0.62, 0.36, 0.92),
+			_get_equipped_sword_charge_release_color(0.92),
 			0.22 + (_get_scaled_charge_ratio() * 0.08),
 			6.4 + (_get_scaled_charge_ratio() * 2.8)
 		)
@@ -1106,7 +1172,8 @@ func _apply_charge_attack_hit() -> void:
 		charge_attack_knockback_scale,
 		charge_attack_hitstop,
 		charge_attack_vfx_scale,
-		charge_release_direction
+		charge_release_direction,
+		false
 	)
 	if hit_confirmed:
 		charge_attack_hit_confirmed = true
@@ -1200,6 +1267,10 @@ func _update_camera_shake(delta: float) -> void:
 
 
 func _handle_actions() -> void:
+	if gameplay_input_blocked:
+		is_blocking = false
+		return
+
 	if _can_dodge_cancel_charge_recovery() and Input.is_action_just_pressed("roll") and roll_cooldown_left <= 0.0:
 		_cancel_charge_attack_recovery()
 		_start_roll()
@@ -1299,10 +1370,13 @@ func _start_basic_combo_attack() -> void:
 	var arc_multiplier := float(BASIC_COMBO_ARC_MULTIPLIERS[combo_index])
 	var windup_multiplier := float(BASIC_COMBO_WINDUP_MULTIPLIERS[combo_index])
 	var cooldown_multiplier := float(BASIC_COMBO_COOLDOWN_MULTIPLIERS[combo_index])
+	var sword_range_multiplier := _get_equipped_basic_attack_range_multiplier()
+	if sword_range_multiplier > 1.001:
+		_log_sword_effect("BASIC_RANGE_MULT hit=%d x%.2f" % [combo_hit, sword_range_multiplier])
 
 	queued_basic_combo_hit_index = combo_hit
 	queued_basic_combo_damage = basic_attack_damage * damage_multiplier
-	queued_basic_combo_range = basic_attack_range * range_multiplier
+	queued_basic_combo_range = basic_attack_range * range_multiplier * sword_range_multiplier
 	queued_basic_combo_arc_degrees = basic_attack_arc_degrees * arc_multiplier
 
 	basic_attack_cooldown_left = maxf(basic_attack_cooldown, basic_attack_cooldown * cooldown_multiplier)
@@ -1311,7 +1385,7 @@ func _start_basic_combo_attack() -> void:
 		maxf(0.01, basic_attack_windup * windup_multiplier),
 		queued_basic_combo_range,
 		queued_basic_combo_arc_degrees,
-		Color(0.94, 0.66, 0.34, 0.34)
+		_get_equipped_sword_charge_preview_color(0.34)
 	)
 	if basic_combo_auto_hits_remaining > 0:
 		basic_combo_auto_hits_remaining -= 1
@@ -1339,9 +1413,12 @@ func _start_basic_combo_attack() -> void:
 func _start_basic_single_attack() -> void:
 	_reset_basic_combo_state()
 	var combo_index := 0
+	var sword_range_multiplier := _get_equipped_basic_attack_range_multiplier()
+	if sword_range_multiplier > 1.001:
+		_log_sword_effect("BASIC_RANGE_MULT hit=1 x%.2f" % sword_range_multiplier)
 	queued_basic_combo_hit_index = 1
 	queued_basic_combo_damage = basic_attack_damage * float(BASIC_COMBO_DAMAGE_MULTIPLIERS[combo_index])
-	queued_basic_combo_range = basic_attack_range * float(BASIC_COMBO_RANGE_MULTIPLIERS[combo_index])
+	queued_basic_combo_range = basic_attack_range * float(BASIC_COMBO_RANGE_MULTIPLIERS[combo_index]) * sword_range_multiplier
 	queued_basic_combo_arc_degrees = basic_attack_arc_degrees * float(BASIC_COMBO_ARC_MULTIPLIERS[combo_index])
 	basic_attack_cooldown_left = maxf(0.01, basic_attack_cooldown)
 	_queue_attack(
@@ -1349,7 +1426,7 @@ func _start_basic_single_attack() -> void:
 		maxf(0.01, basic_attack_windup * float(BASIC_COMBO_WINDUP_MULTIPLIERS[combo_index])),
 		queued_basic_combo_range,
 		queued_basic_combo_arc_degrees,
-		Color(0.94, 0.66, 0.34, 0.34)
+		_get_equipped_sword_charge_preview_color(0.34)
 	)
 	basic_combo_buffered = false
 
@@ -1370,7 +1447,7 @@ func _resolve_queued_attack() -> void:
 			var combo_arc := queued_basic_combo_arc_degrees if queued_basic_combo_arc_degrees > 0.0 else basic_attack_arc_degrees
 			var combo_hitstop := 0.045 + (0.012 * float(combo_index))
 			var combo_knockback := 1.0 + (0.08 * float(combo_index))
-			_queue_melee_hit_for_final_attack_frame(combo_damage, combo_range, combo_arc, outgoing_hit_stun_duration, combo_knockback, combo_hitstop, 1.0 + (0.16 * float(combo_index)))
+			_queue_melee_hit_for_final_attack_frame(combo_damage, combo_range, combo_arc, outgoing_hit_stun_duration, combo_knockback, combo_hitstop, 1.0 + (0.16 * float(combo_index)), true)
 			var combo_anim_duration := BASIC_ATTACK_BASE_ANIM_DURATION * float(BASIC_COMBO_ANIM_DURATION_MULTIPLIERS[combo_index])
 			var combo_anim_strength := BASIC_ATTACK_BASE_ANIM_STRENGTH * float(BASIC_COMBO_ANIM_STRENGTH_MULTIPLIERS[combo_index])
 			_start_attack_animation(combo_anim_duration, combo_anim_strength)
@@ -1379,10 +1456,10 @@ func _resolve_queued_attack() -> void:
 			if not using_external_player_sprite:
 				var slash_duration := 0.16 + (0.02 * float(combo_index))
 				var slash_width := 4.8 + (0.7 * float(combo_index))
-				_trigger_slash_effect(combo_range, combo_arc, Color(0.94, 0.66, 0.34, 0.88), slash_duration, slash_width)
+				_trigger_slash_effect(combo_range, combo_arc, _get_equipped_sword_charge_release_color(0.88), slash_duration, slash_width)
 			_clear_queued_basic_combo_attack()
 		QueuedAttack.ABILITY_1:
-			_queue_melee_hit_for_final_attack_frame(ability_1_damage, ability_1_range, ability_1_arc_degrees, outgoing_hit_stun_duration + 0.06, 1.25, 0.085, 1.45)
+			_queue_melee_hit_for_final_attack_frame(ability_1_damage, ability_1_range, ability_1_arc_degrees, outgoing_hit_stun_duration + 0.06, 1.25, 0.085, 1.45, false)
 			_start_attack_animation(0.24, 1.45)
 			light_attack_recovery_left = maxf(light_attack_recovery_left, 0.22)
 			_set_combat_state(CombatState.ATTACK_ACTIVE)
@@ -1404,7 +1481,8 @@ func _queue_melee_hit_for_final_attack_frame(
 	stun_duration: float = outgoing_hit_stun_duration,
 	knockback_scale: float = 1.0,
 	hitstop_duration: float = 0.05,
-	vfx_scale: float = 1.0
+	vfx_scale: float = 1.0,
+	apply_sword_effect: bool = false
 ) -> void:
 	queued_melee_hit_pending = true
 	queued_melee_hit_damage = damage
@@ -1414,6 +1492,7 @@ func _queue_melee_hit_for_final_attack_frame(
 	queued_melee_hit_knockback_scale = maxf(0.1, knockback_scale)
 	queued_melee_hit_hitstop = maxf(0.0, hitstop_duration)
 	queued_melee_hit_vfx_scale = maxf(0.25, vfx_scale)
+	queued_melee_hit_apply_sword_effect = apply_sword_effect
 
 
 func _clear_queued_melee_hit() -> void:
@@ -1425,6 +1504,7 @@ func _clear_queued_melee_hit() -> void:
 	queued_melee_hit_knockback_scale = 1.0
 	queued_melee_hit_hitstop = 0.0
 	queued_melee_hit_vfx_scale = 1.0
+	queued_melee_hit_apply_sword_effect = false
 
 
 func _apply_queued_melee_hit() -> void:
@@ -1437,8 +1517,9 @@ func _apply_queued_melee_hit() -> void:
 	var knockback_scale := queued_melee_hit_knockback_scale
 	var hitstop_duration := queued_melee_hit_hitstop
 	var vfx_scale := queued_melee_hit_vfx_scale
+	var apply_sword_effect := queued_melee_hit_apply_sword_effect
 	_clear_queued_melee_hit()
-	var hit_confirmed := _apply_melee_strike(damage, attack_range, arc_degrees, stun_duration, knockback_scale, hitstop_duration, vfx_scale)
+	var hit_confirmed := _apply_melee_strike(damage, attack_range, arc_degrees, stun_duration, knockback_scale, hitstop_duration, vfx_scale, Vector2.ZERO, apply_sword_effect)
 	if hit_confirmed:
 		charge_attack_hit_confirmed = true
 
@@ -1507,6 +1588,10 @@ func _show_instant_attack_flash(
 func _update_attack_telegraph_progress() -> void:
 	if not attack_telegraph.visible:
 		return
+	if is_charging_attack:
+		attack_telegraph.color = _get_equipped_sword_charge_preview_color(attack_telegraph.color.a)
+	elif charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0:
+		attack_telegraph.color = _get_equipped_sword_charge_release_color(attack_telegraph.color.a)
 	var telegraph_direction := facing_direction
 	if is_charging_attack or charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0:
 		telegraph_direction = charge_release_direction
@@ -1843,6 +1928,8 @@ func _apply_miniboss_soft_separation(delta: float) -> void:
 
 
 func _get_movement_vector() -> Vector2:
+	if gameplay_input_blocked:
+		return Vector2.ZERO
 	var movement_vector := Vector2(
 		Input.get_action_strength("move_right") - Input.get_action_strength("move_left"),
 		Input.get_action_strength("move_down") - Input.get_action_strength("move_up")
@@ -1877,7 +1964,8 @@ func _apply_melee_strike(
 	knockback_scale: float = 1.0,
 	hitstop_duration: float = 0.05,
 	vfx_scale: float = 1.0,
-	strike_direction: Vector2 = Vector2.ZERO
+	strike_direction: Vector2 = Vector2.ZERO,
+	apply_sword_effect: bool = false
 ) -> bool:
 	var facing := strike_direction.normalized()
 	if facing == Vector2.ZERO:
@@ -1922,6 +2010,8 @@ func _apply_melee_strike(
 		var enemy_health_before := enemy.current_health
 		if enemy.receive_hit(damage, global_position, stun_duration, true, knockback_scale, self):
 			hit_confirmed = true
+			if apply_sword_effect:
+				_apply_equipped_sword_on_basic_hit(enemy)
 			var hit_world_position := enemy.global_position + Vector2(0.0, -12.0)
 			var damage_dealt := maxf(0.0, enemy_health_before - enemy.current_health)
 			if damage_dealt <= 0.01:
@@ -1941,6 +2031,96 @@ func _apply_melee_strike(
 		_start_hitstop(strongest_hitstop)
 		_start_camera_shake(camera_shake_duration * shake_scale, (camera_shake_strength * shake_scale) * maxf(0.7, strongest_vfx_scale))
 	return hit_confirmed
+
+
+func _apply_equipped_sword_on_basic_hit(enemy: EnemyBase) -> void:
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+		return
+	var sword_data := equipped_sword_definition if not equipped_sword_definition.is_empty() else SWORD_DEFINITIONS.get_definition(equipped_sword_id)
+	var sword_id := String(sword_data.get("id", ""))
+	_spawn_equipped_sword_impact_fx(enemy.global_position + Vector2(0.0, -12.0))
+	if sword_id == String(SWORD_DEFINITIONS.SLOWING_SWORD):
+		var slow_duration := maxf(0.0, float(sword_data.get("slow_duration", 2.4)))
+		var slow_multiplier := clampf(float(sword_data.get("slow_speed_multiplier", 0.5)), 0.1, 1.0)
+		if enemy.has_method("apply_player_weapon_slow"):
+			enemy.call("apply_player_weapon_slow", slow_duration, slow_multiplier)
+			_log_sword_effect("SLOW_APPLY target=%s duration=%.2f speed_mult=%.2f" % [enemy.name, slow_duration, slow_multiplier])
+		return
+	if sword_id == String(SWORD_DEFINITIONS.STACKING_DOT_SWORD):
+		var dot_duration := maxf(0.1, float(sword_data.get("dot_duration", 4.0)))
+		var tick_interval := maxf(0.1, float(sword_data.get("dot_tick_interval", 0.5)))
+		var damage_per_stack := maxf(0.1, float(sword_data.get("dot_damage_per_stack", 2.0)))
+		var max_stacks := maxi(1, int(sword_data.get("dot_max_stacks", 5)))
+		if enemy.has_method("apply_player_weapon_dot"):
+			enemy.call("apply_player_weapon_dot", dot_duration, tick_interval, damage_per_stack, max_stacks, self)
+			_log_sword_effect("DOT_APPLY target=%s duration=%.2f interval=%.2f dps=%.2f max_stacks=%d" % [enemy.name, dot_duration, tick_interval, damage_per_stack, max_stacks])
+
+
+func _log_sword_effect(message: String) -> void:
+	if not sword_combat_debug_logging:
+		return
+	print("[SWORD] %s" % message)
+
+
+func _refresh_equipped_sword_visuals() -> void:
+	equipped_sword_definition = SWORD_DEFINITIONS.get_definition(equipped_sword_id)
+
+
+func _is_extended_charge_sword_equipped() -> bool:
+	return String(equipped_sword_definition.get("id", equipped_sword_id)) == String(SWORD_DEFINITIONS.EXTENDED_CHARGE_SWORD)
+
+
+func _get_equipped_basic_attack_range_multiplier() -> float:
+	if not _is_extended_charge_sword_equipped():
+		return 1.0
+	return maxf(1.0, float(equipped_sword_definition.get("extended_basic_range_multiplier", 1.0)))
+
+
+func _get_equipped_sword_charge_preview_color(alpha: float = 0.35) -> Color:
+	var fallback := Color(1.0, 0.78, 0.32, alpha)
+	var color_variant: Variant = equipped_sword_definition.get("charge_preview_color", fallback)
+	var color := fallback
+	if color_variant is Color:
+		color = color_variant as Color
+	color.a = clampf(alpha, 0.0, 1.0)
+	return color
+
+
+func _get_equipped_sword_charge_release_color(alpha: float = 0.45) -> Color:
+	var fallback := Color(1.0, 0.62, 0.28, alpha)
+	var color_variant: Variant = equipped_sword_definition.get("charge_release_color", fallback)
+	var color := fallback
+	if color_variant is Color:
+		color = color_variant as Color
+	color.a = clampf(alpha, 0.0, 1.0)
+	return color
+
+
+func _get_equipped_sword_impact_color(alpha: float = 0.95) -> Color:
+	var fallback := Color(1.0, 0.82, 0.45, alpha)
+	var color_variant: Variant = equipped_sword_definition.get("impact_color", fallback)
+	var color := fallback
+	if color_variant is Color:
+		color = color_variant as Color
+	color.a = clampf(alpha, 0.0, 1.0)
+	return color
+
+
+func _spawn_equipped_sword_impact_fx(world_position: Vector2) -> void:
+	var impact_color := _get_equipped_sword_impact_color(0.95)
+	var facing_sign := -1.0 if facing_direction.x < 0.0 else 1.0
+	var sword_id := String(equipped_sword_definition.get("id", equipped_sword_id))
+	if sword_id == String(SWORD_DEFINITIONS.EXTENDED_CHARGE_SWORD):
+		_spawn_hit_effect(world_position + Vector2(8.0 * facing_sign, -3.0), impact_color, 11.5)
+		_spawn_hit_effect(world_position + Vector2(-7.0 * facing_sign, 2.0), impact_color.lightened(0.14), 8.0)
+		return
+	if sword_id == String(SWORD_DEFINITIONS.SLOWING_SWORD):
+		_spawn_hit_effect(world_position + Vector2(0.0, -4.0), impact_color, 10.8)
+		_spawn_hit_effect(world_position + Vector2(5.0 * facing_sign, -14.0), Color(0.72, 0.96, 1.0, 0.9), 6.3)
+		return
+	if sword_id == String(SWORD_DEFINITIONS.STACKING_DOT_SWORD):
+		_spawn_hit_effect(world_position + Vector2(0.0, -4.0), impact_color, 10.4)
+		_spawn_hit_effect(world_position + Vector2(7.0 * facing_sign, 2.0), Color(1.0, 0.68, 0.92, 0.88), 7.2)
 
 
 func _collect_attack_targets(attack_range: float) -> Array[EnemyBase]:
@@ -2514,7 +2694,9 @@ func _emit_cooldown_state() -> void:
 		"roll": roll_cooldown_left,
 		"block_active": is_blocking,
 		"charge_ratio": _get_charge_ratio(),
-		"combat_state": combat_state_name
+		"combat_state": combat_state_name,
+		"equipped_sword_id": equipped_sword_id,
+		"equipped_sword_name": get_equipped_sword_name()
 	})
 
 

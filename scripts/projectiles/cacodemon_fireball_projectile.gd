@@ -148,8 +148,11 @@ func _try_block_on_player(world_start: Vector2, world_end: Vector2) -> bool:
 	if not shield_active:
 		return false
 	if block_player.has_method("is_segment_intersecting_block_shield") and bool(block_player.call("is_segment_intersecting_block_shield", world_start, world_end, live_collision_radius)):
-		if block_player.has_method("drain_block_stamina"):
-			block_player.call("drain_block_stamina", blocked_stamina_cost)
+		# Fireballs are no longer fully negated by shield contact.
+		# Route through Player.receive_hit so normal block reduction applies.
+		var source_position := source_enemy.global_position if source_enemy != null and is_instance_valid(source_enemy) else global_position
+		if block_player.has_method("receive_hit"):
+			block_player.call("receive_hit", damage, source_position, false, stun_duration, knockback_scale)
 		var impact_position := block_player.global_position
 		if block_player.has_method("get_block_shield_center_global"):
 			var center_variant: Variant = block_player.call("get_block_shield_center_global")

@@ -1,11 +1,13 @@
 extends Node2D
 
 const AUTOPLAY_TEST_RUNNER_SCRIPT := preload("res://scripts/testing/autoplay_test_runner.gd")
+const INVENTORY_MENU_SCRIPT := preload("res://scripts/ui/inventory_menu.gd")
 
 @onready var arena: Arena = $Arena
 @onready var hud: HUD = $HUD
 
 var encounter_picker_layer: CanvasLayer = null
+var inventory_menu_layer: CanvasLayer = null
 
 
 func _ready() -> void:
@@ -19,6 +21,13 @@ func _ready() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("inventory_toggle"):
+		if not _has_active_encounter_picker():
+			_toggle_inventory_menu()
+		get_viewport().set_input_as_handled()
+		return
+	if _has_active_inventory_menu():
+		return
 	var key_event := event as InputEventKey
 	if key_event == null:
 		return
@@ -80,6 +89,8 @@ func _connect_signals() -> void:
 	arena.player_died.connect(hud.show_defeat)
 	arena.demo_won.connect(hud.show_victory)
 	arena.combat_debug_changed.connect(hud.update_combat_debug)
+	if is_instance_valid(arena.player) and arena.player.has_signal("equipped_sword_changed"):
+		arena.player.equipped_sword_changed.connect(_on_player_equipped_sword_changed)
 
 
 func _maybe_start_autoplay_test() -> void:
@@ -165,6 +176,7 @@ func _show_encounter_picker() -> void:
 func _start_selected_encounter(encounter_type: int) -> void:
 	if not is_instance_valid(arena):
 		return
+	_close_inventory_menu()
 	if _has_active_encounter_picker():
 		encounter_picker_layer.queue_free()
 		encounter_picker_layer = null
@@ -173,6 +185,74 @@ func _start_selected_encounter(encounter_type: int) -> void:
 
 func _has_active_encounter_picker() -> bool:
 	return is_instance_valid(encounter_picker_layer)
+
+
+func _has_active_inventory_menu() -> bool:
+	return is_instance_valid(inventory_menu_layer)
+
+
+func _toggle_inventory_menu() -> void:
+	if _has_active_inventory_menu():
+		_close_inventory_menu()
+	else:
+		_open_inventory_menu()
+
+
+func _open_inventory_menu() -> void:
+	if _has_active_inventory_menu():
+		return
+	if not is_instance_valid(arena) or not is_instance_valid(arena.player):
+		return
+	if INVENTORY_MENU_SCRIPT == null:
+		return
+	var menu_layer := INVENTORY_MENU_SCRIPT.new() as CanvasLayer
+	if menu_layer == null:
+		return
+	add_child(menu_layer)
+	inventory_menu_layer = menu_layer
+	if menu_layer.has_method("configure"):
+		menu_layer.call("configure", arena.player.call("get_available_sword_entries"), arena.player.call("get_equipped_sword_id"))
+	if menu_layer.has_signal("sword_selected"):
+		menu_layer.connect("sword_selected", Callable(self, "_on_inventory_sword_selected"))
+	if menu_layer.has_signal("menu_closed"):
+		menu_layer.connect("menu_closed", Callable(self, "_on_inventory_menu_closed"))
+	if arena.player.has_method("set_gameplay_input_blocked"):
+		arena.player.call("set_gameplay_input_blocked", true)
+	get_tree().paused = true
+	hud.show_status_message("Inventory Open - Select a sword", 1.0)
+
+
+func _close_inventory_menu() -> void:
+	if not _has_active_inventory_menu():
+		return
+	if is_instance_valid(inventory_menu_layer):
+		inventory_menu_layer.queue_free()
+	inventory_menu_layer = null
+	get_tree().paused = false
+	if is_instance_valid(arena) and is_instance_valid(arena.player) and arena.player.has_method("set_gameplay_input_blocked"):
+		arena.player.call("set_gameplay_input_blocked", false)
+	hud.show_status_message("Inventory Closed", 0.8)
+
+
+func _on_inventory_sword_selected(sword_id: String) -> void:
+	if not is_instance_valid(arena) or not is_instance_valid(arena.player):
+		return
+	if not arena.player.has_method("equip_sword"):
+		return
+	var changed := bool(arena.player.call("equip_sword", sword_id))
+	if changed:
+		var sword_name := String(arena.player.call("get_equipped_sword_name"))
+		hud.show_status_message("Equipped: %s" % sword_name, 1.2)
+	if _has_active_inventory_menu() and inventory_menu_layer.has_method("set_equipped_sword"):
+		inventory_menu_layer.call("set_equipped_sword", arena.player.call("get_equipped_sword_id"))
+
+
+func _on_inventory_menu_closed() -> void:
+	_close_inventory_menu()
+
+
+func _on_player_equipped_sword_changed(_sword_id: String, sword_name: String) -> void:
+	hud.show_status_message("Sword: %s" % sword_name, 1.2)
 
 
 func _get_autoplay_encounter_type() -> int:

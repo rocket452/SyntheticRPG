@@ -79,7 +79,11 @@ func update_cooldowns(values: Dictionary) -> void:
 	var ability_2_text := _format_cooldown(float(values.get("ability_2", 0.0)))
 	var roll_text := _format_cooldown(float(values.get("roll", 0.0)))
 	var blocking_text := " | Blocking" if bool(values.get("block_active", false)) else ""
-	cooldown_label.text = "Swing %s  Charge %s  Dash %s  Roll %s%s" % [basic_text, ability_1_text, ability_2_text, roll_text, blocking_text]
+	var sword_id := String(values.get("equipped_sword_id", ""))
+	var sword_name := String(values.get("equipped_sword_name", ""))
+	var sword_suffix := " | Sword: %s" % sword_name if not sword_name.is_empty() else ""
+	cooldown_label.text = "Swing %s  Charge %s  Dash %s  Roll %s%s%s" % [basic_text, ability_1_text, ability_2_text, roll_text, blocking_text, sword_suffix]
+	_apply_charge_sword_indicator(sword_id)
 	_update_ability_slot("basic", float(values.get("basic", 0.0)), false)
 	_update_ability_slot("ability_1", float(values.get("ability_1", 0.0)), false)
 	_update_ability_slot("ability_2", float(values.get("ability_2", 0.0)), false)
@@ -160,6 +164,38 @@ func _format_cooldown(value: float) -> String:
 	if value <= 0.05:
 		return "Ready"
 	return "%.1fs" % value
+
+
+func _apply_charge_sword_indicator(sword_id: String) -> void:
+	var slot := ability_slot_views.get("basic", {}) as Dictionary
+	if slot.is_empty():
+		return
+	var icon_label := slot.get("icon_label") as Label
+	var name_label := slot.get("name_label") as Label
+	if icon_label == null or name_label == null:
+		return
+	var accent := Color(0.98, 0.74, 0.3, 1.0)
+	var icon_text := "ATK"
+	var name_text := "Swing"
+	match sword_id:
+		"extended_charge":
+			accent = Color(1.0, 0.77, 0.34, 1.0)
+			icon_text = "EXT"
+			name_text = "Swing+"
+		"slowing":
+			accent = Color(0.5, 0.9, 1.0, 1.0)
+			icon_text = "SLOW"
+			name_text = "Swing+"
+		"stacking_dot":
+			accent = Color(0.96, 0.54, 1.0, 1.0)
+			icon_text = "DOT"
+			name_text = "Swing+"
+		_:
+			pass
+	slot["accent"] = accent
+	ability_slot_views["basic"] = slot
+	icon_label.text = icon_text
+	name_label.text = name_text
 
 
 func _build_ability_bar() -> void:

@@ -83,8 +83,9 @@ enum CastAction {
 @export var arena_padding: float = 26.0
 @export var tidal_wave_enabled: bool = true
 @export var basic_heal_cooldown: float = 1.5
-@export var basic_heal_range: float = 132.0
+@export var basic_heal_range: float = 171.6
 @export var basic_heal_range_buffer: float = 10.0
+@export var quick_heal_cast_time_multiplier: float = 2.0
 @export var light_bolt_enabled: bool = true
 @export var light_bolt_damage: float = 7.5
 @export var light_bolt_cooldown: float = 1.9
@@ -708,6 +709,7 @@ func _begin_cast() -> void:
 	is_casting = true
 	cast_anim_time = 0.0
 	heal_applied_this_cast = false
+	move_velocity = Vector2.ZERO
 	_set_anim_frame("cast", 0)
 	_spawn_cast_flash(global_position + Vector2(0.0, -18.0))
 
@@ -715,7 +717,9 @@ func _begin_cast() -> void:
 func _tick_cast(delta: float) -> void:
 	var fps := float(ANIM_FPS.get("cast", 12.0))
 	var frame_count := _anim_frame_count("cast")
-	cast_anim_time += delta * fps
+	var cast_time_multiplier := _get_cast_time_multiplier_for_action(pending_cast_action)
+	var cast_rate_scale := 1.0 / maxf(0.01, cast_time_multiplier)
+	cast_anim_time += delta * fps * cast_rate_scale
 
 	var frame_index := mini(int(floor(cast_anim_time)), frame_count - 1)
 	_set_anim_frame("cast", frame_index)
@@ -731,6 +735,12 @@ func _tick_cast(delta: float) -> void:
 	cast_anim_time = 0.0
 	heal_timer_left = minf(_next_heal_interval() * 0.2, react_heal_delay)
 	_set_anim_frame("idle", 0)
+
+
+func _get_cast_time_multiplier_for_action(action: CastAction) -> float:
+	if action == CastAction.QUICK_HEAL:
+		return maxf(0.1, quick_heal_cast_time_multiplier)
+	return 1.0
 
 
 func _player_needs_healing() -> bool:
@@ -1024,7 +1034,7 @@ func _apply_light_bolt(target: Node2D) -> bool:
 
 
 func _trigger_healing_ability() -> void:
-	var cast_target := pending_cast_target
+	var cast_target: Node2D = _as_valid_node2d_ref(pending_cast_target)
 	_log_cast_event("RESOLVE", pending_cast_action, cast_target)
 	match pending_cast_action:
 		CastAction.QUICK_HEAL:
@@ -1102,6 +1112,9 @@ func _update_tactical_positioning(delta: float) -> void:
 		return
 	if stun_left > 0.0:
 		move_velocity = move_velocity.move_toward(Vector2.ZERO, movement_deceleration * delta)
+		return
+	if is_casting:
+		move_velocity = Vector2.ZERO
 		return
 	orbit_phase = wrapf(orbit_phase + (delta * maxf(0.0, orbit_speed)), 0.0, TAU)
 
@@ -2441,20 +2454,29 @@ func _cast_action_name(action: CastAction) -> String:
 			return "NONE"
 
 
-func _log_cast_event(prefix: String, action: CastAction, target: Node2D) -> void:
+func _as_valid_node2d_ref(candidate: Variant) -> Node2D:
+	if candidate == null:
+		return null
+	if not is_instance_valid(candidate):
+		return null
+	return candidate as Node2D
+
+
+func _log_cast_event(prefix: String, action: CastAction, target: Variant) -> void:
 	if not cast_debug_logging_enabled:
 		return
+	var resolved_target: Node2D = _as_valid_node2d_ref(target)
 	var target_name := "None"
 	var current := 0.0
 	var maximum := 0.0
 	var missing := 0.0
 	var marked_blocked := false
-	if target != null and is_instance_valid(target):
-		target_name = target.name
-		maximum = maxf(1.0, float(target.get("max_health")))
-		current = clampf(float(target.get("current_health")), 0.0, maximum)
+	if resolved_target != null:
+		target_name = resolved_target.name
+		maximum = maxf(1.0, float(resolved_target.get("max_health")))
+		current = clampf(float(resolved_target.get("current_health")), 0.0, maximum)
 		missing = maxf(0.0, maximum - current)
-		marked_blocked = _is_marked_target_waiting_for_damage(target)
+		marked_blocked = _is_marked_target_waiting_for_damage(resolved_target)
 	print("[HEALER_CAST] %s action=%s target=%s hp=%.2f/%.2f missing=%.2f marked_blocked=%s state=%s" % [
 		prefix,
 		_cast_action_name(action),
