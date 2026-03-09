@@ -4,7 +4,8 @@ class_name Arena
 enum EncounterType {
 	MINOTAUR,
 	CACODEMON,
-	SHARDSOUL
+	SHARDSOUL,
+	COBRA
 }
 
 signal player_health_changed(current: float, maximum: float)
@@ -58,6 +59,8 @@ const IMP_SUMMON_PENTAGRAM_EFFECT_SCRIPT := preload("res://scripts/effects/imp_s
 @export var summoned_imp_damage_multiplier: float = 0.5
 @export var summoned_minion_xp_scale: float = 0.35
 @export var miniboss_health_scale: float = 4.0
+@export var cobra_health_scale: float = 0.42
+@export var cobra_damage_scale: float = 0.62
 @export var imp_summon_pentagram_enabled: bool = true
 @export var imp_summon_pentagram_y_offset: float = 12.0
 @export var summoned_imp_spawn_stagger: float = 0.04
@@ -115,12 +118,18 @@ func start_demo_with_encounter(encounter_type: int) -> void:
 
 
 func set_encounter_type(encounter_type: int) -> void:
-	if encounter_type == EncounterType.CACODEMON:
+	if encounter_type == EncounterType.COBRA:
+		selected_encounter = EncounterType.COBRA
+	elif encounter_type == EncounterType.CACODEMON:
 		selected_encounter = EncounterType.CACODEMON
 	elif encounter_type == EncounterType.SHARDSOUL:
 		selected_encounter = EncounterType.SHARDSOUL
 	else:
 		selected_encounter = EncounterType.MINOTAUR
+
+
+func _encounter_uses_companions() -> bool:
+	return selected_encounter != EncounterType.COBRA
 
 
 func start_demo() -> void:
@@ -133,8 +142,12 @@ func start_demo() -> void:
 	initial_minotaur_spawn_on_left = false
 	spawned_minotaurs_total = 0
 	_spawn_player()
-	_spawn_friendly_healer()
-	_spawn_friendly_ratfolk()
+	if _encounter_uses_companions():
+		_spawn_friendly_healer()
+		_spawn_friendly_ratfolk()
+	else:
+		healer = null
+		ratfolk = null
 	_prewarm_imp_summon_effect_cache()
 	_spawn_regular_enemies()
 	_log_encounter_spacing_snapshot("spawn_init")
@@ -164,6 +177,8 @@ func _spawn_player() -> void:
 	player.cooldowns_changed.connect(_on_player_cooldowns_changed)
 	player.item_looted.connect(_on_player_item_looted)
 	player.died.connect(_on_player_died)
+	if player.has_signal("combat_status_message"):
+		player.combat_status_message.connect(_on_player_combat_status_message)
 
 
 func _spawn_friendly_healer() -> void:
@@ -198,6 +213,9 @@ func _spawn_friendly_ratfolk() -> void:
 
 func _spawn_regular_enemies() -> void:
 	alive_regular_enemies = 0
+	if selected_encounter == EncounterType.COBRA:
+		_spawn_cobra_encounter()
+		return
 	if selected_encounter == EncounterType.CACODEMON:
 		_spawn_cacodemon_encounter()
 		return
@@ -269,6 +287,75 @@ func _spawn_cacodemon_encounter() -> void:
 
 func _spawn_shardsoul_encounter() -> void:
 	_spawn_air_boss_encounter(int(EnemyBase.MonsterVisualProfile.SHARDSOUL))
+
+
+func _spawn_cobra_encounter() -> void:
+	var enemy := _spawn_ground_boss_encounter(int(EnemyBase.MonsterVisualProfile.COBRA))
+	if enemy == null:
+		return
+	# Keep Cobra encounter intentionally simple: close poke + baitable heavy strike.
+	enemy.use_single_phase_loop = false
+	enemy.spin_attack_enabled = false
+	enemy.boss_can_summon_minions = false
+	enemy.attack_windup = 0.56
+	enemy.attack_prestrike_hold_duration = 0.1
+	enemy.attack_recovery_hold_duration = 0.04
+	enemy.attack_cooldown = 1.2
+	enemy.attack_range = 74.0
+	enemy.basic_attack_hit_end_bonus = 18.0
+	enemy.cobra_preferred_range = 114.0
+	enemy.cobra_preferred_range_tolerance = 22.0
+	enemy.cobra_close_attack_trigger_range = 56.0
+	enemy.cobra_close_attack_reach = 58.0
+	enemy.cobra_close_attack_half_width = 10.0
+	enemy.cobra_close_attack_windup = 0.14
+	enemy.cobra_close_attack_damage_scale = 0.5
+	enemy.cobra_close_attack_stun_scale = 0.42
+	enemy.cobra_close_attack_knockback_scale = 0.82
+	enemy.cobra_close_attack_recovery = 0.18
+	enemy.cobra_close_attack_cooldown = 0.8
+	enemy.cobra_attack_min_range = 72.0
+	enemy.cobra_attack_max_range = 132.0
+	enemy.cobra_approach_speed_scale = 0.66
+	enemy.cobra_stalk_speed_scale = 0.4
+	enemy.cobra_retreat_speed_scale = 0.95
+	enemy.cobra_spacing_pause_duration = 0.2
+	enemy.cobra_heavy_attack_windup = 0.62
+	enemy.cobra_heavy_attack_cooldown = 1.28
+	enemy.cobra_heavy_bait_range_band = 16.0
+	enemy.cobra_attack_recovery_on_hit = 0.18
+	enemy.cobra_attack_recovery_on_block = 0.68
+	enemy.cobra_attack_recovery_on_miss = 1.15
+	enemy.cobra_max_range_bait_bonus_recovery = 0.42
+	enemy.cobra_punish_damage_taken_multiplier = 1.7
+	enemy.cobra_block_punish_damage_multiplier = 1.45
+	enemy.cobra_dodge_punish_damage_multiplier = 2.1
+	enemy.cobra_bait_punish_damage_bonus = 0.3
+	enemy.cobra_punish_recoil_pose_duration = 0.28
+	enemy.cobra_hit_stun_scale = 0.42
+	enemy.cobra_hit_knockback_scale = 0.62
+	enemy.max_health = maxf(1.0, enemy.max_health * clampf(cobra_health_scale, 0.0, 1000.0))
+	enemy.current_health = enemy.max_health
+	enemy.attack_damage = maxf(0.0, enemy.attack_damage * clampf(cobra_damage_scale, 0.0, 1000.0))
+
+
+func _spawn_ground_boss_encounter(visual_profile: int) -> EnemyBase:
+	var min_x := minf(arena_min_x, arena_max_x)
+	var max_x := maxf(arena_min_x, arena_max_x)
+	var min_y := minf(arena_min_y, arena_max_y)
+	var max_y := maxf(arena_min_y, arena_max_y)
+	var edge_inset := maxf(8.0, encounter_edge_spawn_inset)
+	var spawn_x := max_x - edge_inset
+	var spawn_y := lerpf(min_y, max_y, 0.5)
+	if is_instance_valid(player):
+		spawn_y = clampf(player.position.y, min_y + 8.0, max_y - 8.0)
+	var spawn_position := _resolve_encounter_spawn_position(to_global(Vector2(spawn_x, spawn_y)))
+	var enemy := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position, visual_profile)
+	if enemy == null:
+		return null
+	_configure_miniboss(enemy)
+	alive_regular_enemies = 1
+	return enemy
 
 
 func _spawn_air_boss_encounter(visual_profile: int) -> void:
@@ -386,15 +473,15 @@ func _spawn_enemy(scene: PackedScene, spawn_position: Vector2, visual_profile_ov
 func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> void:
 	if not demo_started:
 		return
-	var use_imp_profile := source_enemy != null and is_instance_valid(source_enemy) and source_enemy.monster_visual_profile == EnemyBase.MonsterVisualProfile.CACODEMON
-	var total_to_spawn := 4 if use_imp_profile else maxi(1, count)
+	var use_fire_elemental_profile := source_enemy != null and is_instance_valid(source_enemy) and source_enemy.monster_visual_profile == EnemyBase.MonsterVisualProfile.CACODEMON
+	var total_to_spawn := 4 if use_fire_elemental_profile else maxi(1, count)
 	var min_x := minf(arena_min_x, arena_max_x)
 	var max_x := maxf(arena_min_x, arena_max_x)
 	var min_y := minf(arena_min_y, arena_max_y)
 	var max_y := maxf(arena_min_y, arena_max_y)
 	var source_local := to_local(source_enemy.global_position) if is_instance_valid(source_enemy) else Vector2.ZERO
 	var spawn_positions: Array[Vector2] = []
-	if use_imp_profile and is_instance_valid(source_enemy):
+	if use_fire_elemental_profile and is_instance_valid(source_enemy):
 		var center_local := Vector2((min_x + max_x) * 0.5, (min_y + max_y) * 0.5)
 		source_enemy.global_position = to_global(center_local)
 		source_enemy.velocity = Vector2.ZERO
@@ -421,7 +508,7 @@ func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> 
 			spawn_positions.append(spawn_position)
 			spawn_next_debug_enemy_on_left = not spawn_next_debug_enemy_on_left
 
-	if use_imp_profile:
+	if use_fire_elemental_profile:
 		var summon_delay := 0.0
 		for spawn_position in spawn_positions:
 			var effect := _spawn_imp_summon_pentagram(spawn_position)
@@ -436,10 +523,10 @@ func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> 
 		if not demo_started:
 			return
 
-	var spawn_stagger := maxf(0.0, summoned_imp_spawn_stagger) if use_imp_profile else 0.0
+	var spawn_stagger := maxf(0.0, summoned_imp_spawn_stagger) if use_fire_elemental_profile else 0.0
 	for spawn_index in range(spawn_positions.size()):
 		var spawn_position := spawn_positions[spawn_index]
-		var minion_profile := int(EnemyBase.MonsterVisualProfile.IMP) if use_imp_profile else -1
+		var minion_profile := int(EnemyBase.MonsterVisualProfile.FIRE_ELEMENTAL) if use_fire_elemental_profile else -1
 		var minion := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position, minion_profile)
 		if minion == null:
 			continue
@@ -449,27 +536,25 @@ func _on_enemy_summon_minions_requested(source_enemy: EnemyBase, count: int) -> 
 		minion.spin_attack_enabled = false
 		minion.prioritize_companion_targets = true
 		minion.max_health = maxf(10.0, minion.max_health * summoned_minion_health_scale)
-		if use_imp_profile:
+		if use_fire_elemental_profile:
 			minion.max_health = maxf(10.0, minion.max_health * maxf(0.0, summoned_imp_health_multiplier))
 		minion.current_health = minion.max_health
 		minion.move_speed = maxf(40.0, minion.move_speed * summoned_minion_speed_scale)
 		minion.attack_damage = maxf(1.0, minion.attack_damage * summoned_minion_damage_scale)
-		if use_imp_profile:
+		if use_fire_elemental_profile:
 			minion.attack_damage = maxf(1.0, minion.attack_damage * maxf(0.0, summoned_imp_damage_multiplier))
-		if use_imp_profile:
+		if use_fire_elemental_profile:
 			minion.pending_attack = false
 			minion.attack_windup_left = 0.0
 			minion.attack_prestrike_hold_left = 0.0
 			minion.attack_recovery_hold_left = 0.0
-			minion.attack_prestrike_hold_duration = maxf(minion.attack_prestrike_hold_duration, 0.06)
+			minion.attack_prestrike_hold_duration = maxf(minion.attack_prestrike_hold_duration, 0.05)
 			minion.attack_hold_frame = 2
-			# Let summoned imps start threatening quickly instead of idling post-spawn.
+			# Fire elementals should be immediate melee threats.
 			minion.attack_cooldown_left = minf(minion.attack_cooldown_left, 0.2)
-			minion.attack_cooldown = minf(minion.attack_cooldown, 1.2)
-			minion.attack_windup = minf(minion.attack_windup, 0.2)
-			# Summoned imps are ranged attackers; keep them at cast distance so their throw anim/projectile is visible.
-			minion.attack_range = maxf(minion.attack_range, 180.0)
-			minion.imp_fireball_speed = minf(minion.imp_fireball_speed, 190.0)
+			minion.attack_cooldown = minf(minion.attack_cooldown, 1.1)
+			minion.attack_windup = minf(minion.attack_windup, 0.18)
+			minion.attack_range = maxf(minion.attack_range, 56.0)
 			minion.velocity = Vector2.ZERO
 			if is_instance_valid(player):
 				var to_player := player.global_position - minion.global_position
@@ -604,6 +689,9 @@ func _update_objective() -> void:
 		return
 	if selected_encounter == EncounterType.CACODEMON:
 		objective_changed.emit("Objective: Defeat the Cacodemon")
+		return
+	if selected_encounter == EncounterType.COBRA:
+		objective_changed.emit("Objective: Defeat the Cobra")
 		return
 	if selected_encounter == EncounterType.SHARDSOUL:
 		objective_changed.emit("Objective: Defeat the Shardsoul")
@@ -975,6 +1063,10 @@ func _on_player_cooldowns_changed(values: Dictionary) -> void:
 
 func _on_player_item_looted(item_name: String, total_owned: int) -> void:
 	item_collected.emit(item_name, total_owned)
+
+
+func _on_player_combat_status_message(text: String, duration: float = 0.9) -> void:
+	status_message.emit(text, duration)
 
 
 func _on_player_died() -> void:

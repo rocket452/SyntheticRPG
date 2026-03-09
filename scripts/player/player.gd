@@ -6,7 +6,8 @@ const SWORD_DEFINITIONS := preload("res://scripts/systems/sword_definitions.gd")
 enum QueuedAttack {
 	NONE,
 	BASIC,
-	ABILITY_1
+	ABILITY_1,
+	COUNTER_STRIKE
 }
 
 enum CombatState {
@@ -24,6 +25,7 @@ signal cooldowns_changed(values: Dictionary)
 signal died
 signal item_looted(item_name: String, total_owned: int)
 signal equipped_sword_changed(sword_id: String, sword_name: String)
+signal combat_status_message(text: String, duration: float)
 
 # Pacing experiment knobs (slow-RPG cadence).
 @export var move_speed: float = 82.9
@@ -44,6 +46,22 @@ signal equipped_sword_changed(sword_id: String, sword_name: String)
 @export var ability_1_arc_degrees: float = 140.0
 @export var ability_1_cooldown: float = 4.5
 @export var ability_1_windup: float = 0.14
+@export var harpoon_min_charge_time: float = 0.12
+@export var harpoon_max_charge_time: float = 0.9
+@export var harpoon_min_range: float = 120.0
+@export var harpoon_max_range: float = 280.0
+@export var harpoon_min_projectile_speed: float = 520.0
+@export var harpoon_max_projectile_speed: float = 840.0
+@export var harpoon_min_reel_speed: float = 120.0
+@export var harpoon_max_reel_speed: float = 220.0
+@export var harpoon_ally_reel_speed_multiplier: float = 2.0
+@export var harpoon_stop_distance: float = 0.0
+@export var harpoon_contact_distance_scale: float = 0.45
+@export var harpoon_enemy_damage: float = 8.0
+@export var harpoon_arrival_stagger_duration: float = 0.36
+@export var harpoon_heavy_tug_distance: float = 56.0
+@export var harpoon_projectile_hit_radius: float = 14.0
+@export var harpoon_reel_max_duration: float = 2.6
 
 @export var ability_2_damage: float = 40.0
 @export var ability_2_range: float = 88.0
@@ -73,6 +91,19 @@ signal equipped_sword_changed(sword_id: String, sword_name: String)
 @export var block_stamina_min_to_raise: float = 5.0
 @export var block_stamina_recover_threshold_ratio: float = 0.5
 @export var block_input_grace_duration: float = 0.12
+@export var perfect_block_window: float = 0.24
+@export var counter_strike_unlock_duration: float = 4.0
+@export var counter_strike_startup: float = 0.12
+@export var counter_strike_recovery: float = 0.22
+@export var counter_strike_damage: float = 34.0
+@export var counter_strike_range: float = 74.0
+@export var counter_strike_arc_degrees: float = 80.0
+@export var counter_strike_enemy_stun: float = 0.72
+@export var counter_strike_knockback_scale: float = 1.65
+@export var counter_strike_hitstop: float = 0.11
+@export var counter_strike_vfx_scale: float = 1.45
+@export var counter_strike_anim_duration: float = 0.21
+@export var counter_strike_anim_strength: float = 1.75
 @export var depth_speed_multiplier: float = 0.62
 @export var lane_min_x: float = -760.0
 @export var lane_max_x: float = 760.0
@@ -86,6 +117,7 @@ signal equipped_sword_changed(sword_id: String, sword_name: String)
 @export var hit_stun_duration: float = 0.24
 @export var outgoing_hit_stun_duration: float = 0.2
 @export var hit_effect_duration: float = 0.14
+@export var heal_flash_duration: float = 0.16
 @export var hit_knockback_speed: float = 250.0
 @export var hit_knockback_decay: float = 1300.0
 @export var blocked_knockback_move_scale: float = 0.6
@@ -228,6 +260,9 @@ var current_health: float = 0.0
 var current_block_stamina: float = 0.0
 var block_stamina_broken: bool = false
 var block_input_grace_left: float = 0.0
+var perfect_block_window_left: float = 0.0
+var counter_strike_available: bool = false
+var counter_strike_window_left: float = 0.0
 var current_xp: int = 0
 var xp_to_next_level: int = 100
 var level: int = 1
@@ -286,6 +321,7 @@ var knockback_velocity: Vector2 = Vector2.ZERO
 var charge_lunge_velocity: Vector2 = Vector2.ZERO
 
 var hit_flash_left: float = 0.0
+var heal_flash_left: float = 0.0
 var hurt_anim_left: float = 0.0
 var stun_left: float = 0.0
 var hitstop_left: float = 0.0
@@ -324,6 +360,26 @@ var charge_attack_hitstop: float = 0.0
 var charge_attack_vfx_scale: float = 1.0
 var charge_attack_enemy_stun: float = 0.0
 var charge_attack_anim_strength: float = 1.0
+var harpoon_charge_active: bool = false
+var harpoon_charge_time: float = 0.0
+var harpoon_charge_ratio: float = 0.0
+var harpoon_throw_direction_sign: float = 1.0
+var harpoon_projectile_active: bool = false
+var harpoon_projectile_position: Vector2 = Vector2.ZERO
+var harpoon_projectile_start: Vector2 = Vector2.ZERO
+var harpoon_projectile_travel_left: float = 0.0
+var harpoon_projectile_speed: float = 0.0
+var harpoon_reel_active: bool = false
+var harpoon_reel_left: float = 0.0
+var harpoon_reel_speed: float = 0.0
+var harpoon_reel_charge_ratio: float = 0.0
+var harpoon_hooked_target: Node2D = null
+var harpoon_hooked_target_is_enemy: bool = false
+var harpoon_hooked_target_is_heavy: bool = false
+var harpoon_heavy_start_x: float = 0.0
+var harpoon_tether_line: Line2D = null
+var harpoon_tether_glow_line: Line2D = null
+var harpoon_projectile_visual: Node2D = null
 var camera_base_offset: Vector2 = Vector2.ZERO
 var camera_shake_left: float = 0.0
 var camera_shake_current_strength: float = 0.0
@@ -485,6 +541,7 @@ func _ready() -> void:
 	block_indicator.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	block_indicator.end_cap_mode = Line2D.LINE_CAP_ROUND
 	_setup_block_shield_effect_sprite()
+	_setup_harpoon_visuals()
 	_setup_hitbox_debug_overlay()
 	_setup_health_bar()
 	_update_health_bar()
@@ -526,12 +583,21 @@ func _physics_process(delta: float) -> void:
 func _exit_tree() -> void:
 	if hitbox_debug_overlay_root != null and is_instance_valid(hitbox_debug_overlay_root):
 		hitbox_debug_overlay_root.queue_free()
+	if harpoon_tether_line != null and is_instance_valid(harpoon_tether_line):
+		harpoon_tether_line.queue_free()
+	if harpoon_tether_glow_line != null and is_instance_valid(harpoon_tether_glow_line):
+		harpoon_tether_glow_line.queue_free()
+	if harpoon_projectile_visual != null and is_instance_valid(harpoon_projectile_visual):
+		harpoon_projectile_visual.queue_free()
 	hitbox_debug_overlay_root = null
 	hitbox_debug_hurtbox_ring = null
 	hitbox_debug_hurtbox_cross_h = null
 	hitbox_debug_hurtbox_cross_v = null
 	hitbox_debug_shield_ring = null
 	hitbox_debug_shield_box = null
+	harpoon_tether_line = null
+	harpoon_tether_glow_line = null
+	harpoon_projectile_visual = null
 
 
 func emit_initial_state() -> void:
@@ -683,7 +749,9 @@ func set_gameplay_input_blocked(blocked: bool) -> void:
 		_emit_cooldown_state()
 		return
 	is_blocking = false
+	perfect_block_window_left = 0.0
 	is_charging_attack = false
+	_cancel_harpoon_state()
 	_cancel_charge_attack()
 	_reset_basic_combo_state()
 	_emit_cooldown_state()
@@ -709,6 +777,7 @@ func receive_heal(amount: float) -> bool:
 
 	health_changed.emit(current_health, max_health)
 	_update_health_bar()
+	heal_flash_left = maxf(heal_flash_left, maxf(0.01, heal_flash_duration))
 	_spawn_hit_effect(global_position + Vector2(0.0, -14.0), Color(0.36, 0.95, 0.56, 0.92), 8.0)
 	return true
 
@@ -721,6 +790,7 @@ func receive_hit(amount: float, source_position: Vector2, guard_break: bool = fa
 
 	var damage_to_apply := amount
 	var blocked := false
+	var perfect_block := false
 	var incoming_direction := (source_position - global_position).normalized()
 	if incoming_direction == Vector2.ZERO:
 		incoming_direction = Vector2.LEFT if facing_direction.x >= 0.0 else Vector2.RIGHT
@@ -729,7 +799,11 @@ func receive_hit(amount: float, source_position: Vector2, guard_break: bool = fa
 		if facing_direction.dot(incoming_direction) >= block_threshold:
 			damage_to_apply *= (1.0 - block_damage_reduction)
 			blocked = true
+			perfect_block = perfect_block_window_left > 0.0
+			perfect_block_window_left = 0.0
 			drain_block_stamina(block_stamina_blocked_hit_cost)
+			if perfect_block:
+				_register_perfect_block(source_position)
 
 	if damage_to_apply <= 0.0:
 		return false
@@ -801,6 +875,7 @@ func _tick_timers(delta: float) -> void:
 	roll_cooldown_left = maxf(0.0, roll_cooldown_left - delta)
 	basic_combo_window_left = maxf(0.0, basic_combo_window_left - delta)
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
+	heal_flash_left = maxf(0.0, heal_flash_left - delta)
 	hurt_anim_left = maxf(0.0, hurt_anim_left - delta)
 	stun_left = maxf(0.0, stun_left - delta)
 	hitstop_left = maxf(0.0, hitstop_left - delta)
@@ -808,10 +883,18 @@ func _tick_timers(delta: float) -> void:
 	light_attack_recovery_left = maxf(0.0, light_attack_recovery_left - delta)
 	ally_dash_block_grace_left = maxf(0.0, ally_dash_block_grace_left - delta)
 	block_input_grace_left = maxf(0.0, block_input_grace_left - delta)
+	perfect_block_window_left = maxf(0.0, perfect_block_window_left - delta)
 	slash_effect_left = maxf(0.0, slash_effect_left - delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.35))
 	charge_lunge_velocity = charge_lunge_velocity.move_toward(Vector2.ZERO, heavy_lunge_decay * delta)
+	if counter_strike_available:
+		counter_strike_window_left = maxf(0.0, counter_strike_window_left - delta)
+		if counter_strike_window_left <= 0.0:
+			_expire_counter_strike()
+	else:
+		counter_strike_window_left = 0.0
 	_tick_charge_attack_state(delta)
+	_tick_harpoon_state(delta)
 	if stun_left <= 0.0 and combat_state == CombatState.HITSTUN and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0:
 		_set_combat_state(CombatState.IDLE_MOVE)
 	if basic_combo_window_left <= 0.0 and attack_windup_left <= 0.0 and attack_anim_left <= 0.0 and basic_combo_auto_hits_remaining <= 0:
@@ -855,6 +938,7 @@ func _tick_timers(delta: float) -> void:
 	elif basic_attack_input_buffered and _can_start_basic_attack_now():
 		_clear_basic_attack_buffer()
 		_try_start_basic_attack(false, "buffered_input", true)
+	_update_harpoon_visuals()
 
 
 func _tick_block_stamina(delta: float) -> void:
@@ -889,6 +973,585 @@ func drain_block_stamina(amount: float) -> float:
 		is_blocking = false
 		instant_dash_block_latched = false
 	return current_block_stamina
+
+
+func _on_block_started() -> void:
+	perfect_block_window_left = maxf(0.0, perfect_block_window)
+
+
+func _unlock_counter_strike() -> void:
+	counter_strike_available = true
+	counter_strike_window_left = maxf(0.0, counter_strike_unlock_duration)
+	_emit_cooldown_state()
+	_spawn_hit_effect(get_block_shield_center_global(), Color(0.86, 0.96, 1.0, 0.94), 11.0)
+	_spawn_combat_text_popup(get_block_shield_center_global() + Vector2(-8.0, -58.0), "Counter Ready", Color(0.86, 0.98, 1.0, 0.98), 0.5)
+	combat_status_message.emit("Perfect Block! Counter Strike Ready", 1.0)
+
+
+func _consume_counter_strike() -> void:
+	counter_strike_available = false
+	counter_strike_window_left = 0.0
+	_emit_cooldown_state()
+	_spawn_combat_text_popup(global_position + Vector2(-8.0, -56.0), "Counter Used", Color(1.0, 0.86, 0.52, 0.96), 0.45)
+	combat_status_message.emit("Counter Strike used", 0.75)
+
+
+func _expire_counter_strike() -> void:
+	if not counter_strike_available:
+		counter_strike_window_left = 0.0
+		return
+	counter_strike_available = false
+	counter_strike_window_left = 0.0
+	_emit_cooldown_state()
+	_spawn_combat_text_popup(global_position + Vector2(-8.0, -56.0), "Counter Expired", Color(0.86, 0.9, 0.98, 0.94), 0.45)
+	combat_status_message.emit("Counter Strike expired", 0.75)
+
+
+func _register_perfect_block(source_position: Vector2) -> void:
+	_spawn_hit_effect(get_block_shield_center_global(), Color(0.72, 0.96, 1.0, 0.96), 13.0)
+	_spawn_hit_effect(get_block_shield_center_global() + Vector2(0.0, -6.0), Color(0.98, 1.0, 1.0, 0.94), 8.2)
+	_spawn_hit_effect(source_position + Vector2(0.0, -8.0), Color(0.72, 0.96, 1.0, 0.9), 6.4)
+	_start_hitstop(0.05)
+	_start_camera_shake(0.1, 3.2)
+	_spawn_combat_text_popup(get_block_shield_center_global() + Vector2(-8.0, -72.0), "Perfect Block!", Color(0.78, 0.98, 1.0, 1.0), 0.55)
+	_unlock_counter_strike()
+
+
+func _can_start_counter_strike() -> bool:
+	if gameplay_input_blocked:
+		return false
+	if is_dead or stun_left > 0.0:
+		return false
+	if harpoon_charge_active or harpoon_projectile_active or harpoon_reel_active:
+		return false
+	if is_rolling or lunge_time_left > 0.0:
+		return false
+	if is_charging_attack or charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0 or charge_attack_recovery_left > 0.0:
+		return false
+	if attack_windup_left > 0.0 or attack_anim_left > 0.0 or light_attack_recovery_left > 0.0:
+		return false
+	if queued_attack != QueuedAttack.NONE:
+		return false
+	return true
+
+
+func _try_start_counter_strike() -> bool:
+	if not counter_strike_available:
+		return false
+	if not _can_start_counter_strike():
+		return false
+	_consume_counter_strike()
+	is_blocking = false
+	_reset_basic_combo_state()
+	_clear_queued_melee_hit()
+	attack_windup_left = 0.0
+	light_attack_recovery_left = 0.0
+	_queue_attack(
+		QueuedAttack.COUNTER_STRIKE,
+		maxf(0.01, counter_strike_startup),
+		maxf(10.0, counter_strike_range),
+		clampf(counter_strike_arc_degrees, 10.0, 179.0),
+		Color(0.8, 0.96, 1.0, 0.52)
+	)
+	return true
+
+
+func _can_start_harpoon_throw() -> bool:
+	if gameplay_input_blocked:
+		return false
+	if is_dead or stun_left > 0.0:
+		return false
+	if counter_strike_available:
+		return false
+	if ability_1_cooldown_left > 0.0:
+		return false
+	if harpoon_charge_active or harpoon_projectile_active or harpoon_reel_active:
+		return false
+	if is_blocking:
+		return false
+	if is_rolling or lunge_time_left > 0.0:
+		return false
+	if is_charging_attack or charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0 or charge_attack_recovery_left > 0.0:
+		return false
+	if attack_windup_left > 0.0 or attack_anim_left > 0.0 or light_attack_recovery_left > 0.0:
+		return false
+	if queued_attack != QueuedAttack.NONE:
+		return false
+	return true
+
+
+func _try_start_harpoon_charge() -> bool:
+	if not _can_start_harpoon_throw():
+		return false
+	harpoon_charge_active = true
+	harpoon_charge_time = 0.0
+	harpoon_charge_ratio = 0.0
+	harpoon_throw_direction_sign = _get_block_shield_facing_sign()
+	harpoon_reel_charge_ratio = 0.0
+	harpoon_projectile_active = false
+	harpoon_reel_active = false
+	harpoon_hooked_target = null
+	_reset_basic_combo_state()
+	_clear_queued_melee_hit()
+	_spawn_combat_text_popup(global_position + Vector2(0.0, -58.0), "Tidehook", Color(0.48, 0.92, 1.0, 0.96), 0.32)
+	return true
+
+
+func _tick_harpoon_state(delta: float) -> void:
+	if harpoon_charge_active:
+		if is_blocking or is_rolling or lunge_time_left > 0.0 or attack_windup_left > 0.0:
+			_cancel_harpoon_state()
+			return
+		if Input.is_action_pressed("ability_1"):
+			harpoon_charge_time = minf(maxf(0.01, harpoon_max_charge_time), harpoon_charge_time + maxf(0.0, delta))
+			harpoon_charge_ratio = _get_harpoon_charge_ratio_from_time(harpoon_charge_time)
+		else:
+			_release_harpoon_throw()
+	if harpoon_projectile_active:
+		_advance_harpoon_projectile(delta)
+	if harpoon_reel_active:
+		_tick_harpoon_reel(delta)
+
+
+func _release_harpoon_throw() -> void:
+	if not harpoon_charge_active:
+		return
+	harpoon_charge_active = false
+	harpoon_charge_ratio = _get_harpoon_charge_ratio_from_time(harpoon_charge_time)
+	harpoon_reel_charge_ratio = harpoon_charge_ratio
+	var throw_sign := _get_block_shield_facing_sign()
+	if absf(facing_direction.x) > 0.01:
+		throw_sign = -1.0 if facing_direction.x < 0.0 else 1.0
+	harpoon_throw_direction_sign = throw_sign
+	var throw_origin := _get_harpoon_origin_global()
+	harpoon_projectile_active = true
+	harpoon_projectile_position = throw_origin
+	harpoon_projectile_start = throw_origin
+	harpoon_projectile_travel_left = lerpf(maxf(24.0, harpoon_min_range), maxf(harpoon_min_range, harpoon_max_range), harpoon_charge_ratio)
+	harpoon_projectile_speed = lerpf(maxf(80.0, harpoon_min_projectile_speed), maxf(harpoon_min_projectile_speed, harpoon_max_projectile_speed), harpoon_charge_ratio)
+	ability_1_cooldown_left = maxf(ability_1_cooldown_left, maxf(0.05, ability_1_cooldown))
+	_spawn_hit_effect(throw_origin, Color(0.52, 0.94, 1.0, 0.92), 6.8)
+	_emit_cooldown_state()
+
+
+func _advance_harpoon_projectile(delta: float) -> void:
+	if not harpoon_projectile_active:
+		return
+	var step_distance := harpoon_projectile_speed * maxf(0.0, delta)
+	if step_distance <= 0.0:
+		return
+	var travel_step := minf(step_distance, harpoon_projectile_travel_left)
+	var previous_position := harpoon_projectile_position
+	harpoon_projectile_position.x += harpoon_throw_direction_sign * travel_step
+	harpoon_projectile_travel_left = maxf(0.0, harpoon_projectile_travel_left - travel_step)
+	var hit_target := _find_harpoon_first_target(previous_position, harpoon_projectile_position, harpoon_throw_direction_sign)
+	if hit_target != null and is_instance_valid(hit_target):
+		var hit_is_enemy := hit_target is EnemyBase
+		var hit_is_heavy := false
+		if hit_is_enemy:
+			var enemy := hit_target as EnemyBase
+			hit_is_heavy = _is_harpoon_heavy_enemy(enemy)
+		harpoon_projectile_active = false
+		_spawn_hit_effect(hit_target.global_position + Vector2(0.0, -12.0), Color(0.62, 0.98, 1.0, 0.94), 7.6)
+		_begin_harpoon_reel(hit_target, hit_is_enemy, hit_is_heavy)
+		return
+	if harpoon_projectile_travel_left <= 0.0:
+		harpoon_projectile_active = false
+		_spawn_hit_effect(harpoon_projectile_position + Vector2(0.0, -3.0), Color(0.42, 0.84, 1.0, 0.82), 5.2)
+
+
+func _begin_harpoon_reel(target: Node2D, target_is_enemy: bool, target_is_heavy: bool) -> void:
+	if target == null or not is_instance_valid(target):
+		return
+	harpoon_hooked_target = target
+	harpoon_hooked_target_is_enemy = target_is_enemy
+	harpoon_hooked_target_is_heavy = target_is_heavy
+	harpoon_heavy_start_x = target.global_position.x
+	harpoon_reel_active = true
+	harpoon_reel_speed = lerpf(maxf(80.0, harpoon_min_reel_speed), maxf(harpoon_min_reel_speed, harpoon_max_reel_speed), harpoon_reel_charge_ratio)
+	if not target_is_enemy:
+		harpoon_reel_speed *= maxf(0.1, harpoon_ally_reel_speed_multiplier)
+	var destination := _get_harpoon_reel_destination(target.global_position)
+	var travel_distance := target.global_position.distance_to(destination)
+	var estimated_reel_time := travel_distance / maxf(1.0, harpoon_reel_speed)
+	harpoon_reel_left = clampf(estimated_reel_time + 0.2, 0.2, maxf(0.2, harpoon_reel_max_duration))
+
+
+func _tick_harpoon_reel(delta: float) -> void:
+	if not harpoon_reel_active:
+		return
+	if harpoon_hooked_target == null or not is_instance_valid(harpoon_hooked_target):
+		_cancel_harpoon_state()
+		return
+	harpoon_reel_left = maxf(0.0, harpoon_reel_left - maxf(0.0, delta))
+	var target_position := harpoon_hooked_target.global_position
+	var destination := _get_harpoon_reel_destination(target_position)
+	var max_step := harpoon_reel_speed * maxf(0.0, delta)
+	target_position = target_position.move_toward(destination, max_step)
+	_apply_harpoon_reel_target_position(harpoon_hooked_target, target_position, delta)
+	if target_position.distance_to(destination) <= 2.0:
+		_finalize_harpoon_reel(true)
+		return
+	if harpoon_reel_left <= 0.0:
+		target_position = destination
+		_apply_harpoon_reel_target_position(harpoon_hooked_target, target_position, delta)
+		_finalize_harpoon_reel(true)
+
+
+func _finalize_harpoon_reel(arrived: bool) -> void:
+	if harpoon_hooked_target != null and is_instance_valid(harpoon_hooked_target) and arrived:
+		if harpoon_hooked_target_is_enemy:
+			if harpoon_hooked_target_is_heavy:
+				_apply_harpoon_heavy_tug_effect(harpoon_hooked_target as EnemyBase)
+			else:
+				_apply_harpoon_enemy_arrival_effect(harpoon_hooked_target as EnemyBase)
+		else:
+			_apply_harpoon_ally_arrival_effect(harpoon_hooked_target)
+	_cancel_harpoon_state()
+
+
+func _cancel_harpoon_state() -> void:
+	harpoon_charge_active = false
+	harpoon_charge_time = 0.0
+	harpoon_charge_ratio = 0.0
+	harpoon_projectile_active = false
+	harpoon_projectile_travel_left = 0.0
+	harpoon_reel_active = false
+	harpoon_reel_left = 0.0
+	harpoon_hooked_target = null
+	harpoon_hooked_target_is_enemy = false
+	harpoon_hooked_target_is_heavy = false
+	if harpoon_tether_line != null and is_instance_valid(harpoon_tether_line):
+		harpoon_tether_line.visible = false
+	if harpoon_tether_glow_line != null and is_instance_valid(harpoon_tether_glow_line):
+		harpoon_tether_glow_line.visible = false
+	if harpoon_projectile_visual != null and is_instance_valid(harpoon_projectile_visual):
+		harpoon_projectile_visual.visible = false
+
+
+func _find_harpoon_first_target(from_position: Vector2, to_position: Vector2, direction_sign: float) -> Node2D:
+	var best_target: Node2D = null
+	var best_progress := INF
+	var segment_min_x := minf(from_position.x, to_position.x)
+	var segment_max_x := maxf(from_position.x, to_position.x)
+	for candidate in _collect_harpoon_targets():
+		if not _is_valid_harpoon_target(candidate):
+			continue
+		var radius := _get_harpoon_target_radius(candidate)
+		var max_distance := maxf(4.0, harpoon_projectile_hit_radius) + radius
+		var candidate_position := candidate.global_position
+		if candidate_position.x < segment_min_x - max_distance or candidate_position.x > segment_max_x + max_distance:
+			continue
+		if absf(candidate_position.y - from_position.y) > max_distance:
+			continue
+		var forward_progress := (candidate_position.x - from_position.x) * direction_sign
+		if forward_progress < -max_distance:
+			continue
+		var closest_x := clampf(candidate_position.x, segment_min_x, segment_max_x)
+		var delta := candidate_position - Vector2(closest_x, from_position.y)
+		if delta.length_squared() > max_distance * max_distance:
+			continue
+		if forward_progress < best_progress:
+			best_progress = forward_progress
+			best_target = candidate
+	return best_target
+
+
+func _collect_harpoon_targets() -> Array[Node2D]:
+	var targets: Array[Node2D] = []
+	var seen_ids: Dictionary = {}
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy_target := node as Node2D
+		if enemy_target == null:
+			continue
+		var enemy_id := enemy_target.get_instance_id()
+		if seen_ids.has(enemy_id):
+			continue
+		seen_ids[enemy_id] = true
+		targets.append(enemy_target)
+	for node in get_tree().get_nodes_in_group("friendly_npcs"):
+		var friendly_target := node as Node2D
+		if friendly_target == null:
+			continue
+		var ally_id := friendly_target.get_instance_id()
+		if seen_ids.has(ally_id):
+			continue
+		seen_ids[ally_id] = true
+		targets.append(friendly_target)
+	return targets
+
+
+func _is_valid_harpoon_target(candidate: Node2D) -> bool:
+	if candidate == null or not is_instance_valid(candidate):
+		return false
+	if candidate == self:
+		return false
+	if candidate is EnemyBase:
+		return not (candidate as EnemyBase).dead
+	if candidate is FriendlyHealer:
+		return not (candidate as FriendlyHealer).dead
+	if candidate is FriendlyRatfolk:
+		return not (candidate as FriendlyRatfolk).dead
+	return false
+
+
+func _get_harpoon_target_radius(candidate: Node2D) -> float:
+	if candidate is EnemyBase:
+		return _get_enemy_attack_collision_radius(candidate as EnemyBase)
+	var collision_node := candidate.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if collision_node == null or collision_node.shape == null:
+		return 14.0
+	var shape := collision_node.shape
+	if shape is CircleShape2D:
+		return maxf(6.0, (shape as CircleShape2D).radius)
+	if shape is CapsuleShape2D:
+		var capsule := shape as CapsuleShape2D
+		return maxf(6.0, capsule.radius + (capsule.height * 0.25))
+	if shape is RectangleShape2D:
+		var rectangle := shape as RectangleShape2D
+		return maxf(6.0, maxf(rectangle.size.x, rectangle.size.y) * 0.5)
+	return 14.0
+
+
+func _is_harpoon_heavy_enemy(enemy: EnemyBase) -> bool:
+	if enemy == null or not is_instance_valid(enemy):
+		return false
+	if enemy.is_miniboss:
+		return true
+	return enemy.monster_visual_profile in [
+		EnemyBase.MonsterVisualProfile.MINOTAUR,
+		EnemyBase.MonsterVisualProfile.CACODEMON,
+		EnemyBase.MonsterVisualProfile.SHARDSOUL
+	]
+
+
+func _get_harpoon_reel_destination_x(current_target_x: float) -> float:
+	var player_radius := _get_player_harpoon_collision_radius()
+	var target_radius := _get_harpoon_target_radius(harpoon_hooked_target) if (harpoon_hooked_target != null and is_instance_valid(harpoon_hooked_target)) else 14.0
+	var contact_gap := maxf(0.0, harpoon_stop_distance)
+	var contact_scale := clampf(harpoon_contact_distance_scale, 0.35, 1.0)
+	var stop_distance := maxf(6.0, (player_radius + target_radius) * contact_scale + contact_gap)
+	return global_position.x + (harpoon_throw_direction_sign * stop_distance)
+
+
+func _get_harpoon_reel_destination(current_target_position: Vector2) -> Vector2:
+	var destination_x := _get_harpoon_reel_destination_x(current_target_position.x)
+	return Vector2(destination_x, global_position.y)
+
+
+func _get_player_harpoon_collision_radius() -> float:
+	if collision_shape == null or not is_instance_valid(collision_shape) or collision_shape.shape == null:
+		return 14.0
+	var shape := collision_shape.shape
+	if shape is CircleShape2D:
+		var circle := shape as CircleShape2D
+		var radius_scale := maxf(absf(collision_shape.global_scale.x), absf(collision_shape.global_scale.y))
+		return maxf(6.0, circle.radius * maxf(0.01, radius_scale))
+	if shape is CapsuleShape2D:
+		var capsule := shape as CapsuleShape2D
+		return maxf(6.0, capsule.radius + (capsule.height * 0.25))
+	if shape is RectangleShape2D:
+		var rectangle := shape as RectangleShape2D
+		return maxf(6.0, maxf(rectangle.size.x, rectangle.size.y) * 0.5)
+	return 14.0
+
+
+func _apply_harpoon_enemy_arrival_effect(enemy: EnemyBase) -> void:
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+		return
+	var final_damage := maxf(0.0, harpoon_enemy_damage) * lerpf(0.9, 1.35, harpoon_reel_charge_ratio)
+	var final_stagger := maxf(0.0, harpoon_arrival_stagger_duration) * lerpf(0.9, 1.3, harpoon_reel_charge_ratio)
+	var to_player := (global_position - enemy.global_position).normalized()
+	if to_player == Vector2.ZERO:
+		to_player = Vector2.LEFT if harpoon_throw_direction_sign >= 0.0 else Vector2.RIGHT
+	var inward_knock_source := enemy.global_position - (to_player * 12.0)
+	var landed := enemy.receive_hit(final_damage, inward_knock_source, final_stagger, true, 0.1, self)
+	if landed:
+		_spawn_damage_popup(enemy.global_position + Vector2(0.0, damage_popup_head_offset_y), final_damage)
+	_spawn_hit_effect(enemy.global_position + Vector2(0.0, -12.0), Color(0.72, 0.96, 1.0, 0.96), 8.8)
+	_start_hitstop(0.06)
+	_start_camera_shake(0.1, 3.8)
+
+
+func _apply_harpoon_heavy_tug_effect(enemy: EnemyBase) -> void:
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+		return
+	if enemy.has_method("apply_hitstop"):
+		enemy.call("apply_hitstop", 0.09)
+	_set_node_float_max(enemy, "stun_left", maxf(0.0, harpoon_arrival_stagger_duration) * 0.35)
+	_spawn_hit_effect(enemy.global_position + Vector2(0.0, -12.0), Color(0.68, 0.9, 1.0, 0.94), 8.2)
+	_spawn_combat_text_popup(enemy.global_position + Vector2(0.0, -52.0), "Tugged", Color(0.72, 0.94, 1.0, 0.94), 0.36)
+	_start_hitstop(0.04)
+
+
+func _apply_harpoon_ally_arrival_effect(ally_target: Node2D) -> void:
+	if ally_target == null or not is_instance_valid(ally_target):
+		return
+	_set_node_float(ally_target, "stun_left", 0.0)
+	_set_node_vector(ally_target, "knockback_velocity", Vector2.ZERO)
+	_spawn_hit_effect(ally_target.global_position + Vector2(0.0, -14.0), Color(0.52, 0.96, 1.0, 0.9), 7.4)
+	_spawn_combat_text_popup(ally_target.global_position + Vector2(0.0, -54.0), "Rescued", Color(0.72, 1.0, 1.0, 0.94), 0.4)
+
+
+func _set_node_float_max(target: Object, property_name: String, value: float) -> void:
+	if target == null or property_name.is_empty():
+		return
+	if not _object_has_property(target, property_name):
+		return
+	var current_value := float(target.get(property_name))
+	target.set(property_name, maxf(current_value, value))
+
+
+func _set_node_vector(target: Object, property_name: String, value: Vector2) -> void:
+	if target == null or property_name.is_empty():
+		return
+	if not _object_has_property(target, property_name):
+		return
+	target.set(property_name, value)
+
+
+func _set_node_float(target: Object, property_name: String, value: float) -> void:
+	if target == null or property_name.is_empty():
+		return
+	if not _object_has_property(target, property_name):
+		return
+	target.set(property_name, value)
+
+
+func _apply_harpoon_reel_target_position(target: Node2D, reel_position: Vector2, delta: float) -> void:
+	if target == null or not is_instance_valid(target):
+		return
+	if harpoon_hooked_target_is_enemy:
+		# Lock enemy motion each reel tick so enemy AI/physics cannot immediately overwrite the pull.
+		_set_node_vector(target, "velocity", Vector2.ZERO)
+		_set_node_vector(target, "move_velocity", Vector2.ZERO)
+		_set_node_vector(target, "knockback_velocity", Vector2.ZERO)
+		var reel_stun := maxf(0.05, maxf(0.0, delta) + 0.02)
+		if harpoon_hooked_target_is_heavy:
+			reel_stun = minf(reel_stun, 0.06)
+		_set_node_float_max(target, "stun_left", reel_stun)
+	else:
+		# Allies should keep their current action state while being repositioned.
+		_set_node_vector(target, "knockback_velocity", Vector2.ZERO)
+	target.global_position = reel_position
+	target.set_deferred("global_position", reel_position)
+
+
+func _object_has_property(target: Object, property_name: String) -> bool:
+	for property_info in target.get_property_list():
+		var name_variant: Variant = property_info.get("name", "")
+		if String(name_variant) == property_name:
+			return true
+	return false
+
+
+func _get_harpoon_charge_ratio_from_time(charge_time_value: float) -> float:
+	var clamped_time := clampf(charge_time_value, 0.0, maxf(0.01, harpoon_max_charge_time))
+	var min_time := maxf(0.0, harpoon_min_charge_time)
+	var normalized := 0.0
+	if clamped_time <= min_time:
+		normalized = 0.0
+	else:
+		normalized = (clamped_time - min_time) / maxf(0.01, harpoon_max_charge_time - min_time)
+	return clampf(normalized, 0.0, 1.0)
+
+
+func _get_harpoon_origin_global() -> Vector2:
+	return global_position + Vector2(24.0 * harpoon_throw_direction_sign, -16.0)
+
+
+func _update_harpoon_visuals() -> void:
+	if (harpoon_tether_line == null or not is_instance_valid(harpoon_tether_line)) \
+			or (harpoon_tether_glow_line == null or not is_instance_valid(harpoon_tether_glow_line)) \
+			or (harpoon_projectile_visual == null or not is_instance_valid(harpoon_projectile_visual)):
+		_setup_harpoon_visuals()
+	if harpoon_tether_line == null or harpoon_tether_glow_line == null or harpoon_projectile_visual == null:
+		return
+	var origin := _get_harpoon_origin_global()
+	if harpoon_charge_active:
+		var preview_ratio := _get_harpoon_charge_ratio_from_time(harpoon_charge_time)
+		var preview_distance := lerpf(maxf(24.0, harpoon_min_range), maxf(harpoon_min_range, harpoon_max_range), preview_ratio)
+		var preview_tip := origin + Vector2(preview_distance * harpoon_throw_direction_sign, 0.0)
+		_set_harpoon_tether_visual(
+			origin,
+			preview_tip,
+			lerpf(4.2, 5.8, preview_ratio),
+			Color(0.12, 0.34, 0.44, 0.94),
+			Color(0.68, 0.98, 1.0, lerpf(0.44, 0.94, preview_ratio)),
+			lerpf(0.4, 2.0, preview_ratio)
+		)
+		harpoon_projectile_visual.visible = true
+		harpoon_projectile_visual.global_position = preview_tip
+		harpoon_projectile_visual.rotation = (0.0 if harpoon_throw_direction_sign >= 0.0 else PI) + (sin(anim_time * 16.0) * 0.06)
+		harpoon_projectile_visual.scale = Vector2.ONE * lerpf(0.82, 1.28, preview_ratio)
+		return
+	if harpoon_projectile_active:
+		_set_harpoon_tether_visual(
+			origin,
+			harpoon_projectile_position,
+			4.8,
+			Color(0.1, 0.32, 0.42, 0.94),
+			Color(0.66, 0.98, 1.0, 0.96),
+			1.2
+		)
+		harpoon_projectile_visual.visible = true
+		harpoon_projectile_visual.global_position = harpoon_projectile_position
+		harpoon_projectile_visual.rotation = (0.0 if harpoon_throw_direction_sign >= 0.0 else PI) + (sin(anim_time * 22.0) * 0.08)
+		harpoon_projectile_visual.scale = Vector2.ONE * lerpf(0.9, 1.26, harpoon_charge_ratio)
+		return
+	if harpoon_reel_active and harpoon_hooked_target != null and is_instance_valid(harpoon_hooked_target):
+		var target_position := harpoon_hooked_target.global_position + Vector2(0.0, -8.0)
+		_set_harpoon_tether_visual(
+			origin,
+			target_position,
+			5.2,
+			Color(0.1, 0.34, 0.44, 0.96),
+			Color(0.76, 0.99, 1.0, 0.98),
+			1.6
+		)
+		var reel_sign := 1.0 if target_position.x >= origin.x else -1.0
+		harpoon_projectile_visual.visible = true
+		harpoon_projectile_visual.global_position = target_position
+		harpoon_projectile_visual.rotation = (0.0 if reel_sign >= 0.0 else PI) + (sin(anim_time * 20.0) * 0.05)
+		harpoon_projectile_visual.scale = Vector2.ONE * 1.08
+		return
+	harpoon_tether_line.visible = false
+	harpoon_tether_glow_line.visible = false
+	harpoon_projectile_visual.visible = false
+
+
+func _set_harpoon_tether_visual(
+	origin: Vector2,
+	tip: Vector2,
+	core_width: float,
+	core_color: Color,
+	glow_color: Color,
+	wave_strength: float
+) -> void:
+	var points := _build_harpoon_tether_points(origin, tip, wave_strength)
+	harpoon_tether_line.visible = true
+	harpoon_tether_line.width = core_width
+	harpoon_tether_line.default_color = core_color
+	harpoon_tether_line.points = points
+	harpoon_tether_glow_line.visible = true
+	harpoon_tether_glow_line.width = maxf(1.6, core_width * 0.45)
+	harpoon_tether_glow_line.default_color = glow_color
+	harpoon_tether_glow_line.points = points
+
+
+func _build_harpoon_tether_points(origin: Vector2, tip: Vector2, wave_strength: float) -> PackedVector2Array:
+	var segment_count := maxi(8, int(round(origin.distance_to(tip) / 18.0)))
+	var points := PackedVector2Array()
+	var span := tip - origin
+	var span_length := maxf(1.0, span.length())
+	var direction := span / span_length
+	var normal := Vector2(-direction.y, direction.x)
+	for i in range(segment_count + 1):
+		var t := float(i) / float(segment_count)
+		var falloff := 1.0 - absf((t * 2.0) - 1.0)
+		var sway := sin((t * PI * 4.0) + (anim_time * 17.0)) * wave_strength * falloff
+		points.append(to_local(origin.lerp(tip, t) + (normal * sway)))
+	return points
 
 
 func _configure_autoplay_logging() -> void:
@@ -961,6 +1624,11 @@ func _get_basic_attack_start_blocker() -> String:
 	# Authoritative gameplay-side gate for all tank basic attack starts.
 	if basic_attack_cooldown_left > 0.0:
 		return "cooldown"
+	if harpoon_charge_active:
+		return "harpoon_charge"
+	if harpoon_projectile_active:
+		return "harpoon_projectile"
+	# Allow J attacks during reel so Tidehook can flow directly into melee follow-up.
 	if attack_anim_left > 0.0:
 		return "attack_anim"
 	if light_attack_recovery_left > 0.0:
@@ -1020,7 +1688,7 @@ func _try_start_basic_attack(use_combo: bool, source: String, consumed_buffer: b
 
 
 func _can_start_charge_attack() -> bool:
-	return basic_attack_cooldown_left <= 0.0 and attack_anim_left <= 0.0 and light_attack_recovery_left <= 0.0 and attack_windup_left <= 0.0 and queued_attack == QueuedAttack.NONE and not is_rolling and lunge_time_left <= 0.0 and stun_left <= 0.0 and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0
+	return basic_attack_cooldown_left <= 0.0 and attack_anim_left <= 0.0 and light_attack_recovery_left <= 0.0 and attack_windup_left <= 0.0 and queued_attack == QueuedAttack.NONE and not is_rolling and lunge_time_left <= 0.0 and stun_left <= 0.0 and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0 and not harpoon_charge_active and not harpoon_projectile_active and not harpoon_reel_active
 
 
 func _start_charge_attack() -> void:
@@ -1317,7 +1985,18 @@ func _handle_actions() -> void:
 		return
 
 	is_blocking = wants_block and can_block_now
+	if is_blocking and not was_blocking:
+		_on_block_started()
+	elif not is_blocking:
+		perfect_block_window_left = 0.0
+	if Input.is_action_just_pressed("counter_strike"):
+		var counter_started := _try_start_counter_strike()
+		if counter_started or counter_strike_available:
+			return
 	if is_blocking:
+		return
+	if Input.is_action_just_pressed("ability_1"):
+		_try_start_harpoon_charge()
 		return
 
 	if Input.is_action_just_pressed("basic_attack"):
@@ -1335,11 +2014,6 @@ func _handle_actions() -> void:
 					_queue_basic_attack_buffer("cooldown")
 			else:
 				_log_basic_attack_cadence("REJECT reason=%s" % blocker)
-		return
-
-	if Input.is_action_just_pressed("ability_1"):
-		if _can_start_charge_attack():
-			_start_charge_attack()
 		return
 
 	if Input.is_action_just_pressed("ability_2") and ability_2_cooldown_left <= 0.0:
@@ -1465,6 +2139,26 @@ func _resolve_queued_attack() -> void:
 			_set_combat_state(CombatState.ATTACK_ACTIVE)
 			if not using_external_player_sprite:
 				_trigger_slash_effect(ability_1_range, ability_1_arc_degrees, Color(0.84, 0.72, 0.52, 0.9), 0.22, 6.2)
+		QueuedAttack.COUNTER_STRIKE:
+			var counter_range := maxf(10.0, counter_strike_range)
+			var counter_arc := clampf(counter_strike_arc_degrees, 10.0, 179.0)
+			_queue_melee_hit_for_final_attack_frame(
+				counter_strike_damage,
+				counter_range,
+				counter_arc,
+				maxf(0.0, counter_strike_enemy_stun),
+				maxf(0.1, counter_strike_knockback_scale),
+				maxf(0.0, counter_strike_hitstop),
+				maxf(0.25, counter_strike_vfx_scale),
+				false
+			)
+			_start_attack_animation(maxf(0.06, counter_strike_anim_duration), maxf(0.2, counter_strike_anim_strength))
+			light_attack_recovery_left = maxf(light_attack_recovery_left, maxf(0.06, counter_strike_recovery))
+			_set_combat_state(CombatState.ATTACK_ACTIVE)
+			_show_instant_attack_flash(counter_range, counter_arc, Color(0.86, 0.98, 1.0, 0.92))
+			_spawn_hit_effect(global_position + Vector2(12.0 * _get_block_shield_facing_sign(), -12.0), Color(0.86, 0.98, 1.0, 0.9), 7.4)
+			if not using_external_player_sprite:
+				_trigger_slash_effect(counter_range, counter_arc, Color(0.86, 0.98, 1.0, 0.92), 0.19, 7.0)
 		_:
 			pass
 
@@ -1625,6 +2319,7 @@ func _start_roll() -> void:
 	roll_time_left = roll_duration
 	roll_cooldown_left = roll_cooldown
 	is_blocking = false
+	_cancel_harpoon_state()
 	_cancel_charge_attack()
 	_cancel_charge_attack_recovery()
 	queued_attack = QueuedAttack.NONE
@@ -1672,6 +2367,7 @@ func _begin_ally_dash_to_point(destination: Vector2) -> bool:
 	ally_dash_block_grace_left = 0.0
 	instant_dash_block_latched = false
 	is_blocking = false
+	_cancel_harpoon_state()
 	_cancel_charge_attack()
 	_cancel_charge_attack_recovery()
 	queued_attack = QueuedAttack.NONE
@@ -1813,6 +2509,7 @@ func _can_enter_instant_dash_block() -> bool:
 
 
 func _enter_instant_dash_block() -> void:
+	var was_blocking := is_blocking
 	if lunge_time_left > 0.0:
 		lunge_time_left = 0.0
 		lunge_total_duration = 0.0
@@ -1821,11 +2518,15 @@ func _enter_instant_dash_block() -> void:
 	ally_dash_block_grace_left = maxf(ally_dash_block_grace_left, maxf(0.0, ability_2_instant_block_grace))
 	instant_dash_block_latched = true
 	is_blocking = true
+	if not was_blocking:
+		_on_block_started()
 	_set_combat_state(CombatState.IDLE_MOVE)
 
 
 func _interrupt_combat_for_stun() -> void:
 	is_blocking = false
+	perfect_block_window_left = 0.0
+	_cancel_harpoon_state()
 	_cancel_charge_attack()
 	_cancel_charge_attack_recovery()
 	queued_attack = QueuedAttack.NONE
@@ -2274,6 +2975,14 @@ func _update_visual_feedback(delta: float) -> void:
 			Color(0.78, 0.72, 0.7, 1.0),
 			Color(0.26, 0.14, 0.16, 1.0)
 		)
+	elif heal_flash_left > 0.0:
+		_set_model_palette(
+			Color(0.36, 0.78, 0.46, 1.0),
+			Color(0.74, 0.94, 0.76, 1.0),
+			Color(0.42, 0.72, 0.5, 1.0),
+			Color(0.74, 0.98, 0.8, 1.0),
+			Color(0.14, 0.22, 0.16, 1.0)
+		)
 	elif _has_super_armor():
 		_set_model_palette(
 			Color(0.3, 0.38, 0.52, 1.0),
@@ -2658,6 +3367,68 @@ func _get_block_shield_effect_texture() -> Texture2D:
 	return block_shield_effect_texture
 
 
+func _setup_harpoon_visuals() -> void:
+	if harpoon_tether_line == null or not is_instance_valid(harpoon_tether_line):
+		var tether := Line2D.new()
+		tether.name = "HarpoonTether"
+		tether.visible = false
+		tether.width = 4.8
+		tether.default_color = Color(0.12, 0.34, 0.42, 0.94)
+		tether.begin_cap_mode = Line2D.LINE_CAP_ROUND
+		tether.end_cap_mode = Line2D.LINE_CAP_ROUND
+		tether.z_index = 228
+		tether.antialiased = true
+		add_child(tether)
+		harpoon_tether_line = tether
+	if harpoon_tether_glow_line == null or not is_instance_valid(harpoon_tether_glow_line):
+		var tether_glow := Line2D.new()
+		tether_glow.name = "HarpoonTetherGlow"
+		tether_glow.visible = false
+		tether_glow.width = 2.2
+		tether_glow.default_color = Color(0.66, 0.98, 1.0, 0.96)
+		tether_glow.begin_cap_mode = Line2D.LINE_CAP_ROUND
+		tether_glow.end_cap_mode = Line2D.LINE_CAP_ROUND
+		tether_glow.z_index = 229
+		tether_glow.antialiased = true
+		add_child(tether_glow)
+		harpoon_tether_glow_line = tether_glow
+	if harpoon_projectile_visual == null or not is_instance_valid(harpoon_projectile_visual):
+		var hook_root := Node2D.new()
+		hook_root.name = "HarpoonProjectile"
+		hook_root.visible = false
+		hook_root.z_index = 232
+		var hook_body := Polygon2D.new()
+		hook_body.color = Color(0.14, 0.46, 0.56, 0.96)
+		hook_body.polygon = PackedVector2Array([
+			Vector2(20.0, 0.0),
+			Vector2(6.0, -5.0),
+			Vector2(-6.0, -5.0),
+			Vector2(-10.0, -10.0),
+			Vector2(-14.0, -8.0),
+			Vector2(-10.0, -2.0),
+			Vector2(-18.0, 0.0),
+			Vector2(-10.0, 2.0),
+			Vector2(-14.0, 8.0),
+			Vector2(-10.0, 10.0),
+			Vector2(-6.0, 5.0),
+			Vector2(6.0, 5.0)
+		])
+		hook_root.add_child(hook_body)
+		var hook_highlight := Polygon2D.new()
+		hook_highlight.color = Color(0.78, 1.0, 1.0, 0.94)
+		hook_highlight.polygon = PackedVector2Array([
+			Vector2(13.0, 0.0),
+			Vector2(4.0, -2.4),
+			Vector2(-4.0, -2.4),
+			Vector2(-9.0, 0.0),
+			Vector2(-4.0, 2.4),
+			Vector2(4.0, 2.4)
+		])
+		hook_root.add_child(hook_highlight)
+		add_child(hook_root)
+		harpoon_projectile_visual = hook_root
+
+
 func _update_block_indicator_visual() -> void:
 	block_indicator.rotation = 0.0
 	block_indicator.visible = false
@@ -2689,10 +3460,14 @@ func _update_block_indicator_visual() -> void:
 func _emit_cooldown_state() -> void:
 	cooldowns_changed.emit({
 		"basic": basic_attack_cooldown_left,
-		"ability_1": basic_attack_cooldown_left,
+		"ability_1": ability_1_cooldown_left,
 		"ability_2": ability_2_cooldown_left,
 		"roll": roll_cooldown_left,
 		"block_active": is_blocking,
+		"counter_ready": counter_strike_available,
+		"counter_window_left": counter_strike_window_left,
+		"harpoon_charging": harpoon_charge_active,
+		"harpoon_charge_ratio": _get_harpoon_charge_ratio_from_time(harpoon_charge_time) if harpoon_charge_active else 0.0,
 		"charge_ratio": _get_charge_ratio(),
 		"combat_state": combat_state_name,
 		"equipped_sword_id": equipped_sword_id,
@@ -2703,8 +3478,13 @@ func _emit_cooldown_state() -> void:
 func _die() -> void:
 	is_dead = true
 	is_blocking = false
+	perfect_block_window_left = 0.0
+	counter_strike_available = false
+	counter_strike_window_left = 0.0
 	is_rolling = false
 	is_invulnerable = false
+	heal_flash_left = 0.0
+	_cancel_harpoon_state()
 	_cancel_charge_attack()
 	_cancel_charge_attack_recovery()
 	_reset_basic_combo_state()
@@ -2954,6 +3734,13 @@ func _update_player_sprite(delta: float, movement_ratio: float) -> void:
 		frame_index = int(floor(player_sprite_anim_time)) % frame_count
 	var source_column := int(frame_columns[frame_index]) if has_custom_columns else frame_index
 	character_sprite.frame_coords = Vector2i(source_column, row)
+	if hit_flash_left > 0.0:
+		character_sprite.modulate = Color(1.0, 0.72, 0.72, 1.0)
+	elif heal_flash_left > 0.0:
+		var heal_strength := clampf(heal_flash_left / maxf(0.01, heal_flash_duration), 0.0, 1.0)
+		character_sprite.modulate = Color(1.0, 1.0, 1.0, 1.0).lerp(Color(0.72, 1.0, 0.72, 1.0), minf(0.82, heal_strength))
+	else:
+		character_sprite.modulate = Color(1.0, 1.0, 1.0, 1.0)
 	if action_key == "attack" and not is_charging_attack and attack_windup_left <= 0.0 and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0 and frame_index >= frame_count - 1:
 		_apply_queued_melee_hit()
 func _update_weapon_fx(delta: float) -> void:
@@ -3089,6 +3876,43 @@ func _spawn_damage_popup(world_position: Vector2, damage_amount: float) -> void:
 	var tween := create_tween()
 	tween.tween_property(label, "global_position", label.global_position + Vector2(x_offset, -rise), duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tween.parallel().tween_property(label, "modulate:a", 0.0, duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tween.finished.connect(func() -> void:
+		if is_instance_valid(label):
+			label.queue_free()
+	)
+
+
+func _spawn_combat_text_popup(world_position: Vector2, text: String, text_color: Color, duration: float = 0.45) -> void:
+	if text.is_empty():
+		return
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		scene_root = get_parent()
+	if scene_root == null:
+		return
+	var label := Label.new()
+	label.top_level = true
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	label.global_position = world_position
+	label.z_index = 262
+	label.text = text
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.scale = Vector2.ONE * maxf(0.1, damage_popup_scale * 0.95)
+
+	var label_settings := LabelSettings.new()
+	label_settings.font_size = maxi(8, damage_popup_font_size - 1)
+	label_settings.font_color = text_color
+	label_settings.outline_size = maxi(0, damage_popup_outline_size)
+	label_settings.outline_color = Color(0.06, 0.08, 0.12, 0.96)
+	label.label_settings = label_settings
+	scene_root.add_child(label)
+
+	var rise := maxf(8.0, damage_popup_rise_distance * 0.62)
+	var popup_duration := maxf(0.08, duration)
+	var tween := create_tween()
+	tween.tween_property(label, "global_position", label.global_position + Vector2(0.0, -rise), popup_duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(label, "modulate:a", 0.0, popup_duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	tween.finished.connect(func() -> void:
 		if is_instance_valid(label):
 			label.queue_free()

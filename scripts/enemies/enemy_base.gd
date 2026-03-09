@@ -31,7 +31,15 @@ enum MonsterVisualProfile {
 	MINOTAUR,
 	CACODEMON,
 	SHARDSOUL,
-	IMP
+	IMP,
+	FIRE_ELEMENTAL,
+	COBRA
+}
+
+enum CobraAttackMode {
+	NONE,
+	CLOSE,
+	HEAVY
 }
 
 const BOSS_LOOP_STATE_NAMES: Dictionary = {
@@ -58,6 +66,48 @@ const THREAT_EPSILON: float = 0.001
 @export var basic_attack_hit_end_bonus: float = 24.0
 @export var basic_attack_hit_half_width: float = 24.0
 @export var basic_attack_tip_radius: float = 20.0
+@export var cobra_tongue_reach_bonus: float = 62.0
+@export var cobra_tongue_half_width: float = 12.0
+@export var cobra_tongue_tip_radius: float = 14.0
+@export var cobra_tongue_telegraph_width: float = 6.0
+@export var cobra_tongue_telegraph_color: Color = Color(1.0, 0.18, 0.34, 0.9)
+@export var cobra_tongue_telegraph_cone_degrees: float = 38.0
+@export var cobra_tongue_telegraph_fill_alpha: float = 0.22
+@export var cobra_tongue_telegraph_start_offset: float = 30.0
+@export var cobra_tongue_impact_fill_alpha: float = 0.56
+@export var cobra_tongue_impact_fill_duration: float = 0.2
+@export var cobra_tongue_attack_anim_duration: float = 0.22
+@export var cobra_preferred_range: float = 104.0
+@export var cobra_preferred_range_tolerance: float = 16.0
+@export var cobra_close_attack_trigger_range: float = 54.0
+@export var cobra_close_attack_reach: float = 56.0
+@export var cobra_close_attack_half_width: float = 10.0
+@export var cobra_close_attack_windup: float = 0.16
+@export var cobra_close_attack_damage_scale: float = 0.58
+@export var cobra_close_attack_stun_scale: float = 0.45
+@export var cobra_close_attack_knockback_scale: float = 0.88
+@export var cobra_close_attack_recovery: float = 0.2
+@export var cobra_close_attack_cooldown: float = 0.82
+@export var cobra_attack_min_range: float = 62.0
+@export var cobra_attack_max_range: float = 122.0
+@export var cobra_approach_speed_scale: float = 0.62
+@export var cobra_stalk_speed_scale: float = 0.34
+@export var cobra_retreat_speed_scale: float = 0.78
+@export var cobra_spacing_pause_duration: float = 0.14
+@export var cobra_heavy_attack_windup: float = 0.6
+@export var cobra_heavy_attack_cooldown: float = 1.3
+@export var cobra_heavy_bait_range_band: float = 14.0
+@export var cobra_attack_recovery_on_hit: float = 0.24
+@export var cobra_attack_recovery_on_miss: float = 0.72
+@export var cobra_attack_recovery_on_block: float = 0.9
+@export var cobra_max_range_bait_bonus_recovery: float = 0.2
+@export var cobra_punish_damage_taken_multiplier: float = 1.75
+@export var cobra_block_punish_damage_multiplier: float = 1.35
+@export var cobra_dodge_punish_damage_multiplier: float = 2.0
+@export var cobra_bait_punish_damage_bonus: float = 0.25
+@export var cobra_punish_recoil_pose_duration: float = 0.26
+@export var cobra_hit_stun_scale: float = 0.5
+@export var cobra_hit_knockback_scale: float = 0.7
 @export var attack_cooldown: float = 1.8
 @export var minotaur_basic_attack_cooldown_multiplier: float = 0.7
 @export var attack_windup: float = 0.28
@@ -210,6 +260,7 @@ const THREAT_EPSILON: float = 0.001
 @export var hit_stun_duration: float = 0.22
 @export var outgoing_hit_stun_duration: float = 0.2
 @export var hit_effect_duration: float = 0.14
+@export var heal_flash_duration: float = 0.16
 @export var hurt_anim_duration: float = 0.4
 @export var periodic_hurt_anim_enabled: bool = true
 @export var periodic_hurt_anim_duration: float = 0.16
@@ -259,6 +310,12 @@ const THREAT_EPSILON: float = 0.001
 @export var imp_fireball_release_delay: float = 0.2
 @export var imp_fireball_attack_anim_duration: float = 0.56
 @export var imp_visual_scale_multiplier: float = 1.0
+@export var fire_elemental_visual_scale_multiplier: float = 1.0
+@export var fire_elemental_hurtbox_radius: float = 19.0
+@export var fire_elemental_hurtbox_y_offset: float = -6.0
+@export var cobra_visual_scale_multiplier: float = 1.0
+@export var cobra_hurtbox_radius: float = 18.0
+@export var cobra_hurtbox_y_offset: float = -8.0
 
 const MONSTER_HD_HFRAMES: int = 10
 const MONSTER_HD_VFRAMES: int = 20
@@ -272,6 +329,12 @@ const SHARDSOUL_SHEET_PATH: String = "res://assets/external/ElthenAssets/shardso
 const IMP_HD_HFRAMES: int = 8
 const IMP_HD_VFRAMES: int = 12
 const IMP_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/imp/Imp Sprite Sheet.png")
+const FIRE_ELEMENTAL_HD_HFRAMES: int = 8
+const FIRE_ELEMENTAL_HD_VFRAMES: int = 5
+const FIRE_ELEMENTAL_SHEET_PATH: String = "res://assets/external/ElthenAssets/fire elemental/Fire Elemental Sprite Sheet.png"
+const COBRA_HD_HFRAMES: int = 8
+const COBRA_HD_VFRAMES: int = 5
+const COBRA_SHEET_PATH: String = "res://assets/external/ElthenAssets/cobra/Cobra Sprite Sheet.png"
 const MONSTER_TEXTURES: Dictionary = {
 	"idle": MONSTER_SHEET,
 	"run": MONSTER_SHEET,
@@ -312,6 +375,22 @@ const IMP_FPS: Dictionary = {
 	"hurt": 10.0,
 	"death": 7.5
 }
+const FIRE_ELEMENTAL_FPS: Dictionary = {
+	"idle": 9.0,
+	"run": 10.0,
+	"attack": 10.5,
+	"spin": 10.5,
+	"hurt": 9.0,
+	"death": 7.5
+}
+const COBRA_FPS: Dictionary = {
+	"idle": 9.0,
+	"run": 10.0,
+	"attack": 10.5,
+	"spin": 10.5,
+	"hurt": 9.0,
+	"death": 7.4
+}
 const MONSTER_ACTION_ROWS: Dictionary = {
 	"idle": 0,
 	"run": 1,
@@ -337,6 +416,22 @@ const SHARDSOUL_ACTION_ROWS: Dictionary = {
 	"death": 4
 }
 const IMP_ACTION_ROWS: Dictionary = {
+	"idle": 0,
+	"run": 1,
+	"attack": 2,
+	"spin": 2,
+	"hurt": 3,
+	"death": 4
+}
+const FIRE_ELEMENTAL_ACTION_ROWS: Dictionary = {
+	"idle": 1,
+	"run": 0,
+	"attack": 2,
+	"spin": 2,
+	"hurt": 3,
+	"death": 4
+}
+const COBRA_ACTION_ROWS: Dictionary = {
 	"idle": 0,
 	"run": 1,
 	"attack": 2,
@@ -376,6 +471,22 @@ const IMP_ACTION_FRAME_COUNTS: Dictionary = {
 	"hurt": 4,
 	"death": 6
 }
+const FIRE_ELEMENTAL_ACTION_FRAME_COUNTS: Dictionary = {
+	"idle": 8,
+	"run": 8,
+	"attack": 8,
+	"spin": 8,
+	"hurt": 4,
+	"death": 4
+}
+const COBRA_ACTION_FRAME_COUNTS: Dictionary = {
+	"idle": 8,
+	"run": 8,
+	"attack": 6,
+	"spin": 6,
+	"hurt": 4,
+	"death": 6
+}
 const MONSTER_ACTION_FRAME_COLUMNS: Dictionary = {
 	"spin": [0, 1, 2, 3, 4, 5, 6, 7],
 	"hurt": [1, 2, 3, 4]
@@ -398,6 +509,22 @@ const IMP_ACTION_FRAME_COLUMNS: Dictionary = {
 	"hurt": [0, 1, 2, 3],
 	"death": [0, 1, 2, 3, 4, 5]
 }
+const FIRE_ELEMENTAL_ACTION_FRAME_COLUMNS: Dictionary = {
+	"idle": [0, 1, 2, 3, 4, 5, 6, 7],
+	"run": [0, 1, 2, 3, 4, 5, 6, 7],
+	"attack": [0, 1, 2, 3, 4, 5, 6, 7],
+	"spin": [0, 1, 2, 3, 4, 5, 6, 7],
+	"hurt": [0, 1, 2, 3],
+	"death": [4, 5, 6, 7]
+}
+const COBRA_ACTION_FRAME_COLUMNS: Dictionary = {
+	"idle": [0, 1, 2, 3, 4, 5, 6, 7],
+	"run": [0, 1, 2, 3, 4, 5, 6, 7],
+	"attack": [0, 1, 2, 3, 4, 5],
+	"spin": [0, 1, 2, 3, 4, 5],
+	"hurt": [0, 1, 2, 3],
+	"death": [0, 1, 2, 3, 4, 5]
+}
 const CACODEMON_HEADBUTT_IMPACT_TEXTURE_PATH: String = "res://assets/external/opengameart/cacodemon_headbutt_hit01.png"
 const CACODEMON_HEADBUTT_IMPACT_FRAME_SIZE: Vector2i = Vector2i(64, 64)
 const CACODEMON_HEADBUTT_IMPACT_FPS: float = 18.0
@@ -415,16 +542,25 @@ const MONSTER_HD_ROW_NAMES: Array[String] = ["NW", "N", "W", "SW", "SE", "S", "E
 
 var current_health: float = 0.0
 static var _cached_shardsoul_sheet: Texture2D = null
+static var _cached_fire_elemental_sheet: Texture2D = null
+static var _cached_cobra_sheet: Texture2D = null
 var attack_cooldown_left: float = 0.0
 var attack_windup_left: float = 0.0
 var attack_prestrike_hold_left: float = 0.0
 var attack_recovery_hold_left: float = 0.0
+var cobra_spacing_pause_left: float = 0.0
+var cobra_punish_window_left: float = 0.0
+var cobra_punish_damage_multiplier_active: float = 1.0
+var cobra_recoil_pose_left: float = 0.0
+var cobra_pending_attack_mode: CobraAttackMode = CobraAttackMode.NONE
+var cobra_last_heavy_start_distance: float = 0.0
 var pending_attack: bool = false
 var player: Node = null
 var dead: bool = false
 var knockback_velocity: Vector2 = Vector2.ZERO
 
 var hit_flash_left: float = 0.0
+var heal_flash_left: float = 0.0
 var hurt_anim_left: float = 0.0
 var cosmetic_hurt_anim_left: float = 0.0
 var periodic_hurt_anim_cooldown_left: float = 0.0
@@ -465,6 +601,7 @@ var spin_charge_left: float = 0.0
 var spin_active_left: float = 0.0
 var spin_hit_tick_left: float = 0.0
 var spin_warning_area: Polygon2D = null
+var cobra_tongue_telegraph_area: Polygon2D = null
 var basic_attacks_since_last_spin: int = 0
 var boss_loop_state: BossLoopState = BossLoopState.IDLE
 var boss_state_time_left: float = 0.0
@@ -644,6 +781,7 @@ func _ready() -> void:
 	weapon_trail.visible = false
 	slash_effect.visible = false
 	_setup_spin_warning_area()
+	_setup_cobra_tongue_telegraph_area()
 	_setup_boss_charge_telegraph()
 	_setup_health_bar()
 	_update_health_bar()
@@ -682,6 +820,12 @@ func _ready() -> void:
 	player_weapon_dot_damage_per_stack = 0.0
 	player_weapon_dot_stacks = 0
 	player_weapon_dot_source = null
+	cobra_spacing_pause_left = 0.0
+	cobra_punish_window_left = 0.0
+	cobra_punish_damage_multiplier_active = 1.0
+	cobra_recoil_pose_left = 0.0
+	cobra_pending_attack_mode = CobraAttackMode.NONE
+	cobra_last_heavy_start_distance = 0.0
 	player_weapon_debuff_debug_logging = player_weapon_debuff_debug_logging or _is_env_flag_enabled("SWORD_DEBUG")
 	_reset_periodic_hurt_anim_cooldown()
 	_set_boss_loop_state(BossLoopState.IDLE, 0.0)
@@ -1020,11 +1164,17 @@ func _physics_process(delta: float) -> void:
 
 	var previous_attack_anim_left := attack_anim_left
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
+	heal_flash_left = maxf(0.0, heal_flash_left - delta)
 	hurt_anim_left = maxf(0.0, hurt_anim_left - delta)
 	stun_left = maxf(0.0, stun_left - delta)
 	attack_flash_left = maxf(0.0, attack_flash_left - delta)
 	attack_anim_left = maxf(0.0, attack_anim_left - delta)
 	attack_recovery_hold_left = maxf(0.0, attack_recovery_hold_left - delta)
+	cobra_spacing_pause_left = maxf(0.0, cobra_spacing_pause_left - delta)
+	cobra_punish_window_left = maxf(0.0, cobra_punish_window_left - delta)
+	cobra_recoil_pose_left = maxf(0.0, cobra_recoil_pose_left - delta)
+	if cobra_punish_window_left <= THREAT_EPSILON:
+		cobra_punish_damage_multiplier_active = 1.0
 	slash_effect_left = maxf(0.0, slash_effect_left - delta)
 	spin_attack_cooldown_left = maxf(0.0, spin_attack_cooldown_left - delta)
 	_tick_pending_basic_block_success_fx(delta)
@@ -1156,28 +1306,31 @@ func _physics_process(delta: float) -> void:
 	attack_cooldown_left = maxf(0.0, attack_cooldown_left - delta)
 
 	var distance_to_player := to_player.length()
-	if distance_to_player > attack_range * 0.9:
-		velocity = _get_spaced_approach_direction(to_player) * move_speed
+	if _is_cobra_visual_profile():
+		_tick_cobra_duel_loop(distance_to_player, to_player)
 	else:
-		velocity = Vector2.ZERO
-		if attack_cooldown_left <= 0.0:
-			var spin_ready := spin_attack_enabled \
-				and spin_attack_cooldown_left <= 0.0 \
-				and distance_to_player <= spin_trigger_range \
-				and basic_attacks_since_last_spin >= maxi(0, basic_attacks_required_for_spin)
-			if spin_ready:
-				_begin_spin_charge(to_player)
-			else:
-				pending_attack = true
-				attack_windup_left = attack_windup
-				attack_prestrike_hold_left = 0.0
-				attack_recovery_hold_left = 0.0
-				var initial_attack_facing := to_player.normalized()
-				if initial_attack_facing.length_squared() <= 0.0001:
-					initial_attack_facing = external_sprite_facing_direction
-				if initial_attack_facing.length_squared() <= 0.0001:
-					initial_attack_facing = Vector2.RIGHT
-				committed_attack_facing_direction = initial_attack_facing.normalized()
+		if distance_to_player > attack_range * 0.9:
+			velocity = _get_spaced_approach_direction(to_player) * move_speed
+		else:
+			velocity = Vector2.ZERO
+			if attack_cooldown_left <= 0.0:
+				var spin_ready := spin_attack_enabled \
+					and spin_attack_cooldown_left <= 0.0 \
+					and distance_to_player <= spin_trigger_range \
+					and basic_attacks_since_last_spin >= maxi(0, basic_attacks_required_for_spin)
+				if spin_ready:
+					_begin_spin_charge(to_player)
+				else:
+					pending_attack = true
+					attack_windup_left = attack_windup
+					attack_prestrike_hold_left = 0.0
+					attack_recovery_hold_left = 0.0
+					var initial_attack_facing := to_player.normalized()
+					if initial_attack_facing.length_squared() <= 0.0001:
+						initial_attack_facing = external_sprite_facing_direction
+					if initial_attack_facing.length_squared() <= 0.0001:
+						initial_attack_facing = Vector2.RIGHT
+					committed_attack_facing_direction = initial_attack_facing.normalized()
 
 	_move_and_slide_with_debuffs()
 	_apply_soft_enemy_separation(delta)
@@ -1356,6 +1509,7 @@ func _tick_enemy_runtime_timers(delta: float) -> void:
 	if _is_exact_cacodemon_visual_profile():
 		cacodemon_runtime_elapsed += maxf(0.0, delta)
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
+	heal_flash_left = maxf(0.0, heal_flash_left - delta)
 	hurt_anim_left = maxf(0.0, hurt_anim_left - delta)
 	cosmetic_hurt_anim_left = maxf(0.0, cosmetic_hurt_anim_left - delta)
 	stun_left = maxf(0.0, stun_left - delta)
@@ -1363,6 +1517,11 @@ func _tick_enemy_runtime_timers(delta: float) -> void:
 	attack_cooldown_left = maxf(0.0, attack_cooldown_left - delta)
 	attack_anim_left = maxf(0.0, attack_anim_left - delta)
 	attack_recovery_hold_left = maxf(0.0, attack_recovery_hold_left - delta)
+	cobra_spacing_pause_left = maxf(0.0, cobra_spacing_pause_left - delta)
+	cobra_punish_window_left = maxf(0.0, cobra_punish_window_left - delta)
+	cobra_recoil_pose_left = maxf(0.0, cobra_recoil_pose_left - delta)
+	if cobra_punish_window_left <= THREAT_EPSILON:
+		cobra_punish_damage_multiplier_active = 1.0
 	slash_effect_left = maxf(0.0, slash_effect_left - delta)
 	spin_attack_cooldown_left = maxf(0.0, spin_attack_cooldown_left - delta)
 	boss_mark_cycle_left = maxf(0.0, boss_mark_cycle_left - delta)
@@ -1400,10 +1559,16 @@ func _queue_cacodemon_side_swap_for_thresholds(previous_health_ratio: float, cur
 	var current_ratio := clampf(current_health_ratio, 0.0, 1.0)
 	if previous_ratio <= current_ratio + THREAT_EPSILON:
 		return
+	var summon_trigger_ratio := clampf(cacodemon_summon_health_trigger_ratio, 0.0, 1.0)
+	var suppress_summon_threshold_side_swap := boss_can_summon_minions and boss_summon_count > 0 and not cacodemon_health_summon_used
 	var crossed_threshold := false
 	for threshold_value in cacodemon_side_swap_thresholds:
 		var threshold := clampf(float(threshold_value), 0.0, 1.0)
 		if threshold <= THREAT_EPSILON or threshold >= 1.0 - THREAT_EPSILON:
+			continue
+		# Keep 75%/25% side-swaps, but let the summon trigger threshold (typically 50%)
+		# be handled only by the center-teleport + summon flow.
+		if suppress_summon_threshold_side_swap and absf(threshold - summon_trigger_ratio) <= 0.001:
 			continue
 		var threshold_key := int(round(threshold * 1000.0))
 		if bool(cacodemon_side_swap_triggered_thresholds.get(threshold_key, false)):
@@ -3492,6 +3657,89 @@ func _get_spaced_approach_direction(raw_to_target: Vector2) -> Vector2:
 	return base_direction.lerp(slotted_direction, blend).normalized()
 
 
+func _tick_cobra_duel_loop(distance_to_player: float, to_player: Vector2) -> void:
+	# Grunt duel loop: hold a readable threat range, commit one strike, then reset spacing.
+	# Cobra duels read better with direct movement, not anti-clump slot steering.
+	var approach_direction := to_player.normalized()
+	if approach_direction.length_squared() <= 0.0001:
+		approach_direction = external_sprite_facing_direction
+	if approach_direction.length_squared() <= 0.0001:
+		approach_direction = Vector2.RIGHT
+	var close_trigger := maxf(24.0, minf(cobra_close_attack_trigger_range, cobra_attack_min_range - 6.0))
+	var desired_range := maxf(cobra_attack_min_range + 6.0, cobra_preferred_range)
+	var range_tolerance := maxf(4.0, cobra_preferred_range_tolerance)
+	var retreat_threshold := desired_range - range_tolerance
+	var stalk_threshold := desired_range + range_tolerance
+	var attack_min := maxf(12.0, minf(cobra_attack_min_range, desired_range - (range_tolerance * 0.45)))
+	var attack_max := maxf(attack_min + 6.0, maxf(cobra_attack_max_range, desired_range + (range_tolerance * 0.35)))
+	var close_attack_ready := attack_cooldown_left <= THREAT_EPSILON and cobra_spacing_pause_left <= THREAT_EPSILON and distance_to_player <= close_trigger
+
+	if close_attack_ready:
+		velocity = Vector2.ZERO
+	elif cobra_spacing_pause_left > THREAT_EPSILON:
+		velocity = Vector2.ZERO
+	elif distance_to_player > attack_max:
+		velocity = approach_direction * move_speed * maxf(0.05, cobra_approach_speed_scale)
+	elif distance_to_player > stalk_threshold:
+		velocity = approach_direction * move_speed * maxf(0.05, cobra_stalk_speed_scale)
+	elif distance_to_player < retreat_threshold:
+		velocity = -approach_direction * move_speed * maxf(0.05, cobra_retreat_speed_scale)
+	else:
+		velocity = Vector2.ZERO
+
+	if close_attack_ready:
+		cobra_pending_attack_mode = CobraAttackMode.CLOSE
+		pending_attack = true
+		attack_windup_left = maxf(0.06, cobra_close_attack_windup)
+		attack_prestrike_hold_left = 0.0
+		attack_recovery_hold_left = 0.0
+		var close_attack_facing := to_player.normalized()
+		if close_attack_facing.length_squared() <= 0.0001:
+			close_attack_facing = external_sprite_facing_direction
+		if close_attack_facing.length_squared() <= 0.0001:
+			close_attack_facing = Vector2.RIGHT
+		committed_attack_facing_direction = close_attack_facing.normalized()
+		return
+
+	var attack_window_open := attack_cooldown_left <= THREAT_EPSILON \
+		and cobra_spacing_pause_left <= THREAT_EPSILON \
+		and distance_to_player >= attack_min \
+		and distance_to_player <= attack_max
+	if not attack_window_open:
+		return
+	cobra_pending_attack_mode = CobraAttackMode.HEAVY
+	cobra_last_heavy_start_distance = distance_to_player
+	pending_attack = true
+	attack_windup_left = maxf(0.08, cobra_heavy_attack_windup)
+	attack_prestrike_hold_left = 0.0
+	attack_recovery_hold_left = 0.0
+	var attack_facing := to_player.normalized()
+	if attack_facing.length_squared() <= 0.0001:
+		attack_facing = external_sprite_facing_direction
+	if attack_facing.length_squared() <= 0.0001:
+		attack_facing = Vector2.RIGHT
+	committed_attack_facing_direction = attack_facing.normalized()
+
+
+func _set_cobra_recovery_window(base_duration: float, apply_bait_bonus: bool, damage_multiplier: float = -1.0) -> void:
+	# Correct defense (block/dodge/bait) opens this punish window.
+	if not _is_cobra_visual_profile():
+		return
+	var resolved_duration := maxf(0.0, base_duration)
+	var resolved_damage_multiplier := maxf(1.0, damage_multiplier if damage_multiplier > 0.0 else cobra_punish_damage_taken_multiplier)
+	if apply_bait_bonus:
+		resolved_duration += maxf(0.0, cobra_max_range_bait_bonus_recovery)
+		resolved_damage_multiplier += maxf(0.0, cobra_bait_punish_damage_bonus)
+	if resolved_duration <= THREAT_EPSILON:
+		return
+	cobra_punish_window_left = maxf(cobra_punish_window_left, resolved_duration)
+	cobra_punish_damage_multiplier_active = maxf(cobra_punish_damage_multiplier_active, resolved_damage_multiplier)
+	cobra_recoil_pose_left = maxf(cobra_recoil_pose_left, minf(resolved_duration, maxf(0.08, cobra_punish_recoil_pose_duration)))
+	attack_recovery_hold_left = maxf(attack_recovery_hold_left, resolved_duration)
+	attack_cooldown_left = maxf(attack_cooldown_left, resolved_duration * 0.75)
+	cobra_spacing_pause_left = maxf(cobra_spacing_pause_left, cobra_spacing_pause_duration)
+
+
 func _apply_soft_enemy_separation(delta: float) -> void:
 	soft_separation_last_applied = false
 	soft_separation_last_push = Vector2.ZERO
@@ -3606,6 +3854,16 @@ func _setup_spin_warning_area() -> void:
 	_rebuild_spin_warning_polygon()
 	_update_spin_warning_transform()
 	add_child(spin_warning_area)
+
+
+func _setup_cobra_tongue_telegraph_area() -> void:
+	if is_instance_valid(cobra_tongue_telegraph_area):
+		return
+	cobra_tongue_telegraph_area = Polygon2D.new()
+	cobra_tongue_telegraph_area.visible = false
+	cobra_tongue_telegraph_area.z_index = 245
+	cobra_tongue_telegraph_area.color = Color(cobra_tongue_telegraph_color.r, cobra_tongue_telegraph_color.g, cobra_tongue_telegraph_color.b, clampf(cobra_tongue_telegraph_fill_alpha, 0.02, 1.0))
+	add_child(cobra_tongue_telegraph_area)
 
 
 func _setup_boss_charge_telegraph() -> void:
@@ -3946,6 +4204,13 @@ func _perform_attack() -> void:
 	if _is_imp_visual_profile():
 		_perform_imp_fireball_attack()
 		return
+	if _is_cobra_visual_profile():
+		if cobra_pending_attack_mode == CobraAttackMode.CLOSE:
+			_perform_cobra_close_attack()
+		else:
+			_perform_cobra_tongue_attack()
+		cobra_pending_attack_mode = CobraAttackMode.NONE
+		return
 	if _is_cacodemon_visual_profile():
 		_perform_cacodemon_bite_hit()
 		return
@@ -3963,6 +4228,61 @@ func _perform_attack() -> void:
 		return
 	for target in hit_targets:
 		_attempt_friendly_hit(target, attack_damage, false, outgoing_hit_stun_duration, 1.0, true)
+
+
+func _perform_cobra_close_attack() -> void:
+	attack_flash_left = 0.08
+	_start_attack_animation(maxf(0.08, cobra_tongue_attack_anim_duration * 0.7), 0.9)
+	basic_attacks_since_last_spin += 1
+	var attack_direction := _get_basic_attack_direction()
+	var reach := maxf(18.0, cobra_close_attack_reach)
+	_trigger_slash_effect(reach, 20.0, Color(1.0, 0.48, 0.32, 0.82), 0.12, 2.2)
+	var hit_targets := _query_friendly_hits_for_cobra_close()
+	var damage := attack_damage * maxf(0.05, cobra_close_attack_damage_scale)
+	var stun_duration := outgoing_hit_stun_duration * maxf(0.0, cobra_close_attack_stun_scale)
+	var knockback_scale := maxf(0.05, cobra_close_attack_knockback_scale)
+	for target in hit_targets:
+		_attempt_friendly_hit(target, damage, false, stun_duration, knockback_scale, false, false)
+	attack_recovery_hold_left = maxf(attack_recovery_hold_left, maxf(0.05, cobra_close_attack_recovery))
+	attack_cooldown_left = minf(attack_cooldown_left, maxf(0.12, cobra_close_attack_cooldown))
+	cobra_spacing_pause_left = maxf(cobra_spacing_pause_left, cobra_spacing_pause_duration * 0.45)
+	if attack_direction.length_squared() > 0.0001:
+		velocity = (-attack_direction.normalized()) * move_speed * 0.15
+
+
+func _perform_cobra_tongue_attack() -> void:
+	attack_flash_left = 0.1
+	_start_attack_animation(maxf(0.12, cobra_tongue_attack_anim_duration), 1.16)
+	basic_attacks_since_last_spin += 1
+	attack_cooldown_left = maxf(attack_cooldown_left, maxf(0.12, cobra_heavy_attack_cooldown))
+	var tongue_reach := _get_cobra_tongue_reach()
+	var attack_direction := _get_basic_attack_direction()
+	_spawn_cobra_tongue_impact_fill(attack_direction, tongue_reach)
+	_trigger_slash_effect(tongue_reach, 40.0, Color(1.0, 0.32, 0.42, 0.9), 0.2, 3.4)
+
+	var hit_targets := _query_friendly_hits_for_cobra_tongue()
+	var landed_hit := false
+	var blocked_hit := false
+	var adjusted_stun := outgoing_hit_stun_duration * maxf(0.0, cobra_hit_stun_scale)
+	var adjusted_knockback := maxf(0.05, cobra_hit_knockback_scale)
+	for target in hit_targets:
+		if target == null or not is_instance_valid(target):
+			continue
+		var target_blocking := _is_target_blocking_attack(target)
+		var landed := _attempt_friendly_hit(target, attack_damage, false, adjusted_stun, adjusted_knockback, true)
+		if landed:
+			landed_hit = true
+			blocked_hit = blocked_hit or target_blocking
+	if blocked_hit:
+		_set_cobra_recovery_window(cobra_attack_recovery_on_block, false, cobra_block_punish_damage_multiplier)
+		return
+	if not landed_hit:
+		var bait_threshold := maxf(cobra_attack_min_range + 4.0, cobra_attack_max_range - maxf(2.0, cobra_heavy_bait_range_band))
+		var baited_miss := cobra_last_heavy_start_distance >= bait_threshold
+		_set_cobra_recovery_window(cobra_attack_recovery_on_miss, baited_miss, cobra_dodge_punish_damage_multiplier)
+		return
+	_set_cobra_recovery_window(cobra_attack_recovery_on_hit, false, 1.0)
+	attack_cooldown_left = maxf(attack_cooldown_left, maxf(_get_basic_attack_cooldown_duration(), cobra_heavy_attack_cooldown))
 
 
 func _perform_imp_fireball_attack() -> void:
@@ -4166,6 +4486,21 @@ func _perform_spin_attack_hit() -> void:
 			attack_flash_left = maxf(attack_flash_left, 0.08)
 
 
+func receive_heal(amount: float) -> bool:
+	if dead:
+		return false
+	if amount <= 0.0:
+		return false
+	var previous_health := current_health
+	current_health = minf(max_health, current_health + amount)
+	if current_health <= previous_health + 0.001:
+		return false
+	heal_flash_left = maxf(heal_flash_left, maxf(0.01, heal_flash_duration))
+	_update_health_bar()
+	_spawn_hit_effect(global_position + Vector2(0.0, -12.0), Color(0.36, 0.95, 0.56, 0.92), 8.0)
+	return true
+
+
 func receive_hit(amount: float, source_position: Vector2, stun_duration: float = 0.0, apply_hit_stun: bool = true, knockback_scale: float = 1.0, source_actor: Node2D = null) -> bool:
 	if dead:
 		return false
@@ -4176,6 +4511,8 @@ func receive_hit(amount: float, source_position: Vector2, stun_duration: float =
 		damage_to_apply *= maxf(1.0, boss_dps_mark_damage_taken_multiplier)
 	if use_single_phase_loop and boss_loop_state == BossLoopState.VULNERABLE:
 		damage_to_apply *= maxf(1.0, boss_vulnerable_damage_taken_multiplier)
+	if _is_cobra_visual_profile() and cobra_punish_window_left > THREAT_EPSILON:
+		damage_to_apply *= maxf(1.0, cobra_punish_damage_multiplier_active)
 
 	var attack_commit_active := pending_attack \
 		or attack_windup_left > 0.0 \
@@ -4272,7 +4609,7 @@ func get_trade_stun_duration() -> float:
 	return outgoing_hit_stun_duration
 
 
-func _attempt_friendly_hit(target: Node2D, damage: float, guard_break: bool = false, stun_duration: float = 0.0, knockback_scale: float = 1.0, spawn_block_success_fx: bool = false) -> bool:
+func _attempt_friendly_hit(target: Node2D, damage: float, guard_break: bool = false, stun_duration: float = 0.0, knockback_scale: float = 1.0, spawn_block_success_fx: bool = false, apply_block_counter_stun: bool = true) -> bool:
 	if target == null or not is_instance_valid(target):
 		return false
 	if not target.has_method("receive_hit"):
@@ -4282,7 +4619,7 @@ func _attempt_friendly_hit(target: Node2D, damage: float, guard_break: bool = fa
 	var landed := bool(target.call("receive_hit", adjusted_damage, global_position, guard_break, stun_duration, knockback_scale))
 	if landed:
 		_spawn_hit_effect(target.global_position + Vector2(0.0, -14.0), Color(1.0, 0.44, 0.3, 0.95), 10.0)
-	if was_blocked and not guard_break:
+	if was_blocked and not guard_break and apply_block_counter_stun:
 		if spawn_block_success_fx:
 			var blocked_player := target as Player
 			if blocked_player != null:
@@ -4334,6 +4671,8 @@ func _apply_blocked_counter_stun() -> void:
 	attack_telegraph.visible = false
 	velocity = Vector2.ZERO
 	_spawn_hit_effect(global_position + Vector2(0.0, -12.0), Color(0.86, 0.9, 1.0, 0.88), 6.0)
+	if _is_cobra_visual_profile():
+		_set_cobra_recovery_window(maxf(cobra_attack_recovery_on_block, blocked_counter_stun_duration), false, cobra_block_punish_damage_multiplier)
 
 
 func _query_player_hit(max_distance: float) -> Player:
@@ -4401,6 +4740,50 @@ func _query_friendly_hits_for_basic() -> Array[Node2D]:
 	return hit_targets
 
 
+func _query_friendly_hits_for_cobra_close() -> Array[Node2D]:
+	var hit_targets: Array[Node2D] = []
+	var attack_direction := _get_basic_attack_direction()
+	var close_reach := maxf(12.0, cobra_close_attack_reach)
+	var segment_start := global_position + (attack_direction * maxf(2.0, basic_attack_hit_start_offset * 0.4))
+	var segment_end := global_position + (attack_direction * close_reach)
+	var close_half_width := maxf(6.0, cobra_close_attack_half_width)
+	var close_tip_radius := maxf(close_half_width, cobra_close_attack_half_width * 1.1)
+	for candidate in _get_attackable_friendly_targets():
+		var distance_to_sweep := _distance_to_segment(candidate.global_position, segment_start, segment_end)
+		if distance_to_sweep <= close_half_width:
+			hit_targets.append(candidate)
+			continue
+		if candidate.global_position.distance_to(segment_end) <= close_tip_radius:
+			hit_targets.append(candidate)
+	return hit_targets
+
+
+func _get_cobra_tongue_reach() -> float:
+	return maxf(attack_range + 20.0, attack_range + maxf(0.0, cobra_tongue_reach_bonus))
+
+
+func _get_cobra_tongue_telegraph_start_offset() -> float:
+	return maxf(maxf(8.0, cobra_tongue_telegraph_start_offset), maxf(4.0, cobra_hurtbox_radius) + 6.0)
+
+
+func _query_friendly_hits_for_cobra_tongue() -> Array[Node2D]:
+	var hit_targets: Array[Node2D] = []
+	var attack_direction := _get_basic_attack_direction()
+	var tongue_reach := _get_cobra_tongue_reach()
+	var segment_start := global_position + (attack_direction * maxf(4.0, basic_attack_hit_start_offset))
+	var segment_end := global_position + (attack_direction * tongue_reach)
+	var tongue_half_width := maxf(6.0, cobra_tongue_half_width)
+	var tongue_tip_radius := maxf(tongue_half_width, cobra_tongue_tip_radius)
+	for candidate in _get_attackable_friendly_targets():
+		var distance_to_sweep := _distance_to_segment(candidate.global_position, segment_start, segment_end)
+		if distance_to_sweep <= tongue_half_width:
+			hit_targets.append(candidate)
+			continue
+		if candidate.global_position.distance_to(segment_end) <= tongue_tip_radius:
+			hit_targets.append(candidate)
+	return hit_targets
+
+
 func _query_friendly_hits_for_spin() -> Array[Node2D]:
 	var hit_targets: Array[Node2D] = []
 	var center := _get_spin_attack_center()
@@ -4441,6 +4824,46 @@ func _spawn_hit_effect(world_position: Vector2, effect_color: Color, effect_size
 	var tween := create_tween()
 	tween.tween_property(effect, "scale", Vector2(1.8, 1.8), hit_effect_duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tween.parallel().tween_property(effect, "modulate:a", 0.0, hit_effect_duration)
+	tween.finished.connect(func() -> void:
+		if is_instance_valid(effect):
+			effect.queue_free()
+	)
+
+
+func _spawn_cobra_tongue_impact_fill(attack_direction: Vector2, tongue_reach: float) -> void:
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		return
+	var direction := attack_direction
+	if direction.length_squared() <= 0.0001:
+		direction = external_sprite_facing_direction
+	if direction.length_squared() <= 0.0001:
+		direction = Vector2.RIGHT
+	direction = direction.normalized()
+	var cone_degrees := clampf(cobra_tongue_telegraph_cone_degrees, 8.0, 140.0)
+	var half_cone_radians := deg_to_rad(cone_degrees * 0.5)
+	var telegraph_start_offset := _get_cobra_tongue_telegraph_start_offset()
+	var cone_origin := Vector2(telegraph_start_offset, 0.0)
+	var cone_length := maxf(10.0, tongue_reach - telegraph_start_offset)
+	var tip := cone_origin + Vector2(cone_length, 0.0)
+	var left_tip := cone_origin + Vector2(cone_length, 0.0).rotated(-half_cone_radians)
+	var right_tip := cone_origin + Vector2(cone_length, 0.0).rotated(half_cone_radians)
+	var effect := Polygon2D.new()
+	effect.top_level = true
+	effect.global_position = global_position
+	effect.rotation = direction.angle()
+	effect.z_index = 247
+	effect.polygon = PackedVector2Array([cone_origin, left_tip, tip, right_tip])
+	var base_color := cobra_tongue_telegraph_color
+	effect.color = Color(base_color.r, base_color.g, base_color.b, clampf(cobra_tongue_impact_fill_alpha, 0.05, 1.0))
+	var material := CanvasItemMaterial.new()
+	material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	effect.material = material
+	scene_root.add_child(effect)
+	var duration := maxf(0.06, cobra_tongue_impact_fill_duration)
+	var tween := create_tween()
+	tween.tween_property(effect, "scale", Vector2(1.08, 1.04), duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(effect, "modulate:a", 0.0, duration)
 	tween.finished.connect(func() -> void:
 		if is_instance_valid(effect):
 			effect.queue_free()
@@ -4584,13 +5007,16 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	var suppress_cacodemon_hurt_override := _is_cacodemon_uninterruptible_action_active()
 	var has_true_hurt_anim := hurt_anim_left > 0.0 and not suppress_cacodemon_hurt_override
 	var has_cosmetic_hurt_anim := cosmetic_hurt_anim_left > 0.0 and not _is_combat_action_active_for_periodic_hurt()
-	var displayed_hurt_left := hurt_anim_left if has_true_hurt_anim else cosmetic_hurt_anim_left
-	var displayed_hurt_duration := hurt_anim_duration if has_true_hurt_anim else periodic_hurt_anim_duration
+	var has_cobra_recoil_pose := _is_cobra_visual_profile() and cobra_recoil_pose_left > 0.0 and not has_true_hurt_anim
+	var displayed_hurt_left := hurt_anim_left if has_true_hurt_anim else (cobra_recoil_pose_left if has_cobra_recoil_pose else cosmetic_hurt_anim_left)
+	var displayed_hurt_duration := hurt_anim_duration if has_true_hurt_anim else (maxf(0.08, cobra_punish_recoil_pose_duration) if has_cobra_recoil_pose else periodic_hurt_anim_duration)
 
 	var action_key := "idle"
 	if dead:
 		action_key = "death"
 	elif has_true_hurt_anim:
+		action_key = "hurt"
+	elif has_cobra_recoil_pose:
 		action_key = "hurt"
 	elif spin_active_left > 0.0:
 		action_key = "spin"
@@ -4651,6 +5077,8 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		var non_cacodemon_scale := monster_sprite_default_scale
 		if _is_imp_visual_profile():
 			non_cacodemon_scale *= maxf(0.1, imp_visual_scale_multiplier)
+		elif _is_fire_elemental_visual_profile():
+			non_cacodemon_scale *= maxf(0.1, fire_elemental_visual_scale_multiplier)
 		if non_cacodemon_scale == Vector2.ZERO:
 			non_cacodemon_scale = Vector2.ONE
 		monster_sprite.scale = monster_sprite.scale.lerp(non_cacodemon_scale, clampf(delta * 14.0, 0.0, 1.0))
@@ -4748,8 +5176,17 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	if hit_flash_strength > 0.0:
 		var fade := 1.0 - (hit_flash_strength * 0.62)
 		monster_sprite.modulate = Color(1.0, fade, fade, 1.0)
+	elif heal_flash_left > 0.0:
+		var heal_flash_strength := clampf(heal_flash_left / maxf(0.01, heal_flash_duration), 0.0, 1.0)
+		var heal_tint := Color(0.7, 1.0, 0.7, 1.0)
+		monster_sprite.modulate = Color(1.0, 1.0, 1.0, 1.0).lerp(heal_tint, minf(0.82, heal_flash_strength))
 	else:
 		var sprite_tint := Color(1.0, 1.0, 1.0, 1.0)
+		if _is_cobra_visual_profile() and cobra_punish_window_left > 0.0:
+			var punish_reference := maxf(0.1, cobra_attack_recovery_on_block + cobra_max_range_bait_bonus_recovery)
+			var punish_ratio := clampf(cobra_punish_window_left / punish_reference, 0.0, 1.0)
+			var punish_tint_strength := clampf(0.26 + (0.2 * punish_ratio), 0.0, 0.7)
+			sprite_tint = sprite_tint.lerp(Color(1.0, 0.9, 0.62, 1.0), punish_tint_strength)
 		if player_weapon_slow_left > 0.0:
 			var slow_tint_strength := clampf(player_weapon_slow_tint_strength, 0.0, 0.95)
 			sprite_tint = sprite_tint.lerp(Color(0.62, 0.82, 1.0, 1.0), slow_tint_strength)
@@ -4782,6 +5219,10 @@ func set_monster_visual_profile(profile: int) -> void:
 		monster_visual_profile = MonsterVisualProfile.SHARDSOUL
 	elif profile == int(MonsterVisualProfile.IMP):
 		monster_visual_profile = MonsterVisualProfile.IMP
+	elif profile == int(MonsterVisualProfile.FIRE_ELEMENTAL):
+		monster_visual_profile = MonsterVisualProfile.FIRE_ELEMENTAL
+	elif profile == int(MonsterVisualProfile.COBRA):
+		monster_visual_profile = MonsterVisualProfile.COBRA
 	else:
 		monster_visual_profile = MonsterVisualProfile.MINOTAUR
 	_apply_monster_visual_profile()
@@ -4798,6 +5239,12 @@ func _apply_monster_visual_profile() -> void:
 	elif _is_imp_visual_profile():
 		monster_sprite_base_position = monster_sprite_default_position + Vector2(0.0, -4.0)
 		monster_sprite.scale = monster_sprite_default_scale * maxf(0.1, imp_visual_scale_multiplier)
+	elif _is_fire_elemental_visual_profile():
+		monster_sprite_base_position = monster_sprite_default_position + Vector2(0.0, -6.0)
+		monster_sprite.scale = monster_sprite_default_scale * maxf(0.1, fire_elemental_visual_scale_multiplier)
+	elif _is_cobra_visual_profile():
+		monster_sprite_base_position = monster_sprite_default_position + Vector2(0.0, -6.0)
+		monster_sprite.scale = monster_sprite_default_scale * maxf(0.1, cobra_visual_scale_multiplier)
 	else:
 		monster_sprite_base_position = monster_sprite_default_position
 		monster_sprite.scale = monster_sprite_default_scale
@@ -4871,6 +5318,38 @@ func _apply_profile_hurtbox() -> void:
 			resolved_y_offset = monster_sprite.position.y + (frame_height * sprite_scale * 0.02)
 		collision_shape.position = collision_shape_base_position + Vector2(0.0, resolved_y_offset)
 		circle.radius = maxf(4.0, resolved_radius)
+		return
+	if _is_fire_elemental_visual_profile():
+		var resolved_y_offset := fire_elemental_hurtbox_y_offset
+		var resolved_radius := fire_elemental_hurtbox_radius
+		if using_external_monster_sprite and monster_sprite != null and is_instance_valid(monster_sprite):
+			var frame_width := 32.0
+			var frame_height := 32.0
+			if monster_sprite.texture != null:
+				frame_width = float(monster_sprite.texture.get_width()) / float(max(1, monster_sprite.hframes))
+				frame_height = float(monster_sprite.texture.get_height()) / float(max(1, monster_sprite.vframes))
+			var sprite_scale := maxf(absf(monster_sprite.scale.x), absf(monster_sprite.scale.y))
+			var visual_radius := minf(frame_width, frame_height) * sprite_scale * 0.28
+			resolved_radius = maxf(resolved_radius, visual_radius)
+			resolved_y_offset = monster_sprite.position.y + (frame_height * sprite_scale * 0.08)
+		collision_shape.position = collision_shape_base_position + Vector2(0.0, resolved_y_offset)
+		circle.radius = maxf(4.0, resolved_radius)
+		return
+	if _is_cobra_visual_profile():
+		var resolved_y_offset := cobra_hurtbox_y_offset
+		var resolved_radius := cobra_hurtbox_radius
+		if using_external_monster_sprite and monster_sprite != null and is_instance_valid(monster_sprite):
+			var frame_width := 32.0
+			var frame_height := 32.0
+			if monster_sprite.texture != null:
+				frame_width = float(monster_sprite.texture.get_width()) / float(max(1, monster_sprite.hframes))
+				frame_height = float(monster_sprite.texture.get_height()) / float(max(1, monster_sprite.vframes))
+			var sprite_scale := maxf(absf(monster_sprite.scale.x), absf(monster_sprite.scale.y))
+			var visual_radius := minf(frame_width, frame_height) * sprite_scale * 0.36
+			resolved_radius = maxf(resolved_radius, visual_radius)
+			resolved_y_offset = monster_sprite.position.y + (frame_height * sprite_scale * 0.03)
+		collision_shape.position = collision_shape_base_position + Vector2(0.0, resolved_y_offset)
+		circle.radius = maxf(4.0, resolved_radius)
 
 
 func _get_active_monster_sheet(action_key: String) -> Texture2D:
@@ -4880,6 +5359,10 @@ func _get_active_monster_sheet(action_key: String) -> Texture2D:
 		return _get_shardsoul_sheet()
 	if monster_visual_profile == MonsterVisualProfile.IMP:
 		return IMP_SHEET
+	if monster_visual_profile == MonsterVisualProfile.FIRE_ELEMENTAL:
+		return _get_fire_elemental_sheet()
+	if monster_visual_profile == MonsterVisualProfile.COBRA:
+		return _get_cobra_sheet()
 	return MONSTER_TEXTURES.get(action_key) as Texture2D
 
 
@@ -4890,6 +5373,10 @@ func _get_active_monster_hframes() -> int:
 		return SHARDSOUL_HD_HFRAMES
 	if monster_visual_profile == MonsterVisualProfile.IMP:
 		return IMP_HD_HFRAMES
+	if monster_visual_profile == MonsterVisualProfile.FIRE_ELEMENTAL:
+		return FIRE_ELEMENTAL_HD_HFRAMES
+	if monster_visual_profile == MonsterVisualProfile.COBRA:
+		return COBRA_HD_HFRAMES
 	return MONSTER_HD_HFRAMES
 
 
@@ -4900,6 +5387,10 @@ func _get_active_monster_vframes() -> int:
 		return SHARDSOUL_HD_VFRAMES
 	if monster_visual_profile == MonsterVisualProfile.IMP:
 		return IMP_HD_VFRAMES
+	if monster_visual_profile == MonsterVisualProfile.FIRE_ELEMENTAL:
+		return FIRE_ELEMENTAL_HD_VFRAMES
+	if monster_visual_profile == MonsterVisualProfile.COBRA:
+		return COBRA_HD_VFRAMES
 	return MONSTER_HD_VFRAMES
 
 
@@ -4910,6 +5401,10 @@ func _get_active_monster_action_row(action_key: String) -> int:
 		return int(SHARDSOUL_ACTION_ROWS.get(action_key, 0))
 	if monster_visual_profile == MonsterVisualProfile.IMP:
 		return int(IMP_ACTION_ROWS.get(action_key, 0))
+	if monster_visual_profile == MonsterVisualProfile.FIRE_ELEMENTAL:
+		return int(FIRE_ELEMENTAL_ACTION_ROWS.get(action_key, 0))
+	if monster_visual_profile == MonsterVisualProfile.COBRA:
+		return int(COBRA_ACTION_ROWS.get(action_key, 0))
 	return int(MONSTER_ACTION_ROWS.get(action_key, 0))
 
 
@@ -4920,6 +5415,10 @@ func _get_active_monster_action_frame_count(action_key: String) -> int:
 		return int(SHARDSOUL_ACTION_FRAME_COUNTS.get(action_key, max(1, SHARDSOUL_HD_HFRAMES)))
 	if monster_visual_profile == MonsterVisualProfile.IMP:
 		return int(IMP_ACTION_FRAME_COUNTS.get(action_key, max(1, IMP_HD_HFRAMES)))
+	if monster_visual_profile == MonsterVisualProfile.FIRE_ELEMENTAL:
+		return int(FIRE_ELEMENTAL_ACTION_FRAME_COUNTS.get(action_key, max(1, FIRE_ELEMENTAL_HD_HFRAMES)))
+	if monster_visual_profile == MonsterVisualProfile.COBRA:
+		return int(COBRA_ACTION_FRAME_COUNTS.get(action_key, max(1, COBRA_HD_HFRAMES)))
 	return int(MONSTER_ACTION_FRAME_COUNTS.get(action_key, max(1, MONSTER_HD_HFRAMES)))
 
 
@@ -4930,6 +5429,10 @@ func _get_active_monster_action_frame_columns(action_key: String) -> Array:
 		return SHARDSOUL_ACTION_FRAME_COLUMNS.get(action_key, [])
 	if monster_visual_profile == MonsterVisualProfile.IMP:
 		return IMP_ACTION_FRAME_COLUMNS.get(action_key, [])
+	if monster_visual_profile == MonsterVisualProfile.FIRE_ELEMENTAL:
+		return FIRE_ELEMENTAL_ACTION_FRAME_COLUMNS.get(action_key, [])
+	if monster_visual_profile == MonsterVisualProfile.COBRA:
+		return COBRA_ACTION_FRAME_COLUMNS.get(action_key, [])
 	return MONSTER_ACTION_FRAME_COLUMNS.get(action_key, [])
 
 
@@ -4940,6 +5443,10 @@ func _get_active_monster_fps(action_key: String) -> float:
 		return float(SHARDSOUL_FPS.get(action_key, 8.0))
 	if monster_visual_profile == MonsterVisualProfile.IMP:
 		return float(IMP_FPS.get(action_key, 8.0))
+	if monster_visual_profile == MonsterVisualProfile.FIRE_ELEMENTAL:
+		return float(FIRE_ELEMENTAL_FPS.get(action_key, 8.0))
+	if monster_visual_profile == MonsterVisualProfile.COBRA:
+		return float(COBRA_FPS.get(action_key, 8.0))
 	return float(MONSTER_FPS.get(action_key, 8.0))
 
 
@@ -4951,6 +5458,14 @@ func _is_imp_visual_profile() -> bool:
 	return monster_visual_profile == MonsterVisualProfile.IMP
 
 
+func _is_fire_elemental_visual_profile() -> bool:
+	return monster_visual_profile == MonsterVisualProfile.FIRE_ELEMENTAL
+
+
+func _is_cobra_visual_profile() -> bool:
+	return monster_visual_profile == MonsterVisualProfile.COBRA
+
+
 func _get_shardsoul_sheet() -> Texture2D:
 	if _cached_shardsoul_sheet != null:
 		return _cached_shardsoul_sheet
@@ -4960,6 +5475,28 @@ func _get_shardsoul_sheet() -> Texture2D:
 		return null
 	_cached_shardsoul_sheet = ImageTexture.create_from_image(image)
 	return _cached_shardsoul_sheet
+
+
+func _get_fire_elemental_sheet() -> Texture2D:
+	if _cached_fire_elemental_sheet != null:
+		return _cached_fire_elemental_sheet
+	var global_path := ProjectSettings.globalize_path(FIRE_ELEMENTAL_SHEET_PATH)
+	var image := Image.new()
+	if image.load(global_path) != OK:
+		return null
+	_cached_fire_elemental_sheet = ImageTexture.create_from_image(image)
+	return _cached_fire_elemental_sheet
+
+
+func _get_cobra_sheet() -> Texture2D:
+	if _cached_cobra_sheet != null:
+		return _cached_cobra_sheet
+	var global_path := ProjectSettings.globalize_path(COBRA_SHEET_PATH)
+	var image := Image.new()
+	if image.load(global_path) != OK:
+		return null
+	_cached_cobra_sheet = ImageTexture.create_from_image(image)
+	return _cached_cobra_sheet
 
 
 func _is_exact_cacodemon_visual_profile() -> bool:
@@ -5194,6 +5731,8 @@ func _draw_segment_hitbox_debug(segment_start: Vector2, segment_end: Vector2, ha
 
 
 func _update_attack_telegraph(to_player: Vector2) -> void:
+	if is_instance_valid(cobra_tongue_telegraph_area):
+		cobra_tongue_telegraph_area.visible = false
 	if _is_exact_cacodemon_visual_profile() and cacodemon_fireball_pending:
 		_update_cacodemon_fireball_telegraph(to_player)
 		return
@@ -5205,6 +5744,44 @@ func _update_attack_telegraph(to_player: Vector2) -> void:
 		return
 	if not pending_attack:
 		attack_telegraph.visible = false
+		return
+
+	if _is_cobra_visual_profile():
+		attack_telegraph.visible = true
+		attack_telegraph.z_index = 246
+		attack_telegraph.begin_cap_mode = Line2D.LINE_CAP_BOX
+		attack_telegraph.end_cap_mode = Line2D.LINE_CAP_BOX
+		var aim_direction_cobra := to_player
+		if committed_attack_facing_direction.length_squared() > 0.0001:
+			aim_direction_cobra = committed_attack_facing_direction
+		if aim_direction_cobra.length_squared() <= 0.0001:
+			aim_direction_cobra = Vector2.RIGHT
+		var close_mode := cobra_pending_attack_mode == CobraAttackMode.CLOSE
+		var safe_windup_cobra := maxf(0.01, cobra_close_attack_windup if close_mode else cobra_heavy_attack_windup)
+		var progress_cobra := clampf(1.0 - (attack_windup_left / safe_windup_cobra), 0.0, 1.0)
+		var pulse := 0.5 + (sin(Time.get_ticks_msec() * 0.02) * 0.5)
+		var tongue_reach := maxf(14.0, cobra_close_attack_reach) if close_mode else _get_cobra_tongue_reach()
+		var telegraph_start_offset := _get_cobra_tongue_telegraph_start_offset()
+		var telegraph_width := maxf(2.0, cobra_tongue_telegraph_width * (0.7 if close_mode else 1.0))
+		var full_cone_degrees := clampf(cobra_tongue_telegraph_cone_degrees * (0.62 if close_mode else 1.0), 8.0, 140.0)
+		var half_cone_radians := deg_to_rad(full_cone_degrees * 0.5)
+		var cone_origin := Vector2(telegraph_start_offset, 0.0)
+		var cone_length := maxf(10.0, tongue_reach - telegraph_start_offset)
+		var cone_tip := cone_origin + Vector2(cone_length, 0.0)
+		var left_tip := cone_origin + Vector2(cone_length, 0.0).rotated(-half_cone_radians)
+		var right_tip := cone_origin + Vector2(cone_length, 0.0).rotated(half_cone_radians)
+		attack_telegraph.rotation = aim_direction_cobra.angle()
+		attack_telegraph.width = lerpf(telegraph_width * 0.72, telegraph_width * 1.16, pulse * progress_cobra)
+		var base_color := Color(1.0, 0.54, 0.28, cobra_tongue_telegraph_color.a) if close_mode else cobra_tongue_telegraph_color
+		var alpha := clampf(lerpf(0.45, base_color.a, progress_cobra), 0.2, 1.0)
+		attack_telegraph.default_color = Color(base_color.r, base_color.g, base_color.b, alpha)
+		attack_telegraph.points = PackedVector2Array([cone_origin, left_tip, cone_tip, right_tip, cone_origin])
+		if is_instance_valid(cobra_tongue_telegraph_area):
+			cobra_tongue_telegraph_area.visible = true
+			cobra_tongue_telegraph_area.rotation = attack_telegraph.rotation
+			var fill_alpha := clampf(lerpf(cobra_tongue_telegraph_fill_alpha * 0.55, cobra_tongue_telegraph_fill_alpha, progress_cobra), 0.02, 1.0)
+			cobra_tongue_telegraph_area.color = Color(base_color.r, base_color.g, base_color.b, fill_alpha)
+			cobra_tongue_telegraph_area.polygon = PackedVector2Array([cone_origin, left_tip, cone_tip, right_tip])
 		return
 
 	attack_telegraph.visible = true
@@ -5359,6 +5936,7 @@ func _hide_boss_charge_telegraph() -> void:
 func _die() -> void:
 	dead = true
 	knockback_velocity = Vector2.ZERO
+	heal_flash_left = 0.0
 	_hide_boss_charge_telegraph()
 	shadow_fear_left = 0.0
 	_shadow_fear_teardown_vfx()

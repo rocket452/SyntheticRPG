@@ -73,6 +73,7 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var cast_bar_thickness: float = 3.0
 @export var cast_bar_vertical_offset: float = 8.0
 @export var hit_effect_duration: float = 0.12
+@export var heal_flash_duration: float = 0.16
 @export var shadow_fear_enabled: bool = true
 @export var shadow_fear_duration: float = 5.0
 @export var shadow_fear_cooldown: float = 20.0
@@ -170,6 +171,7 @@ var is_shadow_clone: bool = false
 var stun_left: float = 0.0
 var hurt_anim_left: float = 0.0
 var hit_flash_left: float = 0.0
+var heal_flash_left: float = 0.0
 var knockback_velocity: Vector2 = Vector2.ZERO
 var visual_motion_velocity: Vector2 = Vector2.ZERO
 var visually_running: bool = false
@@ -401,6 +403,7 @@ func _tick_timers(delta: float) -> void:
 	stun_left = maxf(0.0, stun_left - delta)
 	hurt_anim_left = maxf(0.0, hurt_anim_left - delta)
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
+	heal_flash_left = maxf(0.0, heal_flash_left - delta)
 	breath_safe_indicator_left = maxf(0.0, breath_safe_indicator_left - delta)
 	knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, maxf(0.0, hit_knockback_decay) * delta)
 	if is_instance_valid(sprite):
@@ -410,6 +413,8 @@ func _tick_timers(delta: float) -> void:
 			base_modulate.a *= lerpf(0.32, 1.0, life_ratio)
 		if hit_flash_left > 0.0:
 			base_modulate = base_modulate.lerp(Color(1.0, 0.7, 0.7, base_modulate.a), 0.78)
+		elif heal_flash_left > 0.0:
+			base_modulate = base_modulate.lerp(Color(0.72, 1.0, 0.72, base_modulate.a), 0.78)
 		sprite.modulate = base_modulate
 		var cast_ratio := -1.0
 		if shadow_fear_cast_active and shadow_fear_cast_duration > 0.01:
@@ -1672,6 +1677,7 @@ func receive_heal(amount: float) -> bool:
 	current_health = minf(max_health, current_health + amount)
 	if current_health <= previous_health + 0.001:
 		return false
+	heal_flash_left = maxf(heal_flash_left, maxf(0.01, heal_flash_duration))
 	health_changed.emit(current_health, max_health)
 	_update_health_bar()
 	_spawn_hit_effect(global_position + Vector2(0.0, -12.0), Color(0.36, 0.95, 0.56, 0.9), 7.5)
@@ -1724,6 +1730,7 @@ func _die() -> void:
 	knockback_velocity = Vector2.ZERO
 	stun_left = 0.0
 	hurt_anim_left = 0.0
+	heal_flash_left = 0.0
 	attack_windup_left = 0.0
 	attack_recovery_left = 0.0
 	death_anim_time = 0.0

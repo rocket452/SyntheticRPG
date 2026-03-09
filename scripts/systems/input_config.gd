@@ -9,6 +9,7 @@ static func ensure_actions() -> void:
 		"move_right": [_make_key(KEY_D)],
 		"basic_attack": [_make_key(KEY_J)],
 		"ability_1": [_make_key(KEY_K)],
+		"counter_strike": [_make_key(KEY_O)],
 		"ability_2": [_make_key(KEY_L)],
 		"roll": [_make_key(KEY_SPACE)],
 		"block": [_make_key(KEY_I)],

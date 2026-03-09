@@ -51,6 +51,10 @@ var cacodemon_natural_fireball_seen: bool = false
 var cacodemon_natural_fireball_last_debug_second: int = -1
 var cacodemon_fireball_pressure_setup_done: bool = false
 var cacodemon_fireball_pressure_seen: bool = false
+var harpoon_pull_setup_done: bool = false
+var harpoon_pull_reel_seen: bool = false
+var harpoon_pull_initial_distance: float = -1.0
+var harpoon_pull_attack_during_reel_seen: bool = false
 
 
 func configure(target_arena: Arena) -> void:
@@ -93,12 +97,16 @@ func _ready() -> void:
 	cacodemon_natural_fireball_last_debug_second = -1
 	cacodemon_fireball_pressure_setup_done = false
 	cacodemon_fireball_pressure_seen = false
+	harpoon_pull_setup_done = false
+	harpoon_pull_reel_seen = false
+	harpoon_pull_initial_distance = -1.0
+	harpoon_pull_attack_during_reel_seen = false
 	var layout_variant_env := OS.get_environment("AUTOPLAY_LAYOUT_VARIANT").strip_edges()
 	shadow_fear_layout_variant = int(layout_variant_env) if layout_variant_env.is_valid_int() else 0
 	var charge_hold_env := OS.get_environment("AUTOPLAY_CHARGE_HOLD").strip_edges()
 	if charge_hold_env.is_valid_float():
 		charge_hold_duration = maxf(0.05, float(charge_hold_env))
-	if autoplay_scenario == "lunge_block" or autoplay_scenario == "basic_block" or autoplay_scenario == "shadow_fear" or autoplay_scenario == "shadow_fear_break" or autoplay_scenario == "shadow_fear_new_enemy" or autoplay_scenario == "healer_tidal_wave" or autoplay_scenario == "healer_respects_fear" or autoplay_scenario == "cacodemon_breath_block" or autoplay_scenario == "cacodemon_breath_stack" or autoplay_scenario == "cacodemon_fireball_block" or autoplay_scenario == "cacodemon_summon_imps" or autoplay_scenario == "cacodemon_player_hit" or autoplay_scenario == "cacodemon_fireball_natural" or autoplay_scenario == "cacodemon_fireball_pressure":
+	if autoplay_scenario == "lunge_block" or autoplay_scenario == "basic_block" or autoplay_scenario == "shadow_fear" or autoplay_scenario == "shadow_fear_break" or autoplay_scenario == "shadow_fear_new_enemy" or autoplay_scenario == "healer_tidal_wave" or autoplay_scenario == "healer_respects_fear" or autoplay_scenario == "cacodemon_breath_block" or autoplay_scenario == "cacodemon_breath_stack" or autoplay_scenario == "cacodemon_fireball_block" or autoplay_scenario == "cacodemon_summon_imps" or autoplay_scenario == "cacodemon_player_hit" or autoplay_scenario == "cacodemon_fireball_natural" or autoplay_scenario == "cacodemon_fireball_pressure" or autoplay_scenario == "harpoon_pull":
 		timeout_seconds = maxf(timeout_seconds, 45.0)
 	autoplay_log_path = OS.get_environment("AUTOPLAY_LOG_PATH")
 	if autoplay_log_path.is_empty():
@@ -166,6 +174,9 @@ func _physics_process(delta: float) -> void:
 		return
 	if autoplay_scenario == "cacodemon_fireball_pressure":
 		_step_cacodemon_fireball_pressure_scenario()
+		return
+	if autoplay_scenario == "harpoon_pull":
+		_step_harpoon_pull_scenario()
 		return
 
 	match phase:
@@ -735,7 +746,8 @@ func _step_cacodemon_summon_imps_scenario() -> void:
 		var candidate := node as EnemyBase
 		if candidate == null or not is_instance_valid(candidate) or candidate.dead or candidate.is_miniboss:
 			continue
-		if candidate.monster_visual_profile == EnemyBase.MonsterVisualProfile.IMP:
+		if candidate.monster_visual_profile == EnemyBase.MonsterVisualProfile.IMP \
+			or candidate.monster_visual_profile == EnemyBase.MonsterVisualProfile.FIRE_ELEMENTAL:
 			imp_count += 1
 	var required_imp_count := maxi(1, int(boss_enemy.get("boss_summon_count")))
 	if imp_count >= required_imp_count:
@@ -918,6 +930,99 @@ func _step_cacodemon_fireball_pressure_scenario() -> void:
 		cacodemon_fireball_pressure_seen = true
 		_write_log("Cacodemon pressure fireball observed")
 		_finish(0, "cacodemon_fireball_pressure")
+
+
+func _step_harpoon_pull_scenario() -> void:
+	if not is_instance_valid(player) or not is_instance_valid(arena):
+		return
+	if not is_instance_valid(enemy):
+		_refresh_refs()
+	if not is_instance_valid(enemy):
+		return
+
+	if not harpoon_pull_setup_done:
+		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		var player_pos := Vector2(max_x - 500.0, clampf(8.0, min_y + 8.0, max_y - 8.0))
+		var enemy_pos := Vector2(max_x - 330.0, clampf(8.0, min_y + 8.0, max_y - 8.0))
+		var healer_pos := Vector2(max_x - 560.0, clampf(-90.0, min_y + 8.0, max_y - 8.0))
+		var rat_pos := Vector2(max_x - 560.0, clampf(90.0, min_y + 8.0, max_y - 8.0))
+		player.global_position = arena.to_global(player_pos)
+		player.velocity = Vector2.ZERO
+		if is_instance_valid(arena.healer):
+			arena.healer.global_position = arena.to_global(healer_pos)
+			arena.healer.move_velocity = Vector2.ZERO
+		if is_instance_valid(arena.ratfolk):
+			arena.ratfolk.global_position = arena.to_global(rat_pos)
+			arena.ratfolk.velocity = Vector2.ZERO
+		var enemy_body := enemy as CharacterBody2D
+		if enemy_body != null:
+			enemy_body.global_position = arena.to_global(enemy_pos)
+			enemy_body.velocity = Vector2.ZERO
+		if enemy.has_method("set_monster_visual_profile"):
+			enemy.call("set_monster_visual_profile", int(EnemyBase.MonsterVisualProfile.COBRA))
+		enemy.is_miniboss = false
+		enemy.use_single_phase_loop = false
+		enemy.move_speed = 0.0
+		enemy.attack_damage = 0.0
+		enemy.attack_cooldown_left = 999.0
+		enemy.pending_attack = false
+		enemy.spin_attack_enabled = false
+		harpoon_pull_initial_distance = player.global_position.distance_to(enemy.global_position)
+		harpoon_pull_setup_done = true
+		harpoon_pull_reel_seen = false
+		harpoon_pull_attack_during_reel_seen = false
+		phase = 0
+		phase_time = 0.0
+		_write_log("HARPOON setup initial_distance=%.2f" % harpoon_pull_initial_distance)
+
+	match phase:
+		0:
+			_set_move_inputs(Vector2.ZERO)
+			Input.action_press("ability_1")
+			phase = 1
+			phase_time = 0.0
+		1:
+			if phase_time >= 0.6:
+				Input.action_release("ability_1")
+				phase = 2
+				phase_time = 0.0
+		2:
+			_set_move_inputs(Vector2.ZERO)
+			Input.action_release("ability_1")
+			var reel_active := bool(player.get("harpoon_reel_active"))
+			if reel_active:
+				harpoon_pull_reel_seen = true
+				var attack_pulse := int(floor(phase_time / 0.12))
+				if (attack_pulse % 2) == 0:
+					Input.action_press("basic_attack")
+				else:
+					Input.action_release("basic_attack")
+				if float(player.get("attack_windup_left")) > 0.0 \
+						or float(player.get("attack_anim_left")) > 0.0 \
+						or float(player.get("light_attack_recovery_left")) > 0.0:
+					harpoon_pull_attack_during_reel_seen = true
+			else:
+				Input.action_release("basic_attack")
+			if phase_time < 0.45:
+				return
+			if phase_time > 4.5 and not harpoon_pull_reel_seen:
+				_finish(1, "harpoon_pull_no_reel")
+				return
+			if not reel_active and harpoon_pull_reel_seen:
+				var final_distance := player.global_position.distance_to(enemy.global_position)
+				var horizontal_gap := absf(player.global_position.x - enemy.global_position.x)
+				var vertical_gap := absf(player.global_position.y - enemy.global_position.y)
+				_write_log("HARPOON final_distance=%.2f horizontal_gap=%.2f vertical_gap=%.2f" % [final_distance, horizontal_gap, vertical_gap])
+				if not harpoon_pull_attack_during_reel_seen:
+					_finish(1, "harpoon_pull_no_attack_during_reel")
+					return
+				if horizontal_gap <= 56.0 and vertical_gap <= 24.0:
+					_finish(0, "harpoon_pull_ok")
+				else:
+					_finish(1, "harpoon_pull_too_far")
 
 
 func _apply_shadow_fear_opening_layout(primary_enemy: EnemyBase) -> void:
@@ -1121,7 +1226,7 @@ func _set_move_inputs(direction: Vector2) -> void:
 
 
 func _release_all_inputs() -> void:
-	for action in ["move_up", "move_down", "move_left", "move_right", "basic_attack", "ability_1", "ability_2", "roll", "block"]:
+	for action in ["move_up", "move_down", "move_left", "move_right", "basic_attack", "ability_1", "counter_strike", "ability_2", "roll", "block"]:
 		Input.action_release(action)
 
 

@@ -37,6 +37,7 @@ enum CastAction {
 @export var heal_threshold_ratio: float = 0.98
 @export var min_missing_health_to_heal: float = 1.0
 @export var heal_effect_duration: float = 0.24
+@export var heal_flash_duration: float = 0.16
 @export var cast_frame_to_heal: int = 4
 @export var reacquire_retry_interval: float = 0.3
 @export var react_heal_delay: float = 0.18
@@ -197,6 +198,7 @@ var cast_bar_background: Line2D = null
 var cast_bar_fill: Line2D = null
 var stun_left: float = 0.0
 var hit_flash_left: float = 0.0
+var heal_flash_left: float = 0.0
 var knockback_velocity: Vector2 = Vector2.ZERO
 var dead: bool = false
 var death_anim_time: float = 0.0
@@ -271,6 +273,7 @@ func _physics_process(delta: float) -> void:
 		_tick_death(delta)
 		return
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
+	heal_flash_left = maxf(0.0, heal_flash_left - delta)
 	stun_left = maxf(0.0, stun_left - delta)
 	breath_safe_indicator_left = maxf(0.0, breath_safe_indicator_left - delta)
 	knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, maxf(0.0, hit_knockback_decay) * delta)
@@ -280,7 +283,12 @@ func _physics_process(delta: float) -> void:
 		if pixel_snap_movement:
 			position = position.round()
 	if is_instance_valid(sprite):
-		sprite.modulate = Color(1.0, 0.72, 0.72, 1.0) if hit_flash_left > 0.0 else Color(1.0, 1.0, 1.0, 1.0)
+		if hit_flash_left > 0.0:
+			sprite.modulate = Color(1.0, 0.72, 0.72, 1.0)
+		elif heal_flash_left > 0.0:
+			sprite.modulate = Color(0.72, 1.0, 0.72, 1.0)
+		else:
+			sprite.modulate = Color(1.0, 1.0, 1.0, 1.0)
 	if not is_instance_valid(player):
 		reacquire_left = maxf(0.0, reacquire_left - delta)
 		if reacquire_left <= 0.0:
@@ -956,6 +964,7 @@ func receive_heal(amount: float) -> bool:
 	current_health = minf(max_health, current_health + amount)
 	if current_health <= previous_health + 0.001:
 		return false
+	heal_flash_left = maxf(heal_flash_left, maxf(0.01, heal_flash_duration))
 	health_changed.emit(current_health, max_health)
 	_update_health_bar()
 	return true
@@ -2034,6 +2043,7 @@ func _die() -> void:
 	dead = true
 	is_casting = false
 	stun_left = 0.0
+	heal_flash_left = 0.0
 	knockback_velocity = Vector2.ZERO
 	death_anim_time = 0.0
 	death_cleanup_started = false

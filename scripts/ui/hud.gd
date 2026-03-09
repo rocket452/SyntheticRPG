@@ -3,7 +3,8 @@ class_name HUD
 
 const ABILITY_BAR_SLOTS: Array[Dictionary] = [
 	{"id": "basic", "icon": "ATK", "name": "Swing", "key": "J", "accent": Color(0.94, 0.64, 0.33, 1.0), "uses_cooldown": true},
-	{"id": "ability_1", "icon": "CHG", "name": "Charge", "key": "K", "accent": Color(0.98, 0.74, 0.3, 1.0), "uses_cooldown": true},
+	{"id": "ability_1", "icon": "HPN", "name": "Hook", "key": "K", "accent": Color(0.46, 0.94, 1.0, 1.0), "uses_cooldown": true},
+	{"id": "counter", "icon": "CTR", "name": "Counter", "key": "O", "accent": Color(0.86, 0.98, 1.0, 1.0), "uses_cooldown": false},
 	{"id": "ability_2", "icon": "DSH", "name": "Dash", "key": "L", "accent": Color(0.42, 0.88, 1.0, 1.0), "uses_cooldown": true},
 	{"id": "roll", "icon": "RLL", "name": "Roll", "key": "Space", "accent": Color(0.78, 0.93, 1.0, 1.0), "uses_cooldown": true},
 	{"id": "block", "icon": "BLK", "name": "Block", "key": "I", "accent": Color(0.56, 0.88, 1.0, 1.0), "uses_cooldown": false}
@@ -62,6 +63,8 @@ func _process(delta: float) -> void:
 		var border_color := Color(0.34, 0.96, 0.5, pulse)
 		if slot_id == "block" and bool(slot.get("block_active", false)):
 			border_color = Color(0.48, 0.92, 1.0, pulse)
+		elif slot_id == "counter":
+			border_color = Color(0.52, 0.97, 1.0, pulse)
 		ready_border.self_modulate = border_color
 
 
@@ -75,17 +78,24 @@ func update_xp(current: int, needed: int, level: int) -> void:
 
 func update_cooldowns(values: Dictionary) -> void:
 	var basic_text := _format_cooldown(float(values.get("basic", 0.0)))
-	var ability_1_text := _format_cooldown(float(values.get("ability_1", 0.0)))
+	var ability_1_left := float(values.get("ability_1", 0.0))
+	var ability_1_text := _format_cooldown(ability_1_left)
+	var harpoon_charging := bool(values.get("harpoon_charging", false))
+	var harpoon_charge_ratio := clampf(float(values.get("harpoon_charge_ratio", 0.0)), 0.0, 1.0)
+	var counter_ready := bool(values.get("counter_ready", false))
+	var counter_window_left := maxf(0.0, float(values.get("counter_window_left", 0.0)))
+	var counter_text := "Ready %.1fs" % counter_window_left if counter_ready else "Locked"
 	var ability_2_text := _format_cooldown(float(values.get("ability_2", 0.0)))
 	var roll_text := _format_cooldown(float(values.get("roll", 0.0)))
 	var blocking_text := " | Blocking" if bool(values.get("block_active", false)) else ""
 	var sword_id := String(values.get("equipped_sword_id", ""))
 	var sword_name := String(values.get("equipped_sword_name", ""))
 	var sword_suffix := " | Sword: %s" % sword_name if not sword_name.is_empty() else ""
-	cooldown_label.text = "Swing %s  Charge %s  Dash %s  Roll %s%s%s" % [basic_text, ability_1_text, ability_2_text, roll_text, blocking_text, sword_suffix]
+	cooldown_label.text = "Swing %s  Hook %s  Counter %s  Dash %s  Roll %s%s%s" % [basic_text, ability_1_text, counter_text, ability_2_text, roll_text, blocking_text, sword_suffix]
 	_apply_charge_sword_indicator(sword_id)
 	_update_ability_slot("basic", float(values.get("basic", 0.0)), false)
-	_update_ability_slot("ability_1", float(values.get("ability_1", 0.0)), false)
+	_update_harpoon_slot(ability_1_left, harpoon_charging, harpoon_charge_ratio)
+	_update_counter_slot(counter_ready, counter_window_left)
 	_update_ability_slot("ability_2", float(values.get("ability_2", 0.0)), false)
 	_update_ability_slot("roll", float(values.get("roll", 0.0)), false)
 	_update_ability_slot("block", 0.0, bool(values.get("block_active", false)))
@@ -236,7 +246,10 @@ func _build_ability_bar() -> void:
 		var slot_id := String(slot_def.get("id", ""))
 		if slot_id.is_empty():
 			continue
-		_update_ability_slot(slot_id, 0.0, false)
+		if slot_id == "counter":
+			_update_counter_slot(false, 0.0)
+		else:
+			_update_ability_slot(slot_id, 0.0, false)
 
 
 func _create_ability_slot(slot_def: Dictionary) -> Dictionary:
@@ -375,6 +388,73 @@ func _update_ability_slot(slot_id: String, cooldown_left: float, block_active: b
 		var border_color := Color(0.48, 0.92, 1.0, 0.9) if block_active else Color(0.34, 0.96, 0.5, 0.9)
 		ready_border.self_modulate = border_color
 		icon_label.modulate = Color(0.64, 0.92, 1.0, 1.0) if block_active else Color(0.56, 0.88, 1.0, 1.0)
+
+
+func _update_counter_slot(counter_ready: bool, counter_window_left: float) -> void:
+	var slot_id := "counter"
+	var slot := ability_slot_views.get(slot_id, {}) as Dictionary
+	if slot.is_empty():
+		return
+	var icon_label := slot.get("icon_label") as Label
+	var key_label := slot.get("key_label") as Label
+	var cooldown_overlay := slot.get("cooldown_overlay") as ColorRect
+	var cooldown_label := slot.get("cooldown_label") as Label
+	var ready_border := slot.get("ready_border") as Panel
+	var root := slot.get("root") as PanelContainer
+	if icon_label == null or key_label == null or cooldown_overlay == null or cooldown_label == null or ready_border == null or root == null:
+		return
+
+	var window_left := maxf(0.0, counter_window_left)
+	if counter_ready:
+		cooldown_overlay.visible = false
+		cooldown_label.visible = true
+		cooldown_label.text = "%.1f" % window_left
+		cooldown_label.modulate = Color(0.84, 0.98, 1.0, 0.98)
+		ready_border.visible = true
+		ready_border.self_modulate = Color(0.52, 0.97, 1.0, 0.96)
+		root.self_modulate = Color(1.0, 1.0, 1.0, 1.0)
+		icon_label.modulate = Color(0.88, 1.0, 1.0, 1.0)
+		key_label.modulate = Color(0.82, 0.98, 1.0, 0.98)
+	else:
+		cooldown_overlay.visible = true
+		cooldown_overlay.color = Color(0.02, 0.04, 0.08, 0.72)
+		cooldown_label.visible = true
+		cooldown_label.text = "PB"
+		cooldown_label.modulate = Color(0.68, 0.78, 0.9, 0.92)
+		ready_border.visible = false
+		root.self_modulate = Color(0.78, 0.78, 0.8, 1.0)
+		icon_label.modulate = Color(0.76, 0.84, 0.92, 0.9)
+		key_label.modulate = Color(0.64, 0.72, 0.82, 0.95)
+	ability_slot_ready_flags[slot_id] = counter_ready
+	slot["block_active"] = false
+	ability_slot_views[slot_id] = slot
+
+
+func _update_harpoon_slot(cooldown_left: float, charging: bool, charge_ratio: float) -> void:
+	var slot_id := "ability_1"
+	var slot := ability_slot_views.get(slot_id, {}) as Dictionary
+	if slot.is_empty():
+		return
+	_update_ability_slot(slot_id, cooldown_left, false)
+	var icon_label := slot.get("icon_label") as Label
+	var cooldown_label := slot.get("cooldown_label") as Label
+	var cooldown_overlay := slot.get("cooldown_overlay") as ColorRect
+	var ready_border := slot.get("ready_border") as Panel
+	if icon_label == null or cooldown_label == null or cooldown_overlay == null or ready_border == null:
+		return
+	if not charging:
+		icon_label.text = "HPN"
+		return
+	icon_label.text = "THR"
+	ready_border.visible = true
+	ready_border.self_modulate = Color(0.46, 0.94, 1.0, 0.72 + (0.25 * charge_ratio))
+	cooldown_overlay.visible = true
+	cooldown_overlay.color = Color(0.02, 0.08, 0.12, 0.5)
+	cooldown_label.visible = true
+	cooldown_label.text = "%d%%" % int(round(charge_ratio * 100.0))
+	cooldown_label.modulate = Color(0.72, 0.98, 1.0, 0.98)
+	ability_slot_ready_flags[slot_id] = true
+	ability_slot_views[slot_id] = slot
 
 
 func _make_slot_stylebox(background: Color, border: Color, border_width: int) -> StyleBoxFlat:

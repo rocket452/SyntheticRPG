@@ -35,14 +35,18 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if _has_active_encounter_picker():
 		if key_event.keycode == KEY_1 or key_event.keycode == KEY_KP_1:
-			_start_selected_encounter(Arena.EncounterType.MINOTAUR)
+			_start_selected_encounter(Arena.EncounterType.COBRA)
 			get_viewport().set_input_as_handled()
 			return
 		if key_event.keycode == KEY_2 or key_event.keycode == KEY_KP_2:
-			_start_selected_encounter(Arena.EncounterType.CACODEMON)
+			_start_selected_encounter(Arena.EncounterType.MINOTAUR)
 			get_viewport().set_input_as_handled()
 			return
 		if key_event.keycode == KEY_3 or key_event.keycode == KEY_KP_3:
+			_start_selected_encounter(Arena.EncounterType.CACODEMON)
+			get_viewport().set_input_as_handled()
+			return
+		if key_event.keycode == KEY_4 or key_event.keycode == KEY_KP_4:
 			_start_selected_encounter(Arena.EncounterType.SHARDSOUL)
 			get_viewport().set_input_as_handled()
 			return
@@ -122,11 +126,11 @@ func _show_encounter_picker() -> void:
 	layer.add_child(center)
 
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(460.0, 0.0)
+	panel.custom_minimum_size = Vector2(560.0, 0.0)
 	center.add_child(panel)
 
 	var content := VBoxContainer.new()
-	content.custom_minimum_size = Vector2(0.0, 220.0)
+	content.custom_minimum_size = Vector2(0.0, 290.0)
 	content.add_theme_constant_override("separation", 10)
 	panel.add_child(content)
 
@@ -135,14 +139,16 @@ func _show_encounter_picker() -> void:
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	content.add_child(title)
 
-	var description := Label.new()
-	description.text = "1. Minotaur uses the current boss fight.\n2. Cacodemon reuses the same boss logic with the new sprite sheet.\n3. Shardsoul reuses the cacodemon encounter with the shardsoul sprite sheet."
-	description.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	content.add_child(description)
+	var cobra_button := Button.new()
+	cobra_button.text = "1. Start Cobra Fight"
+	cobra_button.custom_minimum_size = Vector2(0.0, 44.0)
+	cobra_button.pressed.connect(func() -> void:
+		_start_selected_encounter(Arena.EncounterType.COBRA)
+	)
+	content.add_child(cobra_button)
 
 	var minotaur_button := Button.new()
-	minotaur_button.text = "1. Start Minotaur Fight"
+	minotaur_button.text = "2. Start Minotaur Fight"
 	minotaur_button.custom_minimum_size = Vector2(0.0, 44.0)
 	minotaur_button.pressed.connect(func() -> void:
 		_start_selected_encounter(Arena.EncounterType.MINOTAUR)
@@ -150,7 +156,7 @@ func _show_encounter_picker() -> void:
 	content.add_child(minotaur_button)
 
 	var cacodemon_button := Button.new()
-	cacodemon_button.text = "2. Start Cacodemon Fight"
+	cacodemon_button.text = "3. Start Cacodemon Fight"
 	cacodemon_button.custom_minimum_size = Vector2(0.0, 44.0)
 	cacodemon_button.pressed.connect(func() -> void:
 		_start_selected_encounter(Arena.EncounterType.CACODEMON)
@@ -158,7 +164,7 @@ func _show_encounter_picker() -> void:
 	content.add_child(cacodemon_button)
 
 	var shardsoul_button := Button.new()
-	shardsoul_button.text = "3. Start Shardsoul Fight"
+	shardsoul_button.text = "4. Start Shardsoul Fight"
 	shardsoul_button.custom_minimum_size = Vector2(0.0, 44.0)
 	shardsoul_button.pressed.connect(func() -> void:
 		_start_selected_encounter(Arena.EncounterType.SHARDSOUL)
@@ -166,11 +172,11 @@ func _show_encounter_picker() -> void:
 	content.add_child(shardsoul_button)
 
 	var hint := Label.new()
-	hint.text = "Press 1, 2, or 3, or click a button."
+	hint.text = "Press 1, 2, 3, or 4, or click a button."
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	content.add_child(hint)
 
-	minotaur_button.grab_focus()
+	cobra_button.grab_focus()
 
 
 func _start_selected_encounter(encounter_type: int) -> void:
@@ -257,9 +263,13 @@ func _on_player_equipped_sword_changed(_sword_id: String, sword_name: String) ->
 
 func _get_autoplay_encounter_type() -> int:
 	var encounter_raw := OS.get_environment("AUTOPLAY_ENCOUNTER").strip_edges().to_lower()
-	if encounter_raw == "cacodemon" or encounter_raw == "2":
+	if encounter_raw == "cobra" or encounter_raw == "1":
+		return Arena.EncounterType.COBRA
+	if encounter_raw == "minotaur" or encounter_raw == "2":
+		return Arena.EncounterType.MINOTAUR
+	if encounter_raw == "cacodemon" or encounter_raw == "3":
 		return Arena.EncounterType.CACODEMON
-	if encounter_raw == "shardsoul" or encounter_raw == "3":
+	if encounter_raw == "shardsoul" or encounter_raw == "4":
 		return Arena.EncounterType.SHARDSOUL
 	return Arena.EncounterType.MINOTAUR
 
