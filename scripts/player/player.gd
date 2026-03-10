@@ -1117,6 +1117,7 @@ func _release_harpoon_throw() -> void:
 	if not harpoon_charge_active:
 		return
 	harpoon_charge_active = false
+	_hide_harpoon_charge_telegraph()
 	harpoon_charge_ratio = _get_harpoon_charge_ratio_from_time(harpoon_charge_time)
 	harpoon_reel_charge_ratio = harpoon_charge_ratio
 	var throw_sign := _get_block_shield_facing_sign()
@@ -1211,6 +1212,7 @@ func _finalize_harpoon_reel(arrived: bool) -> void:
 
 
 func _cancel_harpoon_state() -> void:
+	var was_harpoon_charging := harpoon_charge_active
 	harpoon_charge_active = false
 	harpoon_charge_time = 0.0
 	harpoon_charge_ratio = 0.0
@@ -1227,6 +1229,8 @@ func _cancel_harpoon_state() -> void:
 		harpoon_tether_glow_line.visible = false
 	if harpoon_projectile_visual != null and is_instance_valid(harpoon_projectile_visual):
 		harpoon_projectile_visual.visible = false
+	if was_harpoon_charging:
+		_hide_harpoon_charge_telegraph()
 
 
 func _find_harpoon_first_target(from_position: Vector2, to_position: Vector2, direction_sign: float) -> Node2D:
@@ -1471,7 +1475,10 @@ func _update_harpoon_visuals() -> void:
 	if harpoon_charge_active:
 		var preview_ratio := _get_harpoon_charge_ratio_from_time(harpoon_charge_time)
 		var preview_distance := lerpf(maxf(24.0, harpoon_min_range), maxf(harpoon_min_range, harpoon_max_range), preview_ratio)
+		var charge_progress := clampf(harpoon_charge_time / maxf(0.01, harpoon_max_charge_time), 0.0, 1.0)
+		var telegraph_length := lerpf(20.0, preview_distance, charge_progress)
 		var preview_tip := origin + Vector2(preview_distance * harpoon_throw_direction_sign, 0.0)
+		_show_harpoon_charge_telegraph(telegraph_length)
 		_set_harpoon_tether_visual(
 			origin,
 			preview_tip,
@@ -2247,6 +2254,7 @@ func _show_attack_telegraph(attack_range: float, arc_degrees: float, telegraph_c
 	attack_telegraph.visible = true
 	attack_telegraph.color = telegraph_color
 	attack_telegraph.polygon = _build_arc_polygon(attack_range, arc_degrees, 18)
+	attack_telegraph.position = Vector2.ZERO
 	var telegraph_direction := facing_direction
 	if is_charging_attack or charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0:
 		telegraph_direction = charge_release_direction
@@ -2265,6 +2273,7 @@ func _show_instant_attack_flash(
 	attack_telegraph.visible = true
 	attack_telegraph.color = telegraph_color
 	attack_telegraph.polygon = _build_arc_polygon(attack_range, arc_degrees, 16)
+	attack_telegraph.position = Vector2.ZERO
 	var direction := telegraph_direction
 	if direction.length_squared() <= 0.0001:
 		direction = facing_direction
@@ -2306,6 +2315,40 @@ func _build_arc_polygon(attack_range: float, arc_degrees: float, segments: int) 
 		var angle := lerpf(-half_arc, half_arc, t)
 		points.append(Vector2.RIGHT.rotated(angle) * attack_range)
 	return points
+
+
+func _show_harpoon_charge_telegraph(telegraph_length: float) -> void:
+	attack_telegraph.visible = true
+	attack_telegraph.color = _get_equipped_sword_charge_preview_color(0.34)
+	attack_telegraph.polygon = _build_harpoon_arrow_polygon(telegraph_length)
+	attack_telegraph.position = Vector2(24.0 * harpoon_throw_direction_sign, -16.0)
+	attack_telegraph.rotation = 0.0 if harpoon_throw_direction_sign >= 0.0 else PI
+	attack_telegraph.modulate.a = 0.25
+	attack_telegraph.scale = Vector2.ONE
+
+
+func _hide_harpoon_charge_telegraph() -> void:
+	attack_telegraph.visible = false
+	attack_telegraph.position = Vector2.ZERO
+	attack_telegraph.scale = Vector2.ONE
+	attack_telegraph.modulate.a = 1.0
+
+
+func _build_harpoon_arrow_polygon(arrow_length: float) -> PackedVector2Array:
+	var length := maxf(18.0, arrow_length)
+	var head_length := clampf(length * 0.22, 12.0, 30.0)
+	var shaft_half_height := clampf(length * 0.035, 4.0, 8.0)
+	var head_half_height := shaft_half_height * 2.2
+	var shaft_end := maxf(6.0, length - head_length)
+	return PackedVector2Array([
+		Vector2(0.0, -shaft_half_height),
+		Vector2(shaft_end, -shaft_half_height),
+		Vector2(shaft_end, -head_half_height),
+		Vector2(length, 0.0),
+		Vector2(shaft_end, head_half_height),
+		Vector2(shaft_end, shaft_half_height),
+		Vector2(0.0, shaft_half_height)
+	])
 
 
 func _start_roll() -> void:
