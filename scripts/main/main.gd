@@ -50,6 +50,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			_start_selected_encounter(Arena.EncounterType.SHARDSOUL)
 			get_viewport().set_input_as_handled()
 			return
+		if key_event.keycode == KEY_5 or key_event.keycode == KEY_KP_5:
+			_start_selected_encounter(Arena.EncounterType.COBRA_TWO_ROOM_TEST)
+			get_viewport().set_input_as_handled()
+			return
 		return
 	if key_event.keycode == KEY_F6:
 		if is_instance_valid(arena):
@@ -95,6 +99,8 @@ func _connect_signals() -> void:
 	arena.combat_debug_changed.connect(hud.update_combat_debug)
 	if is_instance_valid(arena.player) and arena.player.has_signal("equipped_sword_changed"):
 		arena.player.equipped_sword_changed.connect(_on_player_equipped_sword_changed)
+	if is_instance_valid(arena.player) and arena.player.has_signal("equipped_shield_changed"):
+		arena.player.equipped_shield_changed.connect(_on_player_equipped_shield_changed)
 
 
 func _maybe_start_autoplay_test() -> void:
@@ -171,8 +177,16 @@ func _show_encounter_picker() -> void:
 	)
 	content.add_child(shardsoul_button)
 
+	var two_room_button := Button.new()
+	two_room_button.text = "5. Start Cobra Two-Room Test"
+	two_room_button.custom_minimum_size = Vector2(0.0, 44.0)
+	two_room_button.pressed.connect(func() -> void:
+		_start_selected_encounter(Arena.EncounterType.COBRA_TWO_ROOM_TEST)
+	)
+	content.add_child(two_room_button)
+
 	var hint := Label.new()
-	hint.text = "Press 1, 2, 3, or 4, or click a button."
+	hint.text = "Press 1-5, or click a button."
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	content.add_child(hint)
 
@@ -217,15 +231,23 @@ func _open_inventory_menu() -> void:
 	add_child(menu_layer)
 	inventory_menu_layer = menu_layer
 	if menu_layer.has_method("configure"):
-		menu_layer.call("configure", arena.player.call("get_available_sword_entries"), arena.player.call("get_equipped_sword_id"))
+		menu_layer.call(
+			"configure",
+			arena.player.call("get_available_sword_entries"),
+			arena.player.call("get_equipped_sword_id"),
+			arena.player.call("get_available_shield_entries"),
+			arena.player.call("get_equipped_shield_id")
+		)
 	if menu_layer.has_signal("sword_selected"):
 		menu_layer.connect("sword_selected", Callable(self, "_on_inventory_sword_selected"))
+	if menu_layer.has_signal("shield_selected"):
+		menu_layer.connect("shield_selected", Callable(self, "_on_inventory_shield_selected"))
 	if menu_layer.has_signal("menu_closed"):
 		menu_layer.connect("menu_closed", Callable(self, "_on_inventory_menu_closed"))
 	if arena.player.has_method("set_gameplay_input_blocked"):
 		arena.player.call("set_gameplay_input_blocked", true)
 	get_tree().paused = true
-	hud.show_status_message("Inventory Open - Select a sword", 1.0)
+	hud.show_status_message("Inventory Open - Select sword/shield", 1.0)
 
 
 func _close_inventory_menu() -> void:
@@ -253,12 +275,29 @@ func _on_inventory_sword_selected(sword_id: String) -> void:
 		inventory_menu_layer.call("set_equipped_sword", arena.player.call("get_equipped_sword_id"))
 
 
+func _on_inventory_shield_selected(shield_id: String) -> void:
+	if not is_instance_valid(arena) or not is_instance_valid(arena.player):
+		return
+	if not arena.player.has_method("equip_shield"):
+		return
+	var changed := bool(arena.player.call("equip_shield", shield_id))
+	if changed:
+		var shield_name := String(arena.player.call("get_equipped_shield_name"))
+		hud.show_status_message("Equipped: %s" % shield_name, 1.2)
+	if _has_active_inventory_menu() and inventory_menu_layer.has_method("set_equipped_shield"):
+		inventory_menu_layer.call("set_equipped_shield", arena.player.call("get_equipped_shield_id"))
+
+
 func _on_inventory_menu_closed() -> void:
 	_close_inventory_menu()
 
 
 func _on_player_equipped_sword_changed(_sword_id: String, sword_name: String) -> void:
 	hud.show_status_message("Sword: %s" % sword_name, 1.2)
+
+
+func _on_player_equipped_shield_changed(_shield_id: String, shield_name: String) -> void:
+	hud.show_status_message("Shield: %s" % shield_name, 1.2)
 
 
 func _get_autoplay_encounter_type() -> int:
@@ -271,6 +310,8 @@ func _get_autoplay_encounter_type() -> int:
 		return Arena.EncounterType.CACODEMON
 	if encounter_raw == "shardsoul" or encounter_raw == "4":
 		return Arena.EncounterType.SHARDSOUL
+	if encounter_raw == "two_room" or encounter_raw == "tworoom" or encounter_raw == "5":
+		return Arena.EncounterType.COBRA_TWO_ROOM_TEST
 	return Arena.EncounterType.MINOTAUR
 
 
