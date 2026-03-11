@@ -2,38 +2,57 @@ extends CanvasLayer
 class_name InventoryMenu
 
 signal sword_selected(sword_id: String)
+signal shield_selected(shield_id: String)
 signal menu_closed
 
 var sword_entries: Array[Dictionary] = []
 var equipped_sword_id: String = ""
+var shield_entries: Array[Dictionary] = []
+var equipped_shield_id: String = ""
 
 var _content_root: VBoxContainer = null
 var _button_by_sword_id: Dictionary = {}
+var _button_by_shield_id: Dictionary = {}
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_WHEN_PAUSED
 	layer = 30
 	_build_ui()
-	_rebuild_sword_list()
+	_rebuild_gear_lists()
 
 
-func configure(entries: Array[Dictionary], equipped_id: String) -> void:
+func configure(
+	entries: Array[Dictionary],
+	equipped_id: String,
+	shield_entry_list: Array[Dictionary] = [],
+	equipped_shield: String = ""
+) -> void:
 	sword_entries = []
 	for entry in entries:
 		if entry is Dictionary:
 			sword_entries.append((entry as Dictionary).duplicate(true))
 	equipped_sword_id = equipped_id
+	shield_entries = []
+	for shield_entry in shield_entry_list:
+		if shield_entry is Dictionary:
+			shield_entries.append((shield_entry as Dictionary).duplicate(true))
+	equipped_shield_id = equipped_shield
 	if is_inside_tree():
-		_rebuild_sword_list()
+		_rebuild_gear_lists()
 
 
 func set_equipped_sword(sword_id: String) -> void:
 	equipped_sword_id = sword_id
-	_rebuild_sword_list()
+	_rebuild_gear_lists()
 
 
-func _unhandled_input(event: InputEvent) -> void:
+func set_equipped_shield(shield_id: String) -> void:
+	equipped_shield_id = shield_id
+	_rebuild_gear_lists()
+
+
+func _input(event: InputEvent) -> void:
 	if event.is_action_pressed("inventory_toggle") or event.is_action_pressed("ui_cancel"):
 		menu_closed.emit()
 		get_viewport().set_input_as_handled()
@@ -67,13 +86,13 @@ func _build_ui() -> void:
 	_content_root = content
 
 	var title := Label.new()
-	title.text = "Inventory - Swords"
+	title.text = "Inventory - Gear"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 22)
 	content.add_child(title)
 
 	var subtitle := Label.new()
-	subtitle.text = "Click a sword to equip. Only one sword can be equipped at a time."
+	subtitle.text = "Click to equip one sword and one shield."
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(subtitle)
@@ -86,6 +105,14 @@ func _build_ui() -> void:
 	sword_list.add_theme_constant_override("separation", 8)
 	content.add_child(sword_list)
 
+	var shield_separator := HSeparator.new()
+	content.add_child(shield_separator)
+
+	var shield_list := VBoxContainer.new()
+	shield_list.name = "ShieldList"
+	shield_list.add_theme_constant_override("separation", 8)
+	content.add_child(shield_list)
+
 	var hint := Label.new()
 	hint.text = "Press Tab or Esc to close"
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -93,15 +120,25 @@ func _build_ui() -> void:
 	content.add_child(hint)
 
 
-func _rebuild_sword_list() -> void:
+func _rebuild_gear_lists() -> void:
 	if _content_root == null or not is_instance_valid(_content_root):
 		return
 	var sword_list := _content_root.get_node_or_null("SwordList") as VBoxContainer
-	if sword_list == null:
+	var shield_list := _content_root.get_node_or_null("ShieldList") as VBoxContainer
+	if sword_list == null or shield_list == null:
 		return
 	for child in sword_list.get_children():
 		child.queue_free()
+	for child in shield_list.get_children():
+		child.queue_free()
 	_button_by_sword_id.clear()
+	_button_by_shield_id.clear()
+
+	var sword_title := Label.new()
+	sword_title.text = "Swords"
+	sword_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	sword_title.modulate = Color(0.88, 0.93, 1.0, 0.95)
+	sword_list.add_child(sword_title)
 
 	for entry in sword_entries:
 		var sword_id := String(entry.get("id", ""))
@@ -127,11 +164,59 @@ func _rebuild_sword_list() -> void:
 		sword_list.add_child(button)
 		_button_by_sword_id[sword_id] = button
 
-	if sword_list.get_child_count() > 0:
-		var first_button := sword_list.get_child(0) as Button
-		if first_button != null:
-			first_button.grab_focus()
+	var shield_title := Label.new()
+	shield_title.text = "Shields"
+	shield_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	shield_title.modulate = Color(0.88, 0.93, 1.0, 0.95)
+	shield_list.add_child(shield_title)
+
+	if shield_entries.is_empty():
+		var empty_shield := Label.new()
+		empty_shield.text = "No shields found."
+		empty_shield.modulate = Color(0.72, 0.78, 0.88, 0.92)
+		shield_list.add_child(empty_shield)
+	else:
+		for shield_entry in shield_entries:
+			var shield_id := String(shield_entry.get("id", ""))
+			if shield_id.is_empty():
+				continue
+			var shield_name := String(shield_entry.get("name", shield_id))
+			var shield_icon := String(shield_entry.get("icon", "SHD"))
+			var shield_description := String(shield_entry.get("description", ""))
+			var shield_equipped := shield_id == equipped_shield_id
+			var shield_button := Button.new()
+			shield_button.custom_minimum_size = Vector2(0.0, 52.0)
+			shield_button.toggle_mode = false
+			shield_button.text = "%s  %s%s\n%s" % [
+				shield_icon,
+				shield_name,
+				"   [EQUIPPED]" if shield_equipped else "",
+				shield_description
+			]
+			shield_button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			shield_button.pressed.connect(_on_shield_button_pressed.bind(shield_id))
+			if shield_equipped:
+				shield_button.modulate = Color(0.64, 0.96, 1.0, 1.0)
+			shield_list.add_child(shield_button)
+			_button_by_shield_id[shield_id] = shield_button
+
+	for child in sword_list.get_children():
+		var candidate := child as Button
+		if candidate == null:
+			continue
+		candidate.grab_focus()
+		return
+	for child in shield_list.get_children():
+		var shield_candidate := child as Button
+		if shield_candidate == null:
+			continue
+		shield_candidate.grab_focus()
+		return
 
 
 func _on_sword_button_pressed(sword_id: String) -> void:
 	sword_selected.emit(sword_id)
+
+
+func _on_shield_button_pressed(shield_id: String) -> void:
+	shield_selected.emit(shield_id)

@@ -82,20 +82,25 @@ func update_cooldowns(values: Dictionary) -> void:
 	var ability_1_text := _format_cooldown(ability_1_left)
 	var harpoon_charging := bool(values.get("harpoon_charging", false))
 	var harpoon_charge_ratio := clampf(float(values.get("harpoon_charge_ratio", 0.0)), 0.0, 1.0)
+	var counter_unlocked := bool(values.get("counter_unlocked", false))
 	var counter_ready := bool(values.get("counter_ready", false))
 	var counter_window_left := maxf(0.0, float(values.get("counter_window_left", 0.0)))
-	var counter_text := "Ready %.1fs" % counter_window_left if counter_ready else "Locked"
+	var counter_text := "Need Shield"
+	if counter_unlocked:
+		counter_text = "Ready %.1fs" % counter_window_left if counter_ready else "Locked"
 	var ability_2_text := _format_cooldown(float(values.get("ability_2", 0.0)))
 	var roll_text := _format_cooldown(float(values.get("roll", 0.0)))
 	var blocking_text := " | Blocking" if bool(values.get("block_active", false)) else ""
 	var sword_id := String(values.get("equipped_sword_id", ""))
 	var sword_name := String(values.get("equipped_sword_name", ""))
 	var sword_suffix := " | Sword: %s" % sword_name if not sword_name.is_empty() else ""
-	cooldown_label.text = "Swing %s  Hook %s  Counter %s  Dash %s  Roll %s%s%s" % [basic_text, ability_1_text, counter_text, ability_2_text, roll_text, blocking_text, sword_suffix]
+	var shield_name := String(values.get("equipped_shield_name", ""))
+	var shield_suffix := " | Shield: %s" % shield_name if not shield_name.is_empty() else ""
+	cooldown_label.text = "Swing %s  Hook %s  Counter %s  Dash %s  Roll %s%s%s%s" % [basic_text, ability_1_text, counter_text, ability_2_text, roll_text, blocking_text, sword_suffix, shield_suffix]
 	_apply_charge_sword_indicator(sword_id)
 	_update_ability_slot("basic", float(values.get("basic", 0.0)), false)
 	_update_harpoon_slot(ability_1_left, harpoon_charging, harpoon_charge_ratio)
-	_update_counter_slot(counter_ready, counter_window_left)
+	_update_counter_slot(counter_ready, counter_window_left, counter_unlocked)
 	_update_ability_slot("ability_2", float(values.get("ability_2", 0.0)), false)
 	_update_ability_slot("roll", float(values.get("roll", 0.0)), false)
 	_update_ability_slot("block", 0.0, bool(values.get("block_active", false)))
@@ -247,7 +252,7 @@ func _build_ability_bar() -> void:
 		if slot_id.is_empty():
 			continue
 		if slot_id == "counter":
-			_update_counter_slot(false, 0.0)
+			_update_counter_slot(false, 0.0, false)
 		else:
 			_update_ability_slot(slot_id, 0.0, false)
 
@@ -390,7 +395,7 @@ func _update_ability_slot(slot_id: String, cooldown_left: float, block_active: b
 		icon_label.modulate = Color(0.64, 0.92, 1.0, 1.0) if block_active else Color(0.56, 0.88, 1.0, 1.0)
 
 
-func _update_counter_slot(counter_ready: bool, counter_window_left: float) -> void:
+func _update_counter_slot(counter_ready: bool, counter_window_left: float, counter_unlocked: bool) -> void:
 	var slot_id := "counter"
 	var slot := ability_slot_views.get(slot_id, {}) as Dictionary
 	if slot.is_empty():
@@ -405,6 +410,21 @@ func _update_counter_slot(counter_ready: bool, counter_window_left: float) -> vo
 		return
 
 	var window_left := maxf(0.0, counter_window_left)
+	if not counter_unlocked:
+		cooldown_overlay.visible = true
+		cooldown_overlay.color = Color(0.02, 0.04, 0.08, 0.74)
+		cooldown_label.visible = true
+		cooldown_label.text = "SHD"
+		cooldown_label.modulate = Color(0.56, 0.86, 1.0, 0.94)
+		ready_border.visible = false
+		root.self_modulate = Color(0.7, 0.74, 0.8, 1.0)
+		icon_label.modulate = Color(0.64, 0.84, 0.96, 0.9)
+		key_label.modulate = Color(0.58, 0.74, 0.86, 0.96)
+		ability_slot_ready_flags[slot_id] = false
+		slot["block_active"] = false
+		ability_slot_views[slot_id] = slot
+		return
+
 	if counter_ready:
 		cooldown_overlay.visible = false
 		cooldown_label.visible = true

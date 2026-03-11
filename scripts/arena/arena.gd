@@ -5,7 +5,8 @@ enum EncounterType {
 	MINOTAUR,
 	CACODEMON,
 	SHARDSOUL,
-	COBRA
+	COBRA,
+	COBRA_TWO_ROOM_TEST
 }
 
 signal player_health_changed(current: float, maximum: float)
@@ -25,6 +26,16 @@ const MELEE_ENEMY_SCENE: PackedScene = preload("res://scenes/enemies/MeleeEnemy.
 const ITEM_SCENE: PackedScene = preload("res://scenes/items/ItemPickup.tscn")
 const COMPANION_BREATH_RESPONSE_SCRIPT := preload("res://ai/CompanionBreathResponse.gd")
 const IMP_SUMMON_PENTAGRAM_EFFECT_SCRIPT := preload("res://scripts/effects/imp_summon_pentagram.gd")
+const TWO_ROOM_SWORD_PICKUP_IDS: Array[String] = [
+	"sword_extended_charge",
+	"sword_slowing",
+	"sword_stacking_dot"
+]
+const TWO_ROOM_SWORD_PICKUP_BY_SWORD_ID: Dictionary = {
+	"extended_charge": "sword_extended_charge",
+	"slowing": "sword_slowing",
+	"stacking_dot": "sword_stacking_dot"
+}
 
 @export var regular_enemy_count: int = 1
 @export var allow_multiple_minotaurs: bool = true
@@ -59,11 +70,22 @@ const IMP_SUMMON_PENTAGRAM_EFFECT_SCRIPT := preload("res://scripts/effects/imp_s
 @export var summoned_imp_damage_multiplier: float = 0.5
 @export var summoned_minion_xp_scale: float = 0.35
 @export var miniboss_health_scale: float = 4.0
-@export var cobra_health_scale: float = 0.42
+@export var cobra_health_scale: float = 0.84
 @export var cobra_damage_scale: float = 0.62
 @export var imp_summon_pentagram_enabled: bool = true
 @export var imp_summon_pentagram_y_offset: float = 12.0
 @export var summoned_imp_spawn_stagger: float = 0.04
+@export var two_room_test_room_edge_inset: float = 18.0
+@export var two_room_test_room_gap: float = 52.0
+@export var two_room_test_exit_width: float = 32.0
+@export var two_room_test_exit_height: float = 124.0
+@export var two_room_test_transition_delay: float = 0.25
+@export var two_room_test_spawn_margin_x: float = 78.0
+@export var two_room_test_spawn_vertical_spacing: float = 78.0
+@export var two_room_test_second_room_offset_x: float = 1040.0
+@export var two_room_test_second_room_offset_y: float = 0.0
+@export var two_room_test_room2_right_spawn_band_start_ratio: float = 0.84
+@export var two_room_test_room2_right_spawn_inset: float = 26.0
 
 @onready var actors: Node2D = $Actors
 @onready var drops: Node2D = $Drops
@@ -71,6 +93,7 @@ const IMP_SUMMON_PENTAGRAM_EFFECT_SCRIPT := preload("res://scripts/effects/imp_s
 @onready var player_spawn: Marker2D = $PlayerSpawn
 @onready var healer_spawn: Marker2D = get_node_or_null("HealerSpawn") as Marker2D
 @onready var ratfolk_spawn: Marker2D = get_node_or_null("RatfolkSpawn") as Marker2D
+@onready var floor_root: Node2D = get_node_or_null("Floor") as Node2D
 
 var player: Player = null
 var healer: Node2D = null
@@ -88,6 +111,13 @@ var hitbox_debug_mode_enabled: bool = false
 var hitbox_debug_sync_left: float = 0.0
 var spacing_debug_runtime_enabled: bool = false
 var spacing_debug_next_log_at: float = 0.0
+var two_room_test_active: bool = false
+var two_room_test_room_index: int = 0
+var two_room_test_transition_in_progress: bool = false
+var two_room_exit_root: Node2D = null
+var two_room_exit_area: Area2D = null
+var two_room_second_floor_root: Node2D = null
+var two_room_loot_drop_count: int = 0
 
 
 func _ready() -> void:
@@ -120,6 +150,8 @@ func start_demo_with_encounter(encounter_type: int) -> void:
 func set_encounter_type(encounter_type: int) -> void:
 	if encounter_type == EncounterType.COBRA:
 		selected_encounter = EncounterType.COBRA
+	elif encounter_type == EncounterType.COBRA_TWO_ROOM_TEST:
+		selected_encounter = EncounterType.COBRA_TWO_ROOM_TEST
 	elif encounter_type == EncounterType.CACODEMON:
 		selected_encounter = EncounterType.CACODEMON
 	elif encounter_type == EncounterType.SHARDSOUL:
@@ -129,7 +161,7 @@ func set_encounter_type(encounter_type: int) -> void:
 
 
 func _encounter_uses_companions() -> bool:
-	return selected_encounter != EncounterType.COBRA
+	return selected_encounter != EncounterType.COBRA and selected_encounter != EncounterType.COBRA_TWO_ROOM_TEST
 
 
 func start_demo() -> void:
@@ -141,6 +173,12 @@ func start_demo() -> void:
 	timed_extra_minotaur_spawned = false
 	initial_minotaur_spawn_on_left = false
 	spawned_minotaurs_total = 0
+	two_room_test_active = false
+	two_room_test_room_index = 0
+	two_room_test_transition_in_progress = false
+	two_room_loot_drop_count = 0
+	_teardown_two_room_exit()
+	_teardown_two_room_second_play_area()
 	_spawn_player()
 	if _encounter_uses_companions():
 		_spawn_friendly_healer()
@@ -213,6 +251,14 @@ func _spawn_friendly_ratfolk() -> void:
 
 func _spawn_regular_enemies() -> void:
 	alive_regular_enemies = 0
+	if is_instance_valid(player):
+		if selected_encounter == EncounterType.COBRA_TWO_ROOM_TEST and player.has_method("reset_sword_inventory_for_encounter"):
+			player.call("reset_sword_inventory_for_encounter")
+		elif player.has_method("restore_default_sword_inventory"):
+			player.call("restore_default_sword_inventory")
+	if selected_encounter == EncounterType.COBRA_TWO_ROOM_TEST:
+		_spawn_two_room_cobra_test()
+		return
 	if selected_encounter == EncounterType.COBRA:
 		_spawn_cobra_encounter()
 		return
@@ -293,6 +339,20 @@ func _spawn_cobra_encounter() -> void:
 	var enemy := _spawn_ground_boss_encounter(int(EnemyBase.MonsterVisualProfile.COBRA))
 	if enemy == null:
 		return
+	_configure_cobra_enemy(enemy, true)
+
+
+func _configure_cobra_enemy(enemy: EnemyBase, as_miniboss: bool = false) -> void:
+	if enemy == null:
+		return
+	var cobra_range_scale := 0.5
+	var cobra_attack_range_multiplier := 1.3
+	if as_miniboss:
+		_configure_miniboss(enemy)
+	else:
+		enemy.is_miniboss = false
+		enemy.boss_can_summon_minions = false
+		enemy.boss_summon_count = 0
 	# Keep Cobra encounter intentionally simple: close poke + baitable heavy strike.
 	enemy.use_single_phase_loop = false
 	enemy.spin_attack_enabled = false
@@ -301,12 +361,14 @@ func _spawn_cobra_encounter() -> void:
 	enemy.attack_prestrike_hold_duration = 0.1
 	enemy.attack_recovery_hold_duration = 0.04
 	enemy.attack_cooldown = 1.2
-	enemy.attack_range = 74.0
-	enemy.basic_attack_hit_end_bonus = 18.0
-	enemy.cobra_preferred_range = 114.0
-	enemy.cobra_preferred_range_tolerance = 22.0
-	enemy.cobra_close_attack_trigger_range = 56.0
-	enemy.cobra_close_attack_reach = 58.0
+	enemy.attack_range = 74.0 * cobra_range_scale * cobra_attack_range_multiplier
+	enemy.basic_attack_hit_end_bonus = 18.0 * cobra_range_scale * cobra_attack_range_multiplier
+	enemy.cobra_tongue_reach_bonus = 62.0 * cobra_range_scale * cobra_attack_range_multiplier
+	enemy.cobra_tongue_telegraph_start_offset = 30.0 * cobra_range_scale
+	enemy.cobra_preferred_range = 114.0 * cobra_range_scale
+	enemy.cobra_preferred_range_tolerance = maxf(6.0, 22.0 * cobra_range_scale)
+	enemy.cobra_close_attack_trigger_range = 56.0 * cobra_range_scale * cobra_attack_range_multiplier
+	enemy.cobra_close_attack_reach = 58.0 * cobra_range_scale * cobra_attack_range_multiplier
 	enemy.cobra_close_attack_half_width = 10.0
 	enemy.cobra_close_attack_windup = 0.14
 	enemy.cobra_close_attack_damage_scale = 0.5
@@ -314,15 +376,15 @@ func _spawn_cobra_encounter() -> void:
 	enemy.cobra_close_attack_knockback_scale = 0.82
 	enemy.cobra_close_attack_recovery = 0.18
 	enemy.cobra_close_attack_cooldown = 0.8
-	enemy.cobra_attack_min_range = 72.0
-	enemy.cobra_attack_max_range = 132.0
+	enemy.cobra_attack_min_range = 72.0 * cobra_range_scale * cobra_attack_range_multiplier
+	enemy.cobra_attack_max_range = 132.0 * cobra_range_scale * cobra_attack_range_multiplier
 	enemy.cobra_approach_speed_scale = 0.66
 	enemy.cobra_stalk_speed_scale = 0.4
 	enemy.cobra_retreat_speed_scale = 0.95
 	enemy.cobra_spacing_pause_duration = 0.2
 	enemy.cobra_heavy_attack_windup = 0.62
 	enemy.cobra_heavy_attack_cooldown = 1.28
-	enemy.cobra_heavy_bait_range_band = 16.0
+	enemy.cobra_heavy_bait_range_band = 16.0 * cobra_range_scale * cobra_attack_range_multiplier
 	enemy.cobra_attack_recovery_on_hit = 0.18
 	enemy.cobra_attack_recovery_on_block = 0.68
 	enemy.cobra_attack_recovery_on_miss = 1.15
@@ -339,6 +401,235 @@ func _spawn_cobra_encounter() -> void:
 	enemy.attack_damage = maxf(0.0, enemy.attack_damage * clampf(cobra_damage_scale, 0.0, 1000.0))
 
 
+func _spawn_two_room_cobra_test() -> void:
+	two_room_test_active = true
+	two_room_test_room_index = 1
+	two_room_test_transition_in_progress = false
+	two_room_loot_drop_count = 0
+	_teardown_two_room_exit()
+
+	var room_one_bounds := _get_two_room_bounds(1)
+	var room_two_bounds := _get_two_room_bounds(2)
+	_setup_two_room_second_play_area(room_two_bounds)
+	var room_center_y := room_one_bounds.position.y + (room_one_bounds.size.y * 0.5)
+	if is_instance_valid(player):
+		player.position = Vector2(
+			room_one_bounds.position.x + maxf(24.0, two_room_test_spawn_margin_x),
+			room_center_y
+		)
+		_apply_local_bounds_to_player(
+			player,
+			room_one_bounds.position.x,
+			room_one_bounds.end.x,
+			room_one_bounds.position.y,
+			room_one_bounds.end.y,
+			true
+		)
+
+	var room_one_enemy_x := room_one_bounds.end.x - maxf(40.0, two_room_test_spawn_margin_x)
+	var room_one_enemy := _spawn_enemy(
+		MELEE_ENEMY_SCENE,
+		to_global(Vector2(room_one_enemy_x, room_center_y)),
+		int(EnemyBase.MonsterVisualProfile.COBRA)
+	)
+	if room_one_enemy != null:
+		_configure_cobra_enemy(room_one_enemy, false)
+		_apply_local_bounds_to_enemy(
+			room_one_enemy,
+			room_one_bounds.position.x,
+			room_one_bounds.end.x,
+			room_one_bounds.position.y,
+			room_one_bounds.end.y
+		)
+		alive_regular_enemies = 1
+	else:
+		alive_regular_enemies = 0
+
+	_spawn_two_room_exit(room_one_bounds)
+	_update_objective()
+
+
+func _get_two_room_bounds(room_index: int) -> Rect2:
+	var min_x := minf(arena_min_x, arena_max_x)
+	var max_x := maxf(arena_min_x, arena_max_x)
+	var min_y := minf(arena_min_y, arena_max_y)
+	var max_y := maxf(arena_min_y, arena_max_y)
+	var size := Vector2(maxf(24.0, max_x - min_x), maxf(24.0, max_y - min_y))
+	if room_index == 2:
+		var offset := Vector2(two_room_test_second_room_offset_x, two_room_test_second_room_offset_y)
+		return Rect2(Vector2(min_x, min_y) + offset, size)
+	return Rect2(Vector2(min_x, min_y), size)
+
+
+func _setup_two_room_second_play_area(room_two_bounds: Rect2) -> void:
+	_teardown_two_room_second_play_area()
+	if not is_instance_valid(floor_root):
+		return
+	var duplicate_flags := Node.DUPLICATE_GROUPS | Node.DUPLICATE_SIGNALS | Node.DUPLICATE_SCRIPTS
+	var second_floor := floor_root.duplicate(duplicate_flags) as Node2D
+	if second_floor == null:
+		return
+	second_floor.name = "FloorRoom2"
+	add_child(second_floor)
+	move_child(second_floor, get_child_count() - 1)
+	second_floor.position = room_two_bounds.position + (room_two_bounds.size * 0.5)
+	two_room_second_floor_root = second_floor
+
+
+func _teardown_two_room_second_play_area() -> void:
+	if is_instance_valid(two_room_second_floor_root):
+		two_room_second_floor_root.queue_free()
+	two_room_second_floor_root = null
+
+
+func _spawn_two_room_exit(room_one_bounds: Rect2) -> void:
+	_teardown_two_room_exit()
+	var root := Node2D.new()
+	root.name = "TwoRoomExit"
+	root.z_index = 8
+	add_child(root)
+	two_room_exit_root = root
+
+	var area := Area2D.new()
+	area.name = "Trigger"
+	area.monitoring = true
+	area.monitorable = true
+	area.collision_layer = 0
+	area.collision_mask = 1
+	area.position = Vector2(
+		room_one_bounds.end.x - maxf(10.0, two_room_test_exit_width * 0.5),
+		room_one_bounds.position.y + (room_one_bounds.size.y * 0.5)
+	)
+	root.add_child(area)
+	two_room_exit_area = area
+
+	var trigger_shape := CollisionShape2D.new()
+	var trigger_rect := RectangleShape2D.new()
+	trigger_rect.size = Vector2(maxf(12.0, two_room_test_exit_width), maxf(56.0, two_room_test_exit_height))
+	trigger_shape.shape = trigger_rect
+	area.add_child(trigger_shape)
+	area.body_entered.connect(_on_two_room_exit_body_entered)
+
+	var door_visual := Polygon2D.new()
+	door_visual.color = Color(0.28, 0.76, 0.9, 0.32)
+	var half_w := trigger_rect.size.x * 0.5
+	var half_h := trigger_rect.size.y * 0.5
+	door_visual.polygon = PackedVector2Array([
+		Vector2(-half_w, -half_h),
+		Vector2(half_w, -half_h),
+		Vector2(half_w, half_h),
+		Vector2(-half_w, half_h)
+	])
+	area.add_child(door_visual)
+
+	var border := Line2D.new()
+	border.default_color = Color(0.52, 0.9, 1.0, 0.8)
+	border.width = 2.0
+	border.closed = true
+	border.points = PackedVector2Array([
+		Vector2(-half_w, -half_h),
+		Vector2(half_w, -half_h),
+		Vector2(half_w, half_h),
+		Vector2(-half_w, half_h)
+	])
+	area.add_child(border)
+
+
+func _teardown_two_room_exit() -> void:
+	if is_instance_valid(two_room_exit_root):
+		two_room_exit_root.queue_free()
+	two_room_exit_root = null
+	two_room_exit_area = null
+
+
+func _on_two_room_exit_body_entered(body: Node) -> void:
+	if not two_room_test_active or two_room_test_room_index != 1:
+		return
+	if two_room_test_transition_in_progress:
+		return
+	if body == null or not is_instance_valid(player) or body != player:
+		return
+	_transition_two_room_to_second_room()
+
+
+func _transition_two_room_to_second_room() -> void:
+	if two_room_test_transition_in_progress:
+		return
+	two_room_test_transition_in_progress = true
+	_teardown_two_room_exit()
+	_clear_two_room_room_enemies()
+	status_message.emit("Door crossed - entering Room 2", 0.8)
+
+	if is_instance_valid(player) and player.has_method("set_gameplay_input_blocked"):
+		player.call("set_gameplay_input_blocked", true)
+	await get_tree().create_timer(maxf(0.0, two_room_test_transition_delay)).timeout
+
+	var room_two_bounds := _get_two_room_bounds(2)
+	var room_center_y := room_two_bounds.position.y + (room_two_bounds.size.y * 0.5)
+	if is_instance_valid(player):
+		player.position = Vector2(
+			room_two_bounds.position.x + maxf(24.0, two_room_test_spawn_margin_x),
+			room_center_y
+		)
+		_apply_local_bounds_to_player(
+			player,
+			room_two_bounds.position.x,
+			room_two_bounds.end.x,
+			room_two_bounds.position.y,
+			room_two_bounds.end.y,
+			true
+		)
+
+	_spawn_two_room_second_room_cobras(room_two_bounds)
+	two_room_test_room_index = 2
+	two_room_test_transition_in_progress = false
+	if is_instance_valid(player) and player.has_method("set_gameplay_input_blocked"):
+		player.call("set_gameplay_input_blocked", false)
+	_update_objective()
+
+
+func _spawn_two_room_second_room_cobras(room_two_bounds: Rect2) -> void:
+	alive_regular_enemies = 0
+	var center_y := room_two_bounds.position.y + (room_two_bounds.size.y * 0.5)
+	var right_band_start := room_two_bounds.position.x + (room_two_bounds.size.x * clampf(two_room_test_room2_right_spawn_band_start_ratio, 0.55, 0.96))
+	var base_spawn_x := room_two_bounds.end.x - maxf(12.0, two_room_test_room2_right_spawn_inset)
+	var y_spacing := maxf(26.0, two_room_test_spawn_vertical_spacing * 0.55)
+	var room_min_y := room_two_bounds.position.y + 12.0
+	var room_max_y := room_two_bounds.end.y - 12.0
+	var x_offsets := PackedFloat32Array([0.0, -24.0, -48.0])
+	var y_offsets := PackedFloat32Array([0.0, -y_spacing, y_spacing])
+	for i in range(mini(x_offsets.size(), y_offsets.size())):
+		var spawn_x := maxf(base_spawn_x + x_offsets[i], right_band_start)
+		var y_offset := y_offsets[i]
+		var enemy_y := clampf(center_y + y_offset, room_min_y, room_max_y)
+		var enemy := _spawn_enemy(
+			MELEE_ENEMY_SCENE,
+			to_global(Vector2(spawn_x, enemy_y)),
+			int(EnemyBase.MonsterVisualProfile.COBRA)
+		)
+		if enemy == null:
+			continue
+		_configure_cobra_enemy(enemy, false)
+		_apply_local_bounds_to_enemy(
+			enemy,
+			room_two_bounds.position.x,
+			room_two_bounds.end.x,
+			room_two_bounds.position.y,
+			room_two_bounds.end.y
+		)
+		alive_regular_enemies += 1
+
+
+func _clear_two_room_room_enemies() -> void:
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy):
+			continue
+		enemy.dead = true
+		enemy.queue_free()
+	alive_regular_enemies = 0
+
+
 func _spawn_ground_boss_encounter(visual_profile: int) -> EnemyBase:
 	var min_x := minf(arena_min_x, arena_max_x)
 	var max_x := maxf(arena_min_x, arena_max_x)
@@ -353,7 +644,6 @@ func _spawn_ground_boss_encounter(visual_profile: int) -> EnemyBase:
 	var enemy := _spawn_enemy(MELEE_ENEMY_SCENE, spawn_position, visual_profile)
 	if enemy == null:
 		return null
-	_configure_miniboss(enemy)
 	alive_regular_enemies = 1
 	return enemy
 
@@ -616,12 +906,38 @@ func _has_any_alive_enemy() -> bool:
 
 
 func _apply_bounds_to_player(target_player: Player) -> void:
+	_apply_local_bounds_to_player(
+		target_player,
+		arena_min_x,
+		arena_max_x,
+		arena_min_y,
+		arena_max_y,
+		true
+	)
+
+
+func _apply_local_bounds_to_player(
+	target_player: Player,
+	min_x: float,
+	max_x: float,
+	min_y: float,
+	max_y: float,
+	configure_camera: bool = false
+) -> void:
 	if target_player == null:
 		return
-	target_player.set_arena_bounds(arena_min_x, arena_max_x, arena_min_y, arena_max_y)
-	target_player.position.x = clampf(target_player.position.x, minf(arena_min_x, arena_max_x), maxf(arena_min_x, arena_max_x))
-	target_player.position.y = clampf(target_player.position.y, minf(arena_min_y, arena_max_y), maxf(arena_min_y, arena_max_y))
-	var global_bounds := _get_global_arena_bounds()
+	var local_min_x := minf(min_x, max_x)
+	var local_max_x := maxf(min_x, max_x)
+	var local_min_y := minf(min_y, max_y)
+	var local_max_y := maxf(min_y, max_y)
+	target_player.set_arena_bounds(local_min_x, local_max_x, local_min_y, local_max_y)
+	target_player.position.x = clampf(target_player.position.x, local_min_x, local_max_x)
+	target_player.position.y = clampf(target_player.position.y, local_min_y, local_max_y)
+	if not configure_camera:
+		return
+	var top_left := to_global(Vector2(local_min_x, local_min_y))
+	var bottom_right := to_global(Vector2(local_max_x, local_max_y))
+	var global_bounds := Rect2(top_left, bottom_right - top_left)
 	target_player.configure_camera_limits(
 		global_bounds.position.x - camera_limit_padding.x,
 		global_bounds.position.y - camera_limit_padding.y,
@@ -631,11 +947,31 @@ func _apply_bounds_to_player(target_player: Player) -> void:
 
 
 func _apply_bounds_to_enemy(enemy: EnemyBase) -> void:
+	_apply_local_bounds_to_enemy(
+		enemy,
+		arena_min_x,
+		arena_max_x,
+		arena_min_y,
+		arena_max_y
+	)
+
+
+func _apply_local_bounds_to_enemy(
+	enemy: EnemyBase,
+	min_x: float,
+	max_x: float,
+	min_y: float,
+	max_y: float
+) -> void:
 	if enemy == null:
 		return
-	enemy.set_arena_bounds(arena_min_x, arena_max_x, arena_min_y, arena_max_y)
-	enemy.position.x = clampf(enemy.position.x, minf(arena_min_x, arena_max_x), maxf(arena_min_x, arena_max_x))
-	enemy.position.y = clampf(enemy.position.y, minf(arena_min_y, arena_max_y), maxf(arena_min_y, arena_max_y))
+	var local_min_x := minf(min_x, max_x)
+	var local_max_x := maxf(min_x, max_x)
+	var local_min_y := minf(min_y, max_y)
+	var local_max_y := maxf(min_y, max_y)
+	enemy.set_arena_bounds(local_min_x, local_max_x, local_min_y, local_max_y)
+	enemy.position.x = clampf(enemy.position.x, local_min_x, local_max_x)
+	enemy.position.y = clampf(enemy.position.y, local_min_y, local_max_y)
 
 
 func _get_global_arena_bounds() -> Rect2:
@@ -655,6 +991,16 @@ func _on_enemy_died(enemy: EnemyBase) -> void:
 	_try_spawn_item_drop(enemy)
 
 	alive_regular_enemies = max(0, alive_regular_enemies - 1)
+	if selected_encounter == EncounterType.COBRA_TWO_ROOM_TEST:
+		if two_room_test_room_index == 1:
+			_update_objective()
+			return
+		if two_room_test_room_index == 2 and alive_regular_enemies <= 0:
+			objective_changed.emit("Objective: Victory")
+			demo_won.emit()
+			return
+		_update_objective()
+		return
 	if alive_regular_enemies == 0:
 		objective_changed.emit("Objective: Victory")
 		demo_won.emit()
@@ -663,12 +1009,27 @@ func _on_enemy_died(enemy: EnemyBase) -> void:
 
 
 func _try_spawn_item_drop(enemy: EnemyBase) -> void:
+	if selected_encounter == EncounterType.COBRA_TWO_ROOM_TEST:
+		var loot_item_id := _select_two_room_loot_pickup_id()
+		if loot_item_id.is_empty():
+			return
+		_spawn_item_pickup(enemy, loot_item_id)
+		two_room_loot_drop_count += 1
+		return
 	if enemy.drop_table.is_empty():
 		return
 	if rng.randf() > enemy.drop_chance:
 		return
 
 	var item_id: String = enemy.drop_table[rng.randi_range(0, enemy.drop_table.size() - 1)]
+	_spawn_item_pickup(enemy, item_id)
+
+
+func _spawn_item_pickup(enemy: EnemyBase, item_id: String) -> void:
+	if enemy == null or not is_instance_valid(enemy):
+		return
+	if item_id.is_empty():
+		return
 	var pickup := ITEM_SCENE.instantiate() as ItemPickup
 	if pickup == null:
 		return
@@ -680,9 +1041,46 @@ func _try_spawn_item_drop(enemy: EnemyBase) -> void:
 	pickup.set_item(item_id, 1)
 
 
+func _select_two_room_loot_pickup_id() -> String:
+	if two_room_loot_drop_count <= 0:
+		return "shield_revenge"
+
+	var candidates: Array[String] = []
+	if is_instance_valid(player) and player.has_method("get_missing_sword_ids"):
+		var missing_variants: Array = player.call("get_missing_sword_ids")
+		for sword_variant in missing_variants:
+			var sword_id := String(sword_variant)
+			var pickup_id := String(TWO_ROOM_SWORD_PICKUP_BY_SWORD_ID.get(sword_id, ""))
+			if pickup_id.is_empty():
+				continue
+			candidates.append(pickup_id)
+	if candidates.is_empty():
+		candidates.assign(TWO_ROOM_SWORD_PICKUP_IDS)
+	if candidates.is_empty():
+		return ""
+	return candidates[rng.randi_range(0, candidates.size() - 1)]
+
+
 func _update_objective() -> void:
 	if not demo_started:
 		objective_changed.emit("Objective: Prepare for combat")
+		return
+	if selected_encounter == EncounterType.COBRA_TWO_ROOM_TEST:
+		if two_room_test_room_index <= 0:
+			objective_changed.emit("Objective: Enter the two-room test")
+			return
+		if two_room_test_room_index == 1:
+			if alive_regular_enemies > 0:
+				objective_changed.emit("Objective: Room 1 - Defeat the Cobra")
+			elif two_room_test_transition_in_progress:
+				objective_changed.emit("Objective: Transitioning to room 2...")
+			else:
+				objective_changed.emit("Objective: Proceed through the door")
+			return
+		if alive_regular_enemies > 0:
+			objective_changed.emit("Objective: Room 2 - Defeat cobras (%d remaining)" % alive_regular_enemies)
+		else:
+			objective_changed.emit("Objective: Victory")
 		return
 	if alive_regular_enemies <= 0:
 		objective_changed.emit("Objective: Victory")

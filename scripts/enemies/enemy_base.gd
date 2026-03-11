@@ -72,7 +72,10 @@ const THREAT_EPSILON: float = 0.001
 @export var cobra_tongue_telegraph_width: float = 6.0
 @export var cobra_tongue_telegraph_color: Color = Color(1.0, 0.18, 0.34, 0.9)
 @export var cobra_tongue_telegraph_cone_degrees: float = 38.0
-@export var cobra_tongue_telegraph_fill_alpha: float = 0.22
+@export var cobra_tongue_telegraph_fill_alpha: float = 0.55
+@export var cobra_tongue_telegraph_outline_alpha: float = 0.32
+@export var cobra_tongue_telegraph_fill_start_alpha: float = 0.24
+@export var cobra_tongue_telegraph_fill_peak_alpha: float = 0.82
 @export var cobra_tongue_telegraph_start_offset: float = 30.0
 @export var cobra_tongue_impact_fill_alpha: float = 0.56
 @export var cobra_tongue_impact_fill_duration: float = 0.2
@@ -100,6 +103,7 @@ const THREAT_EPSILON: float = 0.001
 @export var cobra_attack_recovery_on_hit: float = 0.24
 @export var cobra_attack_recovery_on_miss: float = 0.72
 @export var cobra_attack_recovery_on_block: float = 0.9
+@export var cobra_blocked_damage_multiplier: float = 0.0
 @export var cobra_max_range_bait_bonus_recovery: float = 0.2
 @export var cobra_punish_damage_taken_multiplier: float = 1.75
 @export var cobra_block_punish_damage_multiplier: float = 1.35
@@ -554,6 +558,7 @@ var cobra_punish_damage_multiplier_active: float = 1.0
 var cobra_recoil_pose_left: float = 0.0
 var cobra_pending_attack_mode: CobraAttackMode = CobraAttackMode.NONE
 var cobra_last_heavy_start_distance: float = 0.0
+var cobra_aggroed: bool = false
 var pending_attack: bool = false
 var player: Node = null
 var dead: bool = false
@@ -826,6 +831,7 @@ func _ready() -> void:
 	cobra_recoil_pose_left = 0.0
 	cobra_pending_attack_mode = CobraAttackMode.NONE
 	cobra_last_heavy_start_distance = 0.0
+	cobra_aggroed = false
 	player_weapon_debuff_debug_logging = player_weapon_debuff_debug_logging or _is_env_flag_enabled("SWORD_DEBUG")
 	_reset_periodic_hurt_anim_cooldown()
 	_set_boss_loop_state(BossLoopState.IDLE, 0.0)
@@ -3660,6 +3666,20 @@ func _get_spaced_approach_direction(raw_to_target: Vector2) -> Vector2:
 func _tick_cobra_duel_loop(distance_to_player: float, to_player: Vector2) -> void:
 	# Grunt duel loop: hold a readable threat range, commit one strike, then reset spacing.
 	# Cobra duels read better with direct movement, not anti-clump slot steering.
+	if not cobra_aggroed:
+		var aggro_trigger_distance := maxf(
+			24.0,
+			maxf(
+				cobra_attack_max_range * 1.3,
+				cobra_preferred_range + cobra_preferred_range_tolerance
+			)
+		)
+		aggro_trigger_distance *= 4.0
+		if distance_to_player > aggro_trigger_distance:
+			velocity = Vector2.ZERO
+			return
+		cobra_aggroed = true
+
 	var approach_direction := to_player.normalized()
 	if approach_direction.length_squared() <= 0.0001:
 		approach_direction = external_sprite_facing_direction
@@ -3672,6 +3692,7 @@ func _tick_cobra_duel_loop(distance_to_player: float, to_player: Vector2) -> voi
 	var stalk_threshold := desired_range + range_tolerance
 	var attack_min := maxf(12.0, minf(cobra_attack_min_range, desired_range - (range_tolerance * 0.45)))
 	var attack_max := maxf(attack_min + 6.0, maxf(cobra_attack_max_range, desired_range + (range_tolerance * 0.35)))
+	var inside_attack_envelope := distance_to_player <= (attack_max + THREAT_EPSILON)
 	var close_attack_ready := attack_cooldown_left <= THREAT_EPSILON and cobra_spacing_pause_left <= THREAT_EPSILON and distance_to_player <= close_trigger
 
 	if close_attack_ready:
@@ -3682,7 +3703,7 @@ func _tick_cobra_duel_loop(distance_to_player: float, to_player: Vector2) -> voi
 		velocity = approach_direction * move_speed * maxf(0.05, cobra_approach_speed_scale)
 	elif distance_to_player > stalk_threshold:
 		velocity = approach_direction * move_speed * maxf(0.05, cobra_stalk_speed_scale)
-	elif distance_to_player < retreat_threshold:
+	elif distance_to_player < retreat_threshold and not inside_attack_envelope:
 		velocity = -approach_direction * move_speed * maxf(0.05, cobra_retreat_speed_scale)
 	else:
 		velocity = Vector2.ZERO
@@ -3745,6 +3766,8 @@ func _apply_soft_enemy_separation(delta: float) -> void:
 	soft_separation_last_push = Vector2.ZERO
 	soft_separation_last_push_magnitude = 0.0
 	if not soft_collision_enabled:
+		return
+	if _is_cobra_visual_profile() and not cobra_aggroed:
 		return
 	if dead or delta <= 0.0:
 		return
@@ -4616,6 +4639,8 @@ func _attempt_friendly_hit(target: Node2D, damage: float, guard_break: bool = fa
 		return false
 	var was_blocked := _is_target_blocking_attack(target)
 	var adjusted_damage := damage * _get_protective_shield_damage_multiplier(target)
+	if was_blocked and not guard_break and _is_cobra_visual_profile():
+		adjusted_damage *= clampf(cobra_blocked_damage_multiplier, 0.0, 1.0)
 	var landed := bool(target.call("receive_hit", adjusted_damage, global_position, guard_break, stun_duration, knockback_scale))
 	if landed:
 		_spawn_hit_effect(target.global_position + Vector2(0.0, -14.0), Color(1.0, 0.44, 0.3, 0.95), 10.0)
@@ -5759,7 +5784,6 @@ func _update_attack_telegraph(to_player: Vector2) -> void:
 		var close_mode := cobra_pending_attack_mode == CobraAttackMode.CLOSE
 		var safe_windup_cobra := maxf(0.01, cobra_close_attack_windup if close_mode else cobra_heavy_attack_windup)
 		var progress_cobra := clampf(1.0 - (attack_windup_left / safe_windup_cobra), 0.0, 1.0)
-		var pulse := 0.5 + (sin(Time.get_ticks_msec() * 0.02) * 0.5)
 		var tongue_reach := maxf(14.0, cobra_close_attack_reach) if close_mode else _get_cobra_tongue_reach()
 		var telegraph_start_offset := _get_cobra_tongue_telegraph_start_offset()
 		var telegraph_width := maxf(2.0, cobra_tongue_telegraph_width * (0.7 if close_mode else 1.0))
@@ -5767,21 +5791,35 @@ func _update_attack_telegraph(to_player: Vector2) -> void:
 		var half_cone_radians := deg_to_rad(full_cone_degrees * 0.5)
 		var cone_origin := Vector2(telegraph_start_offset, 0.0)
 		var cone_length := maxf(10.0, tongue_reach - telegraph_start_offset)
-		var cone_tip := cone_origin + Vector2(cone_length, 0.0)
-		var left_tip := cone_origin + Vector2(cone_length, 0.0).rotated(-half_cone_radians)
-		var right_tip := cone_origin + Vector2(cone_length, 0.0).rotated(half_cone_radians)
+		var full_tip_offset := Vector2(cone_length, 0.0)
+		var cone_tip := cone_origin + full_tip_offset
+		var left_tip := cone_origin + full_tip_offset.rotated(-half_cone_radians)
+		var right_tip := cone_origin + full_tip_offset.rotated(half_cone_radians)
 		attack_telegraph.rotation = aim_direction_cobra.angle()
-		attack_telegraph.width = lerpf(telegraph_width * 0.72, telegraph_width * 1.16, pulse * progress_cobra)
+		attack_telegraph.width = telegraph_width
 		var base_color := Color(1.0, 0.54, 0.28, cobra_tongue_telegraph_color.a) if close_mode else cobra_tongue_telegraph_color
-		var alpha := clampf(lerpf(0.45, base_color.a, progress_cobra), 0.2, 1.0)
-		attack_telegraph.default_color = Color(base_color.r, base_color.g, base_color.b, alpha)
+		var outline_alpha := clampf(cobra_tongue_telegraph_outline_alpha, 0.08, 0.6)
+		attack_telegraph.default_color = Color(base_color.r, base_color.g, base_color.b, outline_alpha)
 		attack_telegraph.points = PackedVector2Array([cone_origin, left_tip, cone_tip, right_tip, cone_origin])
 		if is_instance_valid(cobra_tongue_telegraph_area):
 			cobra_tongue_telegraph_area.visible = true
 			cobra_tongue_telegraph_area.rotation = attack_telegraph.rotation
-			var fill_alpha := clampf(lerpf(cobra_tongue_telegraph_fill_alpha * 0.55, cobra_tongue_telegraph_fill_alpha, progress_cobra), 0.02, 1.0)
-			cobra_tongue_telegraph_area.color = Color(base_color.r, base_color.g, base_color.b, fill_alpha)
-			cobra_tongue_telegraph_area.polygon = PackedVector2Array([cone_origin, left_tip, cone_tip, right_tip])
+			var fill_length := maxf(2.0, cone_length * progress_cobra)
+			var fill_tip_offset := Vector2(fill_length, 0.0)
+			var fill_tip := cone_origin + fill_tip_offset
+			var fill_left_tip := cone_origin + fill_tip_offset.rotated(-half_cone_radians)
+			var fill_right_tip := cone_origin + fill_tip_offset.rotated(half_cone_radians)
+			var fill_start_alpha := clampf(cobra_tongue_telegraph_fill_start_alpha, 0.08, 0.75)
+			var fill_peak_alpha := clampf(maxf(cobra_tongue_telegraph_fill_peak_alpha, cobra_tongue_telegraph_fill_alpha), fill_start_alpha + 0.05, 1.0)
+			var fill_alpha := clampf(lerpf(fill_start_alpha, fill_peak_alpha, progress_cobra), fill_start_alpha, fill_peak_alpha)
+			var fill_color := Color(
+				minf(1.0, base_color.r + 0.08),
+				minf(1.0, base_color.g + 0.06),
+				minf(1.0, base_color.b + 0.03),
+				fill_alpha
+			)
+			cobra_tongue_telegraph_area.color = fill_color
+			cobra_tongue_telegraph_area.polygon = PackedVector2Array([cone_origin, fill_left_tip, fill_tip, fill_right_tip])
 		return
 
 	attack_telegraph.visible = true

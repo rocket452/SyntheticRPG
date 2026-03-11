@@ -2,6 +2,7 @@ extends CharacterBody2D
 class_name Player
 
 const SWORD_DEFINITIONS := preload("res://scripts/systems/sword_definitions.gd")
+const SHIELD_DEFINITIONS := preload("res://scripts/systems/shield_definitions.gd")
 
 enum QueuedAttack {
 	NONE,
@@ -25,6 +26,7 @@ signal cooldowns_changed(values: Dictionary)
 signal died
 signal item_looted(item_name: String, total_owned: int)
 signal equipped_sword_changed(sword_id: String, sword_name: String)
+signal equipped_shield_changed(shield_id: String, shield_name: String)
 signal combat_status_message(text: String, duration: float)
 
 # Pacing experiment knobs (slow-RPG cadence).
@@ -176,7 +178,21 @@ signal combat_status_message(text: String, duration: float)
 const ITEM_NAMES: Dictionary = {
 	"iron_shard": "Iron Shard",
 	"sturdy_hide": "Sturdy Hide",
-	"swift_boots": "Swift Boots"
+	"swift_boots": "Swift Boots",
+	"sword_extended_charge": "Extended Charge Sword",
+	"sword_slowing": "Slowing Sword",
+	"sword_stacking_dot": "Stacking DoT Sword",
+	"shield_revenge": "Revenge Shield"
+}
+
+const SWORD_PICKUP_TO_SWORD_ID: Dictionary = {
+	"sword_extended_charge": SWORD_DEFINITIONS.EXTENDED_CHARGE_SWORD,
+	"sword_slowing": SWORD_DEFINITIONS.SLOWING_SWORD,
+	"sword_stacking_dot": SWORD_DEFINITIONS.STACKING_DOT_SWORD
+}
+
+const SHIELD_PICKUP_TO_SHIELD_ID: Dictionary = {
+	"shield_revenge": SHIELD_DEFINITIONS.REVENGE_SHIELD
 }
 
 const PLAYER_HD_HFRAMES: int = 8
@@ -270,6 +286,9 @@ var inventory: Dictionary = {}
 var available_sword_ids: Array[String] = []
 var equipped_sword_id: String = ""
 var equipped_sword_definition: Dictionary = {}
+var available_shield_ids: Array[String] = []
+var equipped_shield_id: String = ""
+var equipped_shield_definition: Dictionary = {}
 var gameplay_input_blocked: bool = false
 var last_charge_attack_raw_ratio: float = 0.0
 
@@ -483,10 +502,17 @@ func _ready() -> void:
 	equipped_sword_id = String(SWORD_DEFINITIONS.DEFAULT_SWORD_ID)
 	if available_sword_ids.find(equipped_sword_id) == -1 and not available_sword_ids.is_empty():
 		equipped_sword_id = available_sword_ids[0]
+	available_shield_ids.clear()
+	equipped_shield_id = ""
 	var env_sword_id := OS.get_environment("EQUIPPED_SWORD_ID").strip_edges().to_lower()
 	if not env_sword_id.is_empty() and available_sword_ids.find(env_sword_id) != -1:
 		equipped_sword_id = env_sword_id
+	var env_shield_id := OS.get_environment("EQUIPPED_SHIELD_ID").strip_edges().to_lower()
+	if SHIELD_DEFINITIONS.has_definition(env_shield_id):
+		available_shield_ids.append(env_shield_id)
+		equipped_shield_id = env_shield_id
 	_refresh_equipped_sword_visuals()
+	_refresh_equipped_shield_visuals()
 	camera_base_offset = camera_2d.offset if is_instance_valid(camera_2d) else Vector2.ZERO
 	_configure_autoplay_logging()
 	_set_combat_state(CombatState.IDLE_MOVE)
@@ -546,6 +572,7 @@ func _ready() -> void:
 	_setup_health_bar()
 	_update_health_bar()
 	equipped_sword_changed.emit(equipped_sword_id, get_equipped_sword_name())
+	equipped_shield_changed.emit(equipped_shield_id, get_equipped_shield_name())
 	emit_initial_state()
 
 
@@ -706,6 +733,10 @@ func add_experience(amount: int) -> void:
 
 
 func collect_item(item_id: String, value: int) -> void:
+	if _try_collect_shield_pickup(item_id):
+		return
+	if _try_collect_sword_pickup(item_id):
+		return
 	var total := int(inventory.get(item_id, 0)) + value
 	inventory[item_id] = total
 	_apply_item_bonus(item_id, value)
@@ -720,12 +751,31 @@ func get_available_sword_entries() -> Array[Dictionary]:
 	return entries
 
 
+func get_available_shield_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	for shield_id in available_shield_ids:
+		entries.append(SHIELD_DEFINITIONS.get_definition(shield_id))
+	return entries
+
+
 func get_equipped_sword_id() -> String:
 	return equipped_sword_id
 
 
+func get_equipped_shield_id() -> String:
+	return equipped_shield_id
+
+
 func get_equipped_sword_name() -> String:
+	if equipped_sword_id.is_empty():
+		return "No Sword"
 	return SWORD_DEFINITIONS.get_display_name(equipped_sword_id)
+
+
+func get_equipped_shield_name() -> String:
+	if equipped_shield_id.is_empty():
+		return "No Shield"
+	return SHIELD_DEFINITIONS.get_display_name(equipped_shield_id)
 
 
 func equip_sword(sword_id: String) -> bool:
@@ -741,6 +791,86 @@ func equip_sword(sword_id: String) -> bool:
 	_emit_cooldown_state()
 	_log_sword_effect("EQUIP id=%s name=%s" % [equipped_sword_id, get_equipped_sword_name()])
 	return true
+
+
+func equip_shield(shield_id: String) -> bool:
+	if shield_id.is_empty():
+		return false
+	if available_shield_ids.find(shield_id) == -1:
+		return false
+	if equipped_shield_id == shield_id:
+		return false
+	equipped_shield_id = shield_id
+	_refresh_equipped_shield_visuals()
+	equipped_shield_changed.emit(equipped_shield_id, get_equipped_shield_name())
+	if not _is_counter_strike_unlocked():
+		_expire_counter_strike()
+	_emit_cooldown_state()
+	return true
+
+
+func has_sword_unlocked(sword_id: String) -> bool:
+	if sword_id.is_empty():
+		return false
+	return available_sword_ids.find(sword_id) != -1
+
+
+func has_shield_unlocked(shield_id: String) -> bool:
+	if shield_id.is_empty():
+		return false
+	return available_shield_ids.find(shield_id) != -1
+
+
+func get_missing_sword_ids() -> Array[String]:
+	var missing: Array[String] = []
+	for sword_id in SWORD_DEFINITIONS.get_sword_ids():
+		if available_sword_ids.find(sword_id) == -1:
+			missing.append(sword_id)
+	return missing
+
+
+func get_missing_shield_ids() -> Array[String]:
+	var missing: Array[String] = []
+	for shield_id in SHIELD_DEFINITIONS.get_shield_ids():
+		if available_shield_ids.find(shield_id) == -1:
+			missing.append(shield_id)
+	return missing
+
+
+func reset_sword_inventory_for_encounter() -> void:
+	inventory.clear()
+	available_sword_ids.clear()
+	available_shield_ids.clear()
+	equipped_sword_id = ""
+	equipped_shield_id = ""
+	_refresh_equipped_sword_visuals()
+	_refresh_equipped_shield_visuals()
+	equipped_sword_changed.emit(equipped_sword_id, get_equipped_sword_name())
+	equipped_shield_changed.emit(equipped_shield_id, get_equipped_shield_name())
+	_expire_counter_strike()
+	_emit_cooldown_state()
+
+
+func restore_default_sword_inventory() -> void:
+	var previously_equipped := equipped_sword_id
+	available_sword_ids = SWORD_DEFINITIONS.get_sword_ids()
+	var fallback_default := String(SWORD_DEFINITIONS.DEFAULT_SWORD_ID)
+	if not previously_equipped.is_empty() and available_sword_ids.find(previously_equipped) != -1:
+		equipped_sword_id = previously_equipped
+	elif available_sword_ids.find(fallback_default) != -1:
+		equipped_sword_id = fallback_default
+	elif not available_sword_ids.is_empty():
+		equipped_sword_id = available_sword_ids[0]
+	else:
+		equipped_sword_id = ""
+	available_shield_ids.clear()
+	equipped_shield_id = ""
+	_refresh_equipped_sword_visuals()
+	_refresh_equipped_shield_visuals()
+	equipped_sword_changed.emit(equipped_sword_id, get_equipped_sword_name())
+	equipped_shield_changed.emit(equipped_shield_id, get_equipped_shield_name())
+	_expire_counter_strike()
+	_emit_cooldown_state()
 
 
 func set_gameplay_input_blocked(blocked: bool) -> void:
@@ -980,6 +1110,11 @@ func _on_block_started() -> void:
 
 
 func _unlock_counter_strike() -> void:
+	if not _is_counter_strike_unlocked():
+		counter_strike_available = false
+		counter_strike_window_left = 0.0
+		_emit_cooldown_state()
+		return
 	counter_strike_available = true
 	counter_strike_window_left = maxf(0.0, counter_strike_unlock_duration)
 	_emit_cooldown_state()
@@ -1014,10 +1149,16 @@ func _register_perfect_block(source_position: Vector2) -> void:
 	_start_hitstop(0.05)
 	_start_camera_shake(0.1, 3.2)
 	_spawn_combat_text_popup(get_block_shield_center_global() + Vector2(-8.0, -72.0), "Perfect Block!", Color(0.78, 0.98, 1.0, 1.0), 0.55)
+	if not _is_counter_strike_unlocked():
+		combat_status_message.emit("Perfect Block! Equip a shield to unlock Counter", 1.1)
+		_emit_cooldown_state()
+		return
 	_unlock_counter_strike()
 
 
 func _can_start_counter_strike() -> bool:
+	if not _is_counter_strike_unlocked():
+		return false
 	if gameplay_input_blocked:
 		return false
 	if is_dead or stun_left > 0.0:
@@ -2780,6 +2921,8 @@ func _apply_melee_strike(
 func _apply_equipped_sword_on_basic_hit(enemy: EnemyBase) -> void:
 	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
 		return
+	if equipped_sword_id.is_empty():
+		return
 	var sword_data := equipped_sword_definition if not equipped_sword_definition.is_empty() else SWORD_DEFINITIONS.get_definition(equipped_sword_id)
 	var sword_id := String(sword_data.get("id", ""))
 	_spawn_equipped_sword_impact_fx(enemy.global_position + Vector2(0.0, -12.0))
@@ -2807,7 +2950,70 @@ func _log_sword_effect(message: String) -> void:
 
 
 func _refresh_equipped_sword_visuals() -> void:
+	if equipped_sword_id.is_empty() or available_sword_ids.find(equipped_sword_id) == -1:
+		equipped_sword_definition = {}
+		return
 	equipped_sword_definition = SWORD_DEFINITIONS.get_definition(equipped_sword_id)
+
+
+func _refresh_equipped_shield_visuals() -> void:
+	if equipped_shield_id.is_empty() or available_shield_ids.find(equipped_shield_id) == -1:
+		equipped_shield_definition = {}
+		return
+	equipped_shield_definition = SHIELD_DEFINITIONS.get_definition(equipped_shield_id)
+
+
+func _try_collect_shield_pickup(item_id: String) -> bool:
+	if not SHIELD_PICKUP_TO_SHIELD_ID.has(item_id):
+		return false
+	var shield_id := String(SHIELD_PICKUP_TO_SHIELD_ID[item_id])
+	if shield_id.is_empty():
+		return true
+	if available_shield_ids.find(shield_id) == -1:
+		available_shield_ids.append(shield_id)
+		available_shield_ids.sort()
+		var auto_equip := equipped_shield_id.is_empty()
+		if auto_equip:
+			equipped_shield_id = shield_id
+		_refresh_equipped_shield_visuals()
+		equipped_shield_changed.emit(equipped_shield_id, get_equipped_shield_name())
+		var shield_name := SHIELD_DEFINITIONS.get_display_name(shield_id)
+		item_looted.emit(shield_name, available_shield_ids.size())
+		if auto_equip:
+			combat_status_message.emit("%s equipped - Counter unlocked" % shield_name, 1.1)
+	else:
+		item_looted.emit(String(ITEM_NAMES.get(item_id, item_id)), available_shield_ids.size())
+	_emit_cooldown_state()
+	return true
+
+
+func _try_collect_sword_pickup(item_id: String) -> bool:
+	if not SWORD_PICKUP_TO_SWORD_ID.has(item_id):
+		return false
+	var sword_id := String(SWORD_PICKUP_TO_SWORD_ID[item_id])
+	if sword_id.is_empty():
+		return true
+	if available_sword_ids.find(sword_id) == -1:
+		available_sword_ids.append(sword_id)
+		available_sword_ids.sort()
+		var auto_equip := equipped_sword_id.is_empty()
+		if auto_equip:
+			equipped_sword_id = sword_id
+		_refresh_equipped_sword_visuals()
+		equipped_sword_changed.emit(equipped_sword_id, get_equipped_sword_name())
+		_emit_cooldown_state()
+		var sword_name := SWORD_DEFINITIONS.get_display_name(sword_id)
+		item_looted.emit(sword_name, available_sword_ids.size())
+		_log_sword_effect("UNLOCK id=%s name=%s owned=%d" % [sword_id, sword_name, available_sword_ids.size()])
+		if auto_equip:
+			combat_status_message.emit("%s equipped" % sword_name, 1.0)
+	else:
+		item_looted.emit(String(ITEM_NAMES.get(item_id, item_id)), available_sword_ids.size())
+	return true
+
+
+func _is_counter_strike_unlocked() -> bool:
+	return bool(equipped_shield_definition.get("unlocks_counter_strike", false))
 
 
 func _is_extended_charge_sword_equipped() -> bool:
@@ -3507,6 +3713,7 @@ func _emit_cooldown_state() -> void:
 		"ability_2": ability_2_cooldown_left,
 		"roll": roll_cooldown_left,
 		"block_active": is_blocking,
+		"counter_unlocked": _is_counter_strike_unlocked(),
 		"counter_ready": counter_strike_available,
 		"counter_window_left": counter_strike_window_left,
 		"harpoon_charging": harpoon_charge_active,
@@ -3514,7 +3721,9 @@ func _emit_cooldown_state() -> void:
 		"charge_ratio": _get_charge_ratio(),
 		"combat_state": combat_state_name,
 		"equipped_sword_id": equipped_sword_id,
-		"equipped_sword_name": get_equipped_sword_name()
+		"equipped_sword_name": get_equipped_sword_name(),
+		"equipped_shield_id": equipped_shield_id,
+		"equipped_shield_name": get_equipped_shield_name()
 	})
 
 
