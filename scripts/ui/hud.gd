@@ -23,12 +23,14 @@ var combat_debug_label: Label = null
 var ability_slot_views: Dictionary = {}
 var ability_slot_ready_flags: Dictionary = {}
 var ready_pulse_time: float = 0.0
+var text_debug_visible: bool = false
 
 
 func _ready() -> void:
 	victory_panel.visible = false
 	status_timer.timeout.connect(_on_status_timeout)
 	status_label.text = ""
+	_apply_status_style(false)
 	combat_debug_label = Label.new()
 	combat_debug_label.name = "CombatDebugLabel"
 	combat_debug_label.position = Vector2(990.0, 20.0)
@@ -40,6 +42,7 @@ func _ready() -> void:
 	combat_debug_label.text = ""
 	add_child(combat_debug_label)
 	_build_ability_bar()
+	set_text_debug_visible(false)
 	set_process(true)
 
 
@@ -88,26 +91,52 @@ func update_cooldowns(values: Dictionary) -> void:
 	var counter_text := "Need Shield"
 	if counter_unlocked:
 		counter_text = "Ready %.1fs" % counter_window_left if counter_ready else "Locked"
-	var ability_2_text := _format_cooldown(float(values.get("ability_2", 0.0)))
+	var ability_2_left := float(values.get("ability_2", 0.0))
+	var ability_2_unlocked := bool(values.get("ability_2_unlocked", true))
+	var ability_2_text := "Locked"
+	if ability_2_unlocked:
+		ability_2_text = _format_cooldown(ability_2_left)
 	var roll_text := _format_cooldown(float(values.get("roll", 0.0)))
 	var blocking_text := " | Blocking" if bool(values.get("block_active", false)) else ""
+	var block_cooldown_left := maxf(0.0, float(values.get("block_cooldown_left", 0.0)))
+	var block_cooldown_text := ""
+	if block_cooldown_left > 0.0:
+		block_cooldown_text = " | BlockCD %.1fs" % block_cooldown_left
+	var fortify_stacks := maxi(0, int(values.get("fortify_stacks", 0)))
+	var fortify_text := ""
+	if fortify_stacks > 0:
+		fortify_text = " | Fortify %d" % fortify_stacks
+	var berserker_active := bool(values.get("berserker_active", false))
+	var berserker_text := " | Berserker!" if berserker_active else ""
 	var sword_id := String(values.get("equipped_sword_id", ""))
 	var sword_name := String(values.get("equipped_sword_name", ""))
 	var sword_suffix := " | Sword: %s" % sword_name if not sword_name.is_empty() else ""
 	var shield_name := String(values.get("equipped_shield_name", ""))
 	var shield_suffix := " | Shield: %s" % shield_name if not shield_name.is_empty() else ""
-	cooldown_label.text = "Swing %s  Hook %s  Counter %s  Dash %s  Roll %s%s%s%s" % [basic_text, ability_1_text, counter_text, ability_2_text, roll_text, blocking_text, sword_suffix, shield_suffix]
+	var ring_name := String(values.get("equipped_ring_name", ""))
+	var ring_suffix := " | Ring: %s" % ring_name if not ring_name.is_empty() else ""
+	if is_instance_valid(cooldown_label):
+		cooldown_label.text = ""
 	_apply_charge_sword_indicator(sword_id)
 	_update_ability_slot("basic", float(values.get("basic", 0.0)), false)
 	_update_harpoon_slot(ability_1_left, harpoon_charging, harpoon_charge_ratio)
 	_update_counter_slot(counter_ready, counter_window_left, counter_unlocked)
-	_update_ability_slot("ability_2", float(values.get("ability_2", 0.0)), false)
+	_update_ability_slot("ability_2", ability_2_left, false, ability_2_unlocked)
 	_update_ability_slot("roll", float(values.get("roll", 0.0)), false)
 	_update_ability_slot("block", 0.0, bool(values.get("block_active", false)))
 
 
 func update_objective(text: String) -> void:
 	objective_label.text = text
+
+
+func set_text_debug_visible(enabled: bool) -> void:
+	text_debug_visible = bool(enabled)
+	_apply_text_visibility()
+
+
+func is_text_debug_visible() -> bool:
+	return text_debug_visible
 
 
 func update_combat_debug(values: Dictionary) -> void:
@@ -157,22 +186,43 @@ func show_item_pickup(item_name: String, total_owned: int) -> void:
 
 
 func show_status_message(text: String, duration: float = 1.6) -> void:
+	_apply_status_style(false)
+	status_label.text = text
+	status_timer.start(maxf(0.1, duration))
+
+
+func show_warning_status_message(text: String, duration: float = 2.0) -> void:
+	_apply_status_style(true)
 	status_label.text = text
 	status_timer.start(maxf(0.1, duration))
 
 
 func show_victory() -> void:
-	victory_panel.visible = true
+	victory_panel.visible = text_debug_visible
 	victory_label.text = "Victory\nMiniboss defeated"
 
 
 func show_defeat() -> void:
-	victory_panel.visible = true
+	victory_panel.visible = text_debug_visible
 	victory_label.text = "Defeat\nYou were slain"
 
 
 func _on_status_timeout() -> void:
 	status_label.text = ""
+	_apply_status_style(false)
+
+
+func _apply_status_style(is_warning: bool) -> void:
+	if is_warning:
+		status_label.add_theme_font_size_override("font_size", 30)
+		status_label.add_theme_color_override("font_color", Color(1.0, 0.96, 0.74, 1.0))
+		status_label.add_theme_color_override("font_outline_color", Color(0.38, 0.04, 0.04, 0.96))
+		status_label.add_theme_constant_override("outline_size", 7)
+		return
+	status_label.add_theme_font_size_override("font_size", 22)
+	status_label.add_theme_color_override("font_color", Color(0.9, 0.95, 1.0, 0.98))
+	status_label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.9))
+	status_label.add_theme_constant_override("outline_size", 4)
 
 
 func _format_cooldown(value: float) -> String:
@@ -348,7 +398,7 @@ func _create_ability_slot(slot_def: Dictionary) -> Dictionary:
 	}
 
 
-func _update_ability_slot(slot_id: String, cooldown_left: float, block_active: bool) -> void:
+func _update_ability_slot(slot_id: String, cooldown_left: float, block_active: bool, unlocked: bool = true) -> void:
 	var slot := ability_slot_views.get(slot_id, {}) as Dictionary
 	if slot.is_empty():
 		return
@@ -362,14 +412,31 @@ func _update_ability_slot(slot_id: String, cooldown_left: float, block_active: b
 	if icon_label == null or key_label == null or cooldown_overlay == null or cooldown_label == null or ready_border == null or root == null:
 		return
 
+	if not unlocked:
+		cooldown_overlay.visible = true
+		cooldown_overlay.color = Color(0.03, 0.04, 0.08, 0.76)
+		cooldown_label.visible = true
+		cooldown_label.text = "LOCK"
+		cooldown_label.modulate = Color(0.7, 0.84, 1.0, 0.96)
+		ready_border.visible = false
+		root.self_modulate = Color(0.7, 0.72, 0.78, 1.0)
+		icon_label.modulate = Color(0.66, 0.76, 0.88, 0.9)
+		key_label.modulate = Color(0.58, 0.66, 0.78, 0.95)
+		ability_slot_ready_flags[slot_id] = false
+		slot["block_active"] = block_active
+		ability_slot_views[slot_id] = slot
+		return
+
 	var ready := true
 	if uses_cooldown:
 		ready = cooldown_left <= 0.05
 
 	if uses_cooldown and not ready:
 		cooldown_overlay.visible = true
+		cooldown_overlay.color = Color(0.02, 0.02, 0.03, 0.64)
 		cooldown_label.visible = true
 		cooldown_label.text = "%.1f" % maxf(0.0, cooldown_left)
+		cooldown_label.modulate = Color(1.0, 0.95, 0.84, 0.98)
 		ready_border.visible = false
 		root.self_modulate = Color(0.74, 0.74, 0.77, 1.0)
 		icon_label.modulate = Color(0.9, 0.91, 0.95, 0.9)
@@ -487,3 +554,23 @@ func _make_slot_stylebox(background: Color, border: Color, border_width: int) ->
 	style.corner_radius_bottom_left = 6
 	style.corner_radius_bottom_right = 6
 	return style
+
+
+func _apply_text_visibility() -> void:
+	var show_non_ability_text := text_debug_visible
+	if is_instance_valid(health_label):
+		health_label.visible = show_non_ability_text
+	if is_instance_valid(xp_label):
+		xp_label.visible = show_non_ability_text
+	if is_instance_valid(cooldown_label):
+		cooldown_label.visible = false
+	if is_instance_valid(items_label):
+		items_label.visible = show_non_ability_text
+	if is_instance_valid(objective_label):
+		objective_label.visible = show_non_ability_text
+	if is_instance_valid(status_label):
+		status_label.visible = show_non_ability_text
+	if is_instance_valid(combat_debug_label):
+		combat_debug_label.visible = show_non_ability_text
+	if not show_non_ability_text:
+		victory_panel.visible = false

@@ -18,6 +18,7 @@ signal player_died
 signal demo_won
 signal combat_debug_changed(values: Dictionary)
 signal status_message(text: String, duration: float)
+signal two_room_chest_item_received(item_id: String)
 
 const PLAYER_SCENE: PackedScene = preload("res://scenes/player/Player.tscn")
 const FRIENDLY_HEALER_SCENE: PackedScene = preload("res://scenes/npcs/FriendlyHealer.tscn")
@@ -40,7 +41,13 @@ const TWO_ROOM_SHIELD_PICKUP_IDS: Array[String] = [
 ]
 const TWO_ROOM_BOOT_PICKUP_IDS: Array[String] = [
 	"swift_boots",
-	"strider_boots"
+	"strider_boots",
+	"bodyguard_boots"
+]
+const TWO_ROOM_RING_PICKUP_IDS: Array[String] = [
+	"ring_bulwark",
+	"ring_berserker",
+	"ring_shield"
 ]
 const TWO_ROOM_SWORD_PICKUP_BY_SWORD_ID: Dictionary = {
 	"extended_charge": "sword_extended_charge",
@@ -51,6 +58,11 @@ const TWO_ROOM_SHIELD_PICKUP_BY_SHIELD_ID: Dictionary = {
 	"revenge_shield": "shield_revenge",
 	"thorns_shield": "shield_thorns",
 	"wide_guard_shield": "shield_wide_guard"
+}
+const TWO_ROOM_RING_PICKUP_BY_RING_ID: Dictionary = {
+	"bulwark": "ring_bulwark",
+	"berserker": "ring_berserker",
+	"shield": "ring_shield"
 }
 const TWO_ROOM_TEST_TOTAL_ROOMS: int = 5
 
@@ -118,10 +130,14 @@ const TWO_ROOM_TEST_TOTAL_ROOMS: int = 5
 @export var two_room_test_cage_width: float = 68.0
 @export var two_room_test_cage_height: float = 78.0
 @export var two_room_test_companion_transition_spacing: float = 40.0
-@export var two_room_test_room4_chest_inset_x: float = 76.0
-@export var two_room_test_room4_chest_y_offset: float = -64.0
+@export var two_room_test_final_chest_offset_x: float = 0.0
+@export var two_room_test_final_chest_offset_y: float = 0.0
 @export var two_room_test_chest_width: float = 56.0
 @export var two_room_test_chest_height: float = 42.0
+@export var two_room_test_return_portal_offset_x: float = 0.0
+@export var two_room_test_return_portal_offset_y: float = 84.0
+@export var two_room_test_return_portal_width: float = 86.0
+@export var two_room_test_return_portal_height: float = 44.0
 
 @onready var actors: Node2D = $Actors
 @onready var drops: Node2D = $Drops
@@ -162,9 +178,11 @@ var two_room_caged_healer: Node2D = null
 var two_room_caged_rat: Node2D = null
 var two_room_chest_root: Node2D = null
 var two_room_chest_area: Area2D = null
+var two_room_return_portal_root: Node2D = null
+var two_room_return_portal_area: Area2D = null
 var two_room_healer_released: bool = false
 var two_room_rat_released: bool = false
-var two_room_room4_chest_opened: bool = false
+var two_room_final_chest_opened: bool = false
 var two_room_loot_drop_count: int = 0
 var default_floor_tileset_texture: Texture2D = null
 
@@ -233,11 +251,12 @@ func start_demo() -> void:
 	two_room_test_transition_in_progress = false
 	two_room_healer_released = false
 	two_room_rat_released = false
-	two_room_room4_chest_opened = false
+	two_room_final_chest_opened = false
 	two_room_loot_drop_count = 0
 	_teardown_two_room_exit()
 	_teardown_two_room_cage()
 	_teardown_two_room_chest()
+	_teardown_two_room_return_portal()
 	_teardown_two_room_second_play_area()
 	_teardown_two_room_third_play_area()
 	_teardown_two_room_fourth_play_area()
@@ -471,11 +490,12 @@ func _spawn_two_room_cobra_test() -> void:
 	two_room_test_transition_in_progress = false
 	two_room_healer_released = false
 	two_room_rat_released = false
-	two_room_room4_chest_opened = false
+	two_room_final_chest_opened = false
 	two_room_loot_drop_count = 0
 	_teardown_two_room_exit()
 	_teardown_two_room_cage()
 	_teardown_two_room_chest()
+	_teardown_two_room_return_portal()
 	_apply_floor_tileset_to_node(floor_root, ARENA_TILESET_TEXTURE)
 
 	var room_one_bounds := _get_two_room_bounds(1)
@@ -928,15 +948,16 @@ func _teardown_two_room_cage() -> void:
 	two_room_caged_rat = null
 
 
-func _spawn_two_room_room4_chest(room_bounds: Rect2) -> void:
-	if two_room_room4_chest_opened:
+func _spawn_two_room_final_reward_chest(room_bounds: Rect2) -> void:
+	if two_room_final_chest_opened:
 		return
 	_teardown_two_room_chest()
+	var center_x := room_bounds.position.x + (room_bounds.size.x * 0.5)
 	var center_y := room_bounds.position.y + (room_bounds.size.y * 0.5)
 	var chest_position := Vector2(
-		room_bounds.end.x - maxf(40.0, two_room_test_room4_chest_inset_x),
+		center_x + two_room_test_final_chest_offset_x,
 		clampf(
-			center_y + two_room_test_room4_chest_y_offset,
+			center_y + two_room_test_final_chest_offset_y,
 			room_bounds.position.y + 14.0,
 			room_bounds.end.y - 14.0
 		)
@@ -1019,6 +1040,94 @@ func _teardown_two_room_chest() -> void:
 		two_room_chest_root.queue_free()
 	two_room_chest_root = null
 	two_room_chest_area = null
+
+
+func _spawn_two_room_return_portal(room_bounds: Rect2) -> void:
+	_teardown_two_room_return_portal()
+	var center_x := room_bounds.position.x + (room_bounds.size.x * 0.5)
+	var center_y := room_bounds.position.y + (room_bounds.size.y * 0.5)
+	var portal_position := Vector2(
+		center_x + two_room_test_return_portal_offset_x,
+		clampf(
+			center_y + two_room_test_return_portal_offset_y,
+			room_bounds.position.y + 18.0,
+			room_bounds.end.y - 18.0
+		)
+	)
+
+	var root := Node2D.new()
+	root.name = "TwoRoomReturnPortal"
+	root.z_index = 10
+	root.position = portal_position
+	add_child(root)
+	two_room_return_portal_root = root
+
+	var area := Area2D.new()
+	area.name = "ReturnPortalTrigger"
+	area.monitoring = true
+	area.monitorable = true
+	area.collision_layer = 0
+	area.collision_mask = 1
+	root.add_child(area)
+	two_room_return_portal_area = area
+
+	var trigger_shape := CollisionShape2D.new()
+	var trigger_rect := RectangleShape2D.new()
+	trigger_rect.size = Vector2(maxf(34.0, two_room_test_return_portal_width), maxf(20.0, two_room_test_return_portal_height))
+	trigger_shape.shape = trigger_rect
+	area.add_child(trigger_shape)
+	area.body_entered.connect(_on_two_room_return_portal_body_entered)
+
+	var half_w := trigger_rect.size.x * 0.5
+	var half_h := trigger_rect.size.y * 0.5
+
+	var fill := Polygon2D.new()
+	fill.color = Color(0.26, 0.54, 1.0, 0.28)
+	fill.polygon = PackedVector2Array([
+		Vector2(-half_w, -half_h),
+		Vector2(half_w, -half_h),
+		Vector2(half_w, half_h),
+		Vector2(-half_w, half_h)
+	])
+	root.add_child(fill)
+
+	var border := Line2D.new()
+	border.default_color = Color(0.52, 0.9, 1.0, 0.9)
+	border.width = 2.0
+	border.closed = true
+	border.points = PackedVector2Array([
+		Vector2(-half_w, -half_h),
+		Vector2(half_w, -half_h),
+		Vector2(half_w, half_h),
+		Vector2(-half_w, half_h)
+	])
+	root.add_child(border)
+
+	var arrow := Line2D.new()
+	arrow.default_color = Color(0.78, 0.96, 1.0, 0.95)
+	arrow.width = 2.2
+	var arrow_len := maxf(10.0, half_w * 0.38)
+	arrow.points = PackedVector2Array([
+		Vector2(arrow_len, -7.0),
+		Vector2(-arrow_len, 0.0),
+		Vector2(arrow_len, 7.0)
+	])
+	root.add_child(arrow)
+
+	var label := Label.new()
+	label.text = "Portal: Return to Room 1"
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.size = Vector2(220.0, 24.0)
+	label.position = Vector2(-110.0, -half_h - 28.0)
+	label.modulate = Color(0.84, 0.96, 1.0, 0.96)
+	root.add_child(label)
+
+
+func _teardown_two_room_return_portal() -> void:
+	if is_instance_valid(two_room_return_portal_root):
+		two_room_return_portal_root.queue_free()
+	two_room_return_portal_root = null
+	two_room_return_portal_area = null
 
 
 func _on_two_room_cage_body_entered(body: Node) -> void:
@@ -1117,9 +1226,9 @@ func _try_auto_release_two_room_cage_if_ready() -> void:
 func _on_two_room_chest_body_entered(body: Node) -> void:
 	if not two_room_test_active:
 		return
-	if two_room_test_room_index != 4:
+	if two_room_test_room_index != 5:
 		return
-	if two_room_room4_chest_opened:
+	if two_room_final_chest_opened:
 		return
 	if body == null or not is_instance_valid(player) or body != player:
 		return
@@ -1127,15 +1236,28 @@ func _on_two_room_chest_body_entered(body: Node) -> void:
 		status_message.emit("Treasure chest locked - defeat enemies first (%d remaining)." % maxi(1, alive_regular_enemies), 1.1)
 		_update_objective()
 		return
-	_open_two_room_room4_chest()
+	_open_two_room_final_reward_chest()
+
+
+func _on_two_room_return_portal_body_entered(body: Node) -> void:
+	if not two_room_test_active:
+		return
+	if two_room_test_room_index != TWO_ROOM_TEST_TOTAL_ROOMS:
+		return
+	if two_room_test_transition_in_progress:
+		return
+	if body == null or not is_instance_valid(player) or body != player:
+		return
+	status_message.emit("Portal activated - returning to Room 1", 1.0)
+	_transition_two_room_to_room(1)
 
 
 func _is_two_room_chest_locked() -> bool:
 	if not two_room_test_active:
 		return false
-	if two_room_test_room_index != 4:
+	if two_room_test_room_index != 5:
 		return false
-	if two_room_room4_chest_opened:
+	if two_room_final_chest_opened:
 		return false
 	return alive_regular_enemies > 0
 
@@ -1153,18 +1275,26 @@ func _try_auto_open_two_room_chest_if_ready() -> void:
 			return
 
 
-func _open_two_room_room4_chest() -> void:
-	if two_room_room4_chest_opened:
+func _open_two_room_final_reward_chest() -> void:
+	if two_room_final_chest_opened:
 		return
-	two_room_room4_chest_opened = true
+	two_room_final_chest_opened = true
 	var chest_world_position := Vector2.ZERO
 	if is_instance_valid(two_room_chest_root):
 		chest_world_position = two_room_chest_root.global_position
 	_teardown_two_room_chest()
 	var item_id := _select_two_room_chest_pickup_id()
 	if not item_id.is_empty():
-		_spawn_item_pickup_at_world_position(chest_world_position, item_id)
+		var granted_directly := false
+		if is_instance_valid(player) and player.has_method("collect_item"):
+			player.call("collect_item", item_id, 1)
+			granted_directly = true
+			two_room_chest_item_received.emit(item_id)
+		if not granted_directly:
+			_spawn_item_pickup_at_world_position(chest_world_position, item_id)
 	status_message.emit("Treasure chest opened!", 1.0)
+	if two_room_test_active and two_room_test_room_index >= TWO_ROOM_TEST_TOTAL_ROOMS and alive_regular_enemies <= 0:
+		demo_won.emit()
 	_update_objective()
 
 
@@ -1190,10 +1320,14 @@ func _transition_two_room_to_room(target_room_index: int) -> void:
 	if local_target_room_index == two_room_test_room_index:
 		return
 	var previous_room_index := two_room_test_room_index
+	# Starting a new loop from room 1 should allow the final-room chest to spawn again.
+	if local_target_room_index == 1 and previous_room_index != 1:
+		two_room_final_chest_opened = false
 	two_room_test_transition_in_progress = true
 	_teardown_two_room_exit()
 	_teardown_two_room_cage()
 	_teardown_two_room_chest()
+	_teardown_two_room_return_portal()
 	_clear_two_room_room_enemies()
 	status_message.emit("Door crossed - entering Room %d" % local_target_room_index, 0.8)
 
@@ -1246,8 +1380,6 @@ func _spawn_two_room_room_content(room_index: int, room_bounds: Rect2) -> void:
 				_spawn_two_room_rat_cage(room_bounds)
 		4:
 			_spawn_two_room_fourth_room_minotaurs(room_bounds)
-			if not two_room_room4_chest_opened:
-				_spawn_two_room_room4_chest(room_bounds)
 		5:
 			_spawn_two_room_fifth_room_cacodemon(room_bounds)
 		_:
@@ -1767,6 +1899,7 @@ func _apply_local_bounds_to_player(
 		global_bounds.end.x + camera_limit_padding.x,
 		global_bounds.end.y + camera_limit_padding.y
 	)
+	target_player.apply_encounter_start_camera_focus(global_bounds)
 
 
 func _apply_bounds_to_enemy(enemy: EnemyBase) -> void:
@@ -1811,16 +1944,24 @@ func _on_enemy_died(enemy: EnemyBase) -> void:
 	if is_instance_valid(player):
 		player.add_experience(enemy.xp_reward)
 
-	_try_spawn_item_drop(enemy)
+	_award_enemy_gold_drop(enemy)
 
 	alive_regular_enemies = max(0, alive_regular_enemies - 1)
 	if selected_encounter == EncounterType.COBRA_TWO_ROOM_TEST:
 		if two_room_test_room_index >= 1:
 			var room_bounds := _get_two_room_bounds(two_room_test_room_index)
 			_refresh_two_room_exits_for_room(two_room_test_room_index, room_bounds)
-			if alive_regular_enemies <= 0 and two_room_test_room_index >= TWO_ROOM_TEST_TOTAL_ROOMS:
-				demo_won.emit()
 			if alive_regular_enemies <= 0:
+				if two_room_test_room_index >= TWO_ROOM_TEST_TOTAL_ROOMS:
+					var spawned_final_rewards := false
+					if not two_room_final_chest_opened and not is_instance_valid(two_room_chest_root):
+						_spawn_two_room_final_reward_chest(room_bounds)
+						spawned_final_rewards = true
+					if not is_instance_valid(two_room_return_portal_root):
+						_spawn_two_room_return_portal(room_bounds)
+						spawned_final_rewards = true
+					if spawned_final_rewards:
+						status_message.emit("Cacodemon defeated - treasure chest and return portal appeared!", 1.25)
 				call_deferred("_try_auto_release_two_room_cage_if_ready")
 				call_deferred("_try_auto_open_two_room_chest_if_ready")
 		_update_objective()
@@ -1830,6 +1971,38 @@ func _on_enemy_died(enemy: EnemyBase) -> void:
 		demo_won.emit()
 		return
 	_update_objective()
+
+
+func _award_enemy_gold_drop(enemy: EnemyBase) -> void:
+	if enemy == null or not is_instance_valid(enemy):
+		return
+	if not is_instance_valid(player) or not player.has_method("add_gold"):
+		return
+	var gold_amount := _get_enemy_gold_drop_amount(enemy)
+	if gold_amount <= 0:
+		return
+	player.call("add_gold", gold_amount)
+	status_message.emit("+%d Gold" % gold_amount, 0.55)
+
+
+func _get_enemy_gold_drop_amount(enemy: EnemyBase) -> int:
+	if enemy == null:
+		return 0
+	match enemy.monster_visual_profile:
+		EnemyBase.MonsterVisualProfile.CACODEMON:
+			return rng.randi_range(9, 12)
+		EnemyBase.MonsterVisualProfile.MINOTAUR:
+			return rng.randi_range(6, 8)
+		EnemyBase.MonsterVisualProfile.COBRA:
+			return rng.randi_range(3, 4)
+		EnemyBase.MonsterVisualProfile.SHARDSOUL:
+			return rng.randi_range(8, 11)
+		EnemyBase.MonsterVisualProfile.IMP:
+			return rng.randi_range(1, 2)
+		EnemyBase.MonsterVisualProfile.FIRE_ELEMENTAL:
+			return rng.randi_range(2, 3)
+		_:
+			return rng.randi_range(1, 2)
 
 
 func _try_spawn_item_drop(enemy: EnemyBase) -> void:
@@ -1877,23 +2050,22 @@ func _select_two_room_chest_pickup_id() -> String:
 	var pool := _get_two_room_chest_pickup_pool()
 	if pool.is_empty():
 		return ""
-	if is_instance_valid(player) and player.has_method("has_inventory_item"):
+	if is_instance_valid(player) and player.has_method("get_missing_ring_ids"):
 		var missing_pool: Array[String] = []
-		for pickup_id in pool:
-			var has_pickup := bool(player.call("has_inventory_item", pickup_id))
-			if not has_pickup:
-				missing_pool.append(pickup_id)
+		var missing_ring_ids: Array = player.call("get_missing_ring_ids")
+		for ring_id_variant in missing_ring_ids:
+			var ring_id := String(ring_id_variant)
+			var pickup_id := String(TWO_ROOM_RING_PICKUP_BY_RING_ID.get(ring_id, ""))
+			if pickup_id.is_empty():
+				continue
+			missing_pool.append(pickup_id)
 		if not missing_pool.is_empty():
 			return missing_pool[rng.randi_range(0, missing_pool.size() - 1)]
 	return pool[rng.randi_range(0, pool.size() - 1)]
 
 
 func _get_two_room_chest_pickup_pool() -> Array[String]:
-	var pool: Array[String] = []
-	pool.append_array(TWO_ROOM_BOOT_PICKUP_IDS)
-	pool.append_array(TWO_ROOM_SHIELD_PICKUP_IDS)
-	pool.append_array(TWO_ROOM_SWORD_PICKUP_IDS)
-	return pool
+	return TWO_ROOM_RING_PICKUP_IDS.duplicate()
 
 
 func _select_two_room_loot_pickup_id() -> String:
@@ -1980,23 +2152,19 @@ func _update_objective() -> void:
 			return
 		if two_room_test_room_index == 4:
 			if alive_regular_enemies > 0:
-				if two_room_room4_chest_opened:
-					objective_changed.emit("Objective: Room 4 - Defeat Minotaurs (%d remaining)" % alive_regular_enemies)
-				else:
-					objective_changed.emit("Objective: Room 4 - Defeat Minotaurs to unlock chest (%d remaining)" % alive_regular_enemies)
+				objective_changed.emit("Objective: Room 4 - Defeat Minotaurs (%d remaining)" % alive_regular_enemies)
 			elif two_room_test_transition_in_progress:
 				objective_changed.emit("Objective: Transitioning to room 5...")
 			else:
-				if two_room_room4_chest_opened:
-					objective_changed.emit("Objective: Room 4 clear - Proceed through the door")
-				else:
-					objective_changed.emit("Objective: Room 4 clear - Open the treasure chest")
+				objective_changed.emit("Objective: Room 4 clear - Proceed through the door")
 			return
 		if two_room_test_room_index == 5:
 			if alive_regular_enemies > 0:
 				objective_changed.emit("Objective: Room 5 - Defeat the Cacodemon")
-			else:
+			elif two_room_final_chest_opened:
 				objective_changed.emit("Objective: Room 5 clear - Victory")
+			else:
+				objective_changed.emit("Objective: Room 5 clear - Open the treasure chest")
 			return
 		if alive_regular_enemies > 0:
 			objective_changed.emit("Objective: Defeat enemies (%d remaining)" % alive_regular_enemies)

@@ -3,6 +3,7 @@ class_name Player
 
 const SWORD_DEFINITIONS := preload("res://scripts/systems/sword_definitions.gd")
 const SHIELD_DEFINITIONS := preload("res://scripts/systems/shield_definitions.gd")
+const RING_DEFINITIONS := preload("res://scripts/systems/ring_definitions.gd")
 
 enum QueuedAttack {
 	NONE,
@@ -27,6 +28,7 @@ signal died
 signal item_looted(item_name: String, total_owned: int)
 signal equipped_sword_changed(sword_id: String, sword_name: String)
 signal equipped_shield_changed(shield_id: String, shield_name: String)
+signal equipped_ring_changed(ring_id: String, ring_name: String)
 signal combat_status_message(text: String, duration: float)
 
 # Pacing experiment knobs (slow-RPG cadence).
@@ -133,6 +135,20 @@ signal combat_status_message(text: String, duration: float)
 @export var block_shield_line_width: float = 6.0
 @export var block_shield_pulse_speed: float = 7.5
 @export var block_shield_segments: int = 28
+@export var bulwark_fortify_stationary_time: float = 0.75
+@export var bulwark_fortify_stack_interval: float = 0.75
+@export var bulwark_fortify_max_stacks: int = 5
+@export_range(0.0, 1.0, 0.01) var bulwark_fortify_damage_reduction_per_stack: float = 0.1
+@export_range(0.1, 1.0, 0.05) var bulwark_move_speed_multiplier: float = 0.85
+@export_range(0.1, 1.0, 0.01) var berserker_health_threshold_ratio: float = 0.35
+@export_range(0.1, 1.0, 0.05) var berserker_attack_speed_multiplier: float = 0.75
+@export_range(1.0, 4.0, 0.05) var berserker_attack_damage_multiplier: float = 1.35
+@export_range(1.0, 4.0, 0.05) var berserker_counter_damage_multiplier: float = 1.75
+@export var ring_shield_block_duration: float = 0.4
+@export var ring_shield_block_cooldown: float = 2.5
+@export var ring_shield_successful_block_cooldown_reduction: float = 0.3
+@export var ring_shield_perfect_block_bonus_cooldown_reduction: float = 0.2
+@export var ring_shield_max_total_cooldown_reduction: float = 1.4
 
 @export var min_charge_time: float = 0.15
 @export var max_charge_time: float = 1.0
@@ -160,6 +176,12 @@ signal combat_status_message(text: String, duration: float)
 @export var impact_hitstop_multiplier: float = 1.22
 @export var impact_camera_shake_multiplier: float = 1.18
 @export var impact_vfx_scale_multiplier: float = 1.15
+@export var camera_move_lookahead_distance: Vector2 = Vector2(8.0, 6.0)
+@export var camera_move_lookahead_smooth_speed: float = 5.0
+@export_range(0.0, 1.0, 0.01) var camera_start_focus_strength: float = 0.0
+@export var camera_start_focus_max_offset: Vector2 = Vector2(120.0, 32.0)
+@export var camera_start_focus_hold_duration: float = 0.45
+@export var camera_start_focus_release_speed: float = 4.6
 @export var damage_popup_enabled: bool = true
 @export var damage_popup_duration: float = 0.42
 @export var damage_popup_rise_distance: float = 26.0
@@ -182,6 +204,10 @@ const ITEM_NAMES: Dictionary = {
 	"sturdy_hide": "Sturdy Hide",
 	"swift_boots": "Swift Boots",
 	"strider_boots": "Strider Boots",
+	"bodyguard_boots": "Bodyguard Boots",
+	"ring_bulwark": "Ring of the Bulwark",
+	"ring_berserker": "Ring of the Berserker",
+	"ring_shield": "Ring of the Shield",
 	"sword_extended_charge": "Extended Charge Sword",
 	"sword_slowing": "Slowing Sword",
 	"sword_stacking_dot": "Stacking DoT Sword",
@@ -191,6 +217,32 @@ const ITEM_NAMES: Dictionary = {
 }
 const ROLL_COOLDOWN_BOOT_ITEM_ID: String = "swift_boots"
 const MOVE_SPEED_BOOT_ITEM_ID: String = "strider_boots"
+const BODYGUARD_BOOTS_ITEM_ID: String = "bodyguard_boots"
+const RING_BULWARK_PICKUP_ITEM_ID: String = "ring_bulwark"
+const RING_BERSERKER_PICKUP_ITEM_ID: String = "ring_berserker"
+const RING_SHIELD_PICKUP_ITEM_ID: String = "ring_shield"
+const STORE_ITEM_ORDER: Array[String] = [
+	"bodyguard_boots",
+	"swift_boots",
+	"strider_boots",
+	"sword_extended_charge",
+	"sword_slowing",
+	"sword_stacking_dot",
+	"shield_revenge",
+	"shield_thorns",
+	"shield_wide_guard"
+]
+const STORE_ITEM_PRICES: Dictionary = {
+	"bodyguard_boots": 28,
+	"swift_boots": 24,
+	"strider_boots": 26,
+	"sword_extended_charge": 34,
+	"sword_slowing": 36,
+	"sword_stacking_dot": 38,
+	"shield_revenge": 34,
+	"shield_thorns": 36,
+	"shield_wide_guard": 38
+}
 
 const SWORD_PICKUP_TO_SWORD_ID: Dictionary = {
 	"sword_extended_charge": SWORD_DEFINITIONS.EXTENDED_CHARGE_SWORD,
@@ -202,6 +254,11 @@ const SHIELD_PICKUP_TO_SHIELD_ID: Dictionary = {
 	"shield_revenge": SHIELD_DEFINITIONS.REVENGE_SHIELD,
 	"shield_thorns": SHIELD_DEFINITIONS.THORNS_SHIELD,
 	"shield_wide_guard": SHIELD_DEFINITIONS.WIDE_GUARD_SHIELD
+}
+const RING_PICKUP_TO_RING_ID: Dictionary = {
+	RING_BULWARK_PICKUP_ITEM_ID: RING_DEFINITIONS.BULWARK_RING,
+	RING_BERSERKER_PICKUP_ITEM_ID: RING_DEFINITIONS.BERSERKER_RING,
+	RING_SHIELD_PICKUP_ITEM_ID: RING_DEFINITIONS.SHIELD_RING
 }
 
 const PLAYER_HD_HFRAMES: int = 8
@@ -291,6 +348,7 @@ var counter_strike_window_left: float = 0.0
 var current_xp: int = 0
 var xp_to_next_level: int = 100
 var level: int = 1
+var gold_total: int = 0
 var inventory: Dictionary = {}
 var available_sword_ids: Array[String] = []
 var equipped_sword_id: String = ""
@@ -298,6 +356,9 @@ var equipped_sword_definition: Dictionary = {}
 var available_shield_ids: Array[String] = []
 var equipped_shield_id: String = ""
 var equipped_shield_definition: Dictionary = {}
+var available_ring_ids: Array[String] = []
+var equipped_ring_id: String = ""
+var equipped_ring_definition: Dictionary = {}
 var gameplay_input_blocked: bool = false
 var last_charge_attack_raw_ratio: float = 0.0
 
@@ -369,6 +430,12 @@ var using_external_player_sprite: bool = false
 var block_shield_effect_sprite: AnimatedSprite2D = null
 var block_shield_effect_frames: SpriteFrames = null
 var block_shield_effect_texture: Texture2D = null
+var bulwark_stationary_elapsed: float = 0.0
+var bulwark_fortify_stacks: int = 0
+var ring_shield_block_active_left: float = 0.0
+var ring_shield_block_cooldown_left: float = 0.0
+var ring_shield_pending_cooldown_reduction: float = 0.0
+var ring_shield_cooldown_pending: bool = false
 var character_sprite_base_position: Vector2 = Vector2.ZERO
 var light_attack_recovery_left: float = 0.0
 var combat_state: CombatState = CombatState.IDLE_MOVE
@@ -410,6 +477,10 @@ var harpoon_tether_line: Line2D = null
 var harpoon_tether_glow_line: Line2D = null
 var harpoon_projectile_visual: Node2D = null
 var camera_base_offset: Vector2 = Vector2.ZERO
+var camera_move_offset: Vector2 = Vector2.ZERO
+var camera_start_focus_offset: Vector2 = Vector2.ZERO
+var camera_start_focus_target: Vector2 = Vector2.ZERO
+var camera_start_focus_hold_left: float = 0.0
 var camera_shake_left: float = 0.0
 var camera_shake_current_strength: float = 0.0
 var autoplay_test_enabled: bool = false
@@ -514,6 +585,8 @@ func _ready() -> void:
 		equipped_sword_id = available_sword_ids[0]
 	available_shield_ids.clear()
 	equipped_shield_id = ""
+	available_ring_ids.clear()
+	equipped_ring_id = ""
 	var env_sword_id := OS.get_environment("EQUIPPED_SWORD_ID").strip_edges().to_lower()
 	if not env_sword_id.is_empty() and available_sword_ids.find(env_sword_id) != -1:
 		equipped_sword_id = env_sword_id
@@ -521,9 +594,27 @@ func _ready() -> void:
 	if SHIELD_DEFINITIONS.has_definition(env_shield_id):
 		available_shield_ids.append(env_shield_id)
 		equipped_shield_id = env_shield_id
+	var env_ring_id := OS.get_environment("EQUIPPED_RING_ID").strip_edges().to_lower()
+	if RING_DEFINITIONS.has_definition(env_ring_id):
+		available_ring_ids.append(env_ring_id)
+		equipped_ring_id = env_ring_id
 	_refresh_equipped_sword_visuals()
 	_refresh_equipped_shield_visuals()
-	camera_base_offset = camera_2d.offset if is_instance_valid(camera_2d) else Vector2.ZERO
+	_refresh_equipped_ring_visuals()
+	if is_instance_valid(camera_2d):
+		camera_base_offset = Vector2.ZERO
+		camera_move_offset = Vector2.ZERO
+		camera_start_focus_offset = Vector2.ZERO
+		camera_start_focus_target = Vector2.ZERO
+		camera_start_focus_hold_left = 0.0
+		camera_2d.offset = Vector2.ZERO
+		camera_2d.reset_smoothing()
+	else:
+		camera_base_offset = Vector2.ZERO
+		camera_move_offset = Vector2.ZERO
+		camera_start_focus_offset = Vector2.ZERO
+		camera_start_focus_target = Vector2.ZERO
+		camera_start_focus_hold_left = 0.0
 	_configure_autoplay_logging()
 	_set_combat_state(CombatState.IDLE_MOVE)
 	attack_telegraph.visible = false
@@ -583,6 +674,7 @@ func _ready() -> void:
 	_update_health_bar()
 	equipped_sword_changed.emit(equipped_sword_id, get_equipped_sword_name())
 	equipped_shield_changed.emit(equipped_shield_id, get_equipped_shield_name())
+	equipped_ring_changed.emit(equipped_ring_id, get_equipped_ring_name())
 	emit_initial_state()
 
 
@@ -591,7 +683,9 @@ func _physics_process(delta: float) -> void:
 	if is_dead:
 		return
 
+	var pre_move_position := global_position
 	_tick_timers(delta)
+	_update_camera_move_offset(delta)
 	_update_camera_shake(delta)
 	if hitstop_left > 0.0:
 		_update_health_bar()
@@ -611,6 +705,8 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 	_apply_miniboss_soft_separation(delta)
 	_clamp_to_lane()
+	var moved_distance := global_position.distance_to(pre_move_position)
+	_tick_ring_states(delta, moved_distance)
 	_update_health_bar()
 	_collect_nearby_pickups()
 	_update_visual_feedback(delta)
@@ -657,6 +753,25 @@ func configure_camera_limits(left: float, top: float, right: float, bottom: floa
 	camera_2d.limit_top = int(floor(top))
 	camera_2d.limit_right = int(ceil(right))
 	camera_2d.limit_bottom = int(ceil(bottom))
+
+
+func apply_encounter_start_camera_focus(global_bounds: Rect2) -> void:
+	var room_center := global_bounds.position + (global_bounds.size * 0.5)
+	var to_center := room_center - global_position
+	var strength := clampf(camera_start_focus_strength, 0.0, 1.0)
+	if strength <= 0.001:
+		camera_start_focus_offset = Vector2.ZERO
+		camera_start_focus_target = Vector2.ZERO
+		camera_start_focus_hold_left = 0.0
+		return
+	var max_x := maxf(0.0, camera_start_focus_max_offset.x)
+	var max_y := maxf(0.0, camera_start_focus_max_offset.y)
+	var target_offset := Vector2(
+		clampf(to_center.x * strength, -max_x, max_x),
+		clampf(to_center.y * strength, -max_y, max_y)
+	)
+	camera_start_focus_target = target_offset
+	camera_start_focus_hold_left = maxf(0.0, camera_start_focus_hold_duration)
 
 
 func _setup_health_bar() -> void:
@@ -747,6 +862,8 @@ func collect_item(item_id: String, value: int) -> void:
 		return
 	if _try_collect_sword_pickup(item_id):
 		return
+	if _try_collect_ring_pickup(item_id):
+		return
 	var total := int(inventory.get(item_id, 0)) + value
 	inventory[item_id] = total
 	_apply_item_bonus(item_id, value)
@@ -768,12 +885,23 @@ func get_available_shield_entries() -> Array[Dictionary]:
 	return entries
 
 
+func get_available_ring_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	for ring_id in available_ring_ids:
+		entries.append(RING_DEFINITIONS.get_definition(ring_id))
+	return entries
+
+
 func get_equipped_sword_id() -> String:
 	return equipped_sword_id
 
 
 func get_equipped_shield_id() -> String:
 	return equipped_shield_id
+
+
+func get_equipped_ring_id() -> String:
+	return equipped_ring_id
 
 
 func get_equipped_sword_name() -> String:
@@ -786,6 +914,12 @@ func get_equipped_shield_name() -> String:
 	if equipped_shield_id.is_empty():
 		return "No Shield"
 	return SHIELD_DEFINITIONS.get_display_name(equipped_shield_id)
+
+
+func get_equipped_ring_name() -> String:
+	if equipped_ring_id.is_empty():
+		return "No Ring"
+	return RING_DEFINITIONS.get_display_name(equipped_ring_id)
 
 
 func equip_sword(sword_id: String) -> bool:
@@ -817,6 +951,20 @@ func equip_shield(shield_id: String) -> bool:
 	return true
 
 
+func equip_ring(ring_id: String) -> bool:
+	if ring_id.is_empty():
+		return false
+	if available_ring_ids.find(ring_id) == -1:
+		return false
+	if equipped_ring_id == ring_id:
+		return false
+	equipped_ring_id = ring_id
+	_refresh_equipped_ring_visuals()
+	equipped_ring_changed.emit(equipped_ring_id, get_equipped_ring_name())
+	_emit_cooldown_state()
+	return true
+
+
 func has_sword_unlocked(sword_id: String) -> bool:
 	if sword_id.is_empty():
 		return false
@@ -827,6 +975,12 @@ func has_shield_unlocked(shield_id: String) -> bool:
 	if shield_id.is_empty():
 		return false
 	return available_shield_ids.find(shield_id) != -1
+
+
+func has_ring_unlocked(ring_id: String) -> bool:
+	if ring_id.is_empty():
+		return false
+	return available_ring_ids.find(ring_id) != -1
 
 
 func get_missing_sword_ids() -> Array[String]:
@@ -845,20 +999,123 @@ func get_missing_shield_ids() -> Array[String]:
 	return missing
 
 
+func get_missing_ring_ids() -> Array[String]:
+	var missing: Array[String] = []
+	for ring_id in RING_DEFINITIONS.get_ring_ids():
+		if available_ring_ids.find(ring_id) == -1:
+			missing.append(ring_id)
+	return missing
+
+
 func has_inventory_item(item_id: String) -> bool:
 	return int(inventory.get(item_id, 0)) > 0
+
+
+func add_gold(amount: int) -> void:
+	if amount <= 0:
+		return
+	gold_total = maxi(0, gold_total + amount)
+
+
+func get_gold_total() -> int:
+	return maxi(0, gold_total)
+
+
+func get_store_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	for store_item_variant in STORE_ITEM_ORDER:
+		var item_id := String(store_item_variant)
+		if item_id.is_empty():
+			continue
+		if not STORE_ITEM_PRICES.has(item_id):
+			continue
+		var price := maxi(0, int(STORE_ITEM_PRICES[item_id]))
+		entries.append({
+			"item_id": item_id,
+			"name": String(ITEM_NAMES.get(item_id, item_id)),
+			"description": _get_store_item_description(item_id),
+			"price": price,
+			"owned": _is_store_item_owned(item_id)
+		})
+	return entries
+
+
+func purchase_store_item(item_id: String) -> Dictionary:
+	var normalized_item_id := item_id.strip_edges().to_lower()
+	if normalized_item_id.is_empty() or not STORE_ITEM_PRICES.has(normalized_item_id):
+		return {
+			"success": false,
+			"reason": "Item unavailable.",
+			"gold_total": get_gold_total()
+		}
+	if _is_store_item_owned(normalized_item_id):
+		return {
+			"success": false,
+			"reason": "Already owned.",
+			"gold_total": get_gold_total()
+		}
+	var price := maxi(0, int(STORE_ITEM_PRICES[normalized_item_id]))
+	if get_gold_total() < price:
+		return {
+			"success": false,
+			"reason": "Not enough gold.",
+			"gold_total": get_gold_total()
+		}
+	gold_total = maxi(0, gold_total - price)
+	collect_item(normalized_item_id, 1)
+	return {
+		"success": true,
+		"item_id": normalized_item_id,
+		"item_name": String(ITEM_NAMES.get(normalized_item_id, normalized_item_id)),
+		"price": price,
+		"gold_total": get_gold_total()
+	}
+
+
+func _is_store_item_owned(item_id: String) -> bool:
+	if SWORD_PICKUP_TO_SWORD_ID.has(item_id):
+		var sword_id := String(SWORD_PICKUP_TO_SWORD_ID[item_id])
+		return available_sword_ids.find(sword_id) != -1
+	if SHIELD_PICKUP_TO_SHIELD_ID.has(item_id):
+		var shield_id := String(SHIELD_PICKUP_TO_SHIELD_ID[item_id])
+		return available_shield_ids.find(shield_id) != -1
+	return has_inventory_item(item_id)
+
+
+func _get_store_item_description(item_id: String) -> String:
+	if SWORD_PICKUP_TO_SWORD_ID.has(item_id):
+		var sword_id := String(SWORD_PICKUP_TO_SWORD_ID[item_id])
+		var sword_data := SWORD_DEFINITIONS.get_definition(sword_id)
+		return String(sword_data.get("description", "Sword upgrade."))
+	if SHIELD_PICKUP_TO_SHIELD_ID.has(item_id):
+		var shield_id := String(SHIELD_PICKUP_TO_SHIELD_ID[item_id])
+		var shield_data := SHIELD_DEFINITIONS.get_definition(shield_id)
+		return String(shield_data.get("description", "Shield upgrade."))
+	match item_id:
+		"swift_boots":
+			return "Reduces Roll cooldown by 50%."
+		"strider_boots":
+			return "Increases base movement speed by 15%."
+		"bodyguard_boots":
+			return "Enables Dash to Ally ability."
+		_:
+			return "Equipment upgrade."
 
 
 func reset_sword_inventory_for_encounter() -> void:
 	inventory.clear()
 	available_sword_ids.clear()
 	available_shield_ids.clear()
+	available_ring_ids.clear()
 	equipped_sword_id = ""
 	equipped_shield_id = ""
+	equipped_ring_id = ""
 	_refresh_equipped_sword_visuals()
 	_refresh_equipped_shield_visuals()
+	_refresh_equipped_ring_visuals()
 	equipped_sword_changed.emit(equipped_sword_id, get_equipped_sword_name())
 	equipped_shield_changed.emit(equipped_shield_id, get_equipped_shield_name())
+	equipped_ring_changed.emit(equipped_ring_id, get_equipped_ring_name())
 	_expire_counter_strike()
 	_emit_cooldown_state()
 
@@ -877,10 +1134,14 @@ func restore_default_sword_inventory() -> void:
 		equipped_sword_id = ""
 	available_shield_ids.clear()
 	equipped_shield_id = ""
+	available_ring_ids.clear()
+	equipped_ring_id = ""
 	_refresh_equipped_sword_visuals()
 	_refresh_equipped_shield_visuals()
+	_refresh_equipped_ring_visuals()
 	equipped_sword_changed.emit(equipped_sword_id, get_equipped_sword_name())
 	equipped_shield_changed.emit(equipped_shield_id, get_equipped_shield_name())
+	equipped_ring_changed.emit(equipped_ring_id, get_equipped_ring_name())
 	_expire_counter_strike()
 	_emit_cooldown_state()
 
@@ -892,6 +1153,14 @@ func set_gameplay_input_blocked(blocked: bool) -> void:
 		return
 	is_blocking = false
 	perfect_block_window_left = 0.0
+	if _is_shield_ring_equipped() and ring_shield_cooldown_pending:
+		var base_cooldown := maxf(0.0, ring_shield_block_cooldown)
+		var cooldown_reduction_cap := clampf(ring_shield_max_total_cooldown_reduction, 0.0, base_cooldown)
+		var cooldown_reduction := clampf(ring_shield_pending_cooldown_reduction, 0.0, cooldown_reduction_cap)
+		ring_shield_block_cooldown_left = maxf(ring_shield_block_cooldown_left, maxf(0.0, base_cooldown - cooldown_reduction))
+	ring_shield_block_active_left = 0.0
+	ring_shield_pending_cooldown_reduction = 0.0
+	ring_shield_cooldown_pending = false
 	is_charging_attack = false
 	_cancel_harpoon_state()
 	_cancel_charge_attack()
@@ -940,17 +1209,26 @@ func receive_hit(amount: float, source_position: Vector2, guard_break: bool = fa
 	if is_blocking and not guard_break:
 		var block_threshold := cos(deg_to_rad(block_arc_degrees * 0.5))
 		if facing_direction.dot(incoming_direction) >= block_threshold:
-			damage_to_apply *= (1.0 - block_damage_reduction)
-			blocked = true
-			blocked_damage = maxf(0.0, amount - damage_to_apply)
 			perfect_block = perfect_block_window_left > 0.0
 			perfect_block_window_left = 0.0
-			drain_block_stamina(block_stamina_blocked_hit_cost)
+			if _is_shield_ring_equipped():
+				damage_to_apply = 0.0
+				blocked = true
+				blocked_damage = maxf(0.0, amount)
+				_register_ring_shield_successful_block(perfect_block)
+			else:
+				damage_to_apply *= (1.0 - block_damage_reduction)
+				blocked = true
+				blocked_damage = maxf(0.0, amount - damage_to_apply)
+				drain_block_stamina(block_stamina_blocked_hit_cost)
 			if perfect_block:
 				_register_perfect_block(source_position)
 
 	if blocked and blocked_damage > 0.0:
 		_apply_block_reflect(blocked_damage, source_position)
+
+	if not blocked:
+		damage_to_apply *= _get_bulwark_damage_reduction_multiplier()
 
 	if damage_to_apply <= 0.0:
 		return false
@@ -1020,6 +1298,7 @@ func _tick_timers(delta: float) -> void:
 	ability_1_cooldown_left = maxf(0.0, ability_1_cooldown_left - delta)
 	ability_2_cooldown_left = maxf(0.0, ability_2_cooldown_left - delta)
 	roll_cooldown_left = maxf(0.0, roll_cooldown_left - delta)
+	ring_shield_block_cooldown_left = maxf(0.0, ring_shield_block_cooldown_left - delta)
 	basic_combo_window_left = maxf(0.0, basic_combo_window_left - delta)
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
 	heal_flash_left = maxf(0.0, heal_flash_left - delta)
@@ -1031,6 +1310,7 @@ func _tick_timers(delta: float) -> void:
 	ally_dash_block_grace_left = maxf(0.0, ally_dash_block_grace_left - delta)
 	block_input_grace_left = maxf(0.0, block_input_grace_left - delta)
 	perfect_block_window_left = maxf(0.0, perfect_block_window_left - delta)
+	ring_shield_block_active_left = maxf(0.0, ring_shield_block_active_left - delta)
 	slash_effect_left = maxf(0.0, slash_effect_left - delta)
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.35))
 	charge_lunge_velocity = charge_lunge_velocity.move_toward(Vector2.ZERO, heavy_lunge_decay * delta)
@@ -1040,6 +1320,21 @@ func _tick_timers(delta: float) -> void:
 			_expire_counter_strike()
 	else:
 		counter_strike_window_left = 0.0
+	if _is_shield_ring_equipped():
+		if ring_shield_cooldown_pending and (ring_shield_block_active_left <= 0.0 or not is_blocking):
+			is_blocking = false
+			instant_dash_block_latched = false
+			perfect_block_window_left = 0.0
+			var base_cooldown := maxf(0.0, ring_shield_block_cooldown)
+			var cooldown_reduction_cap := clampf(ring_shield_max_total_cooldown_reduction, 0.0, base_cooldown)
+			var cooldown_reduction := clampf(ring_shield_pending_cooldown_reduction, 0.0, cooldown_reduction_cap)
+			ring_shield_block_cooldown_left = maxf(ring_shield_block_cooldown_left, maxf(0.0, base_cooldown - cooldown_reduction))
+			ring_shield_pending_cooldown_reduction = 0.0
+			ring_shield_cooldown_pending = false
+	else:
+		ring_shield_block_active_left = 0.0
+		ring_shield_pending_cooldown_reduction = 0.0
+		ring_shield_cooldown_pending = false
 	_tick_charge_attack_state(delta)
 	_tick_harpoon_state(delta)
 	if stun_left <= 0.0 and combat_state == CombatState.HITSTUN and not is_charging_attack and charge_release_windup_left <= 0.0 and charge_attack_active_left <= 0.0 and charge_attack_recovery_left <= 0.0:
@@ -1092,6 +1387,8 @@ func _tick_block_stamina(delta: float) -> void:
 	if delta <= 0.0:
 		return
 	if is_blocking:
+		if _is_shield_ring_equipped():
+			return
 		drain_block_stamina(block_stamina_hold_drain_per_second * delta)
 	else:
 		if current_block_stamina >= block_stamina_max:
@@ -1124,6 +1421,47 @@ func drain_block_stamina(amount: float) -> float:
 
 func _on_block_started() -> void:
 	perfect_block_window_left = maxf(0.0, perfect_block_window)
+
+
+func _can_start_ring_shield_block() -> bool:
+	if not _is_shield_ring_equipped():
+		return false
+	if is_blocking or ring_shield_block_active_left > 0.0 or ring_shield_cooldown_pending:
+		return false
+	if ring_shield_block_cooldown_left > 0.0:
+		return false
+	if is_dead or gameplay_input_blocked:
+		return false
+	if stun_left > 0.0 or is_rolling or lunge_time_left > 0.0:
+		return false
+	if is_charging_attack or charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0 or charge_attack_recovery_left > 0.0:
+		return false
+	if attack_windup_left > 0.0 or attack_anim_left > 0.0 or light_attack_recovery_left > 0.0:
+		return false
+	if harpoon_charge_active or harpoon_projectile_active or harpoon_reel_active:
+		return false
+	if queued_attack != QueuedAttack.NONE:
+		return false
+	return true
+
+
+func _start_ring_shield_block() -> void:
+	ring_shield_block_active_left = maxf(0.05, ring_shield_block_duration)
+	ring_shield_pending_cooldown_reduction = 0.0
+	ring_shield_cooldown_pending = true
+	is_blocking = true
+	instant_dash_block_latched = false
+	_on_block_started()
+
+
+func _register_ring_shield_successful_block(perfect_block: bool) -> void:
+	if not _is_shield_ring_equipped():
+		return
+	var bonus := maxf(0.0, ring_shield_successful_block_cooldown_reduction)
+	if perfect_block:
+		bonus += maxf(0.0, ring_shield_perfect_block_bonus_cooldown_reduction)
+	var max_bonus := maxf(0.0, ring_shield_max_total_cooldown_reduction)
+	ring_shield_pending_cooldown_reduction = clampf(ring_shield_pending_cooldown_reduction + bonus, 0.0, max_bonus)
 
 
 func _unlock_counter_strike() -> void:
@@ -1197,7 +1535,7 @@ func _try_start_counter_strike() -> bool:
 	light_attack_recovery_left = 0.0
 	_queue_attack(
 		QueuedAttack.COUNTER_STRIKE,
-		maxf(0.01, counter_strike_startup),
+		maxf(0.01, counter_strike_startup * _get_berserker_attack_speed_multiplier()),
 		maxf(10.0, counter_strike_range),
 		clampf(counter_strike_arc_degrees, 10.0, 179.0),
 		Color(0.8, 0.96, 1.0, 0.52)
@@ -2110,9 +2448,44 @@ func _start_camera_shake(duration: float, strength: float) -> void:
 	camera_shake_current_strength = maxf(camera_shake_current_strength, maxf(0.0, strength))
 
 
+func _update_camera_move_offset(delta: float) -> void:
+	if not is_instance_valid(camera_2d):
+		return
+	var target_offset := Vector2.ZERO
+	var max_offset_x := maxf(0.0, camera_move_lookahead_distance.x)
+	var max_offset_y := maxf(0.0, camera_move_lookahead_distance.y)
+	if max_offset_x > 0.0 or max_offset_y > 0.0:
+		var source_velocity := velocity
+		if source_velocity.length_squared() <= 0.0001 and charge_lunge_velocity.length_squared() > 0.0001:
+			source_velocity = charge_lunge_velocity
+		var speed_x := maxf(1.0, move_speed)
+		var speed_y := maxf(1.0, move_speed * maxf(0.1, depth_speed_multiplier))
+		var velocity_ratio := Vector2(
+			clampf(source_velocity.x / speed_x, -1.0, 1.0),
+			clampf(source_velocity.y / speed_y, -1.0, 1.0)
+		)
+		target_offset = Vector2(
+			velocity_ratio.x * max_offset_x,
+			velocity_ratio.y * max_offset_y
+		)
+	var smooth_speed := maxf(0.01, camera_move_lookahead_smooth_speed)
+	var smooth_t := clampf(1.0 - exp(-smooth_speed * maxf(delta, 0.0)), 0.0, 1.0)
+	camera_move_offset = camera_move_offset.lerp(target_offset, smooth_t)
+	if camera_start_focus_hold_left > 0.0:
+		camera_start_focus_hold_left = maxf(0.0, camera_start_focus_hold_left - delta)
+		if camera_start_focus_hold_left <= 0.0:
+			camera_start_focus_target = Vector2.ZERO
+	else:
+		camera_start_focus_target = Vector2.ZERO
+	var start_focus_speed := maxf(0.01, camera_start_focus_release_speed)
+	var start_focus_t := clampf(1.0 - exp(-start_focus_speed * maxf(delta, 0.0)), 0.0, 1.0)
+	camera_start_focus_offset = camera_start_focus_offset.lerp(camera_start_focus_target, start_focus_t)
+
+
 func _update_camera_shake(delta: float) -> void:
 	if not is_instance_valid(camera_2d):
 		return
+	var full_offset := camera_base_offset + camera_start_focus_offset + camera_move_offset
 	if camera_shake_left > 0.0:
 		camera_shake_left = maxf(0.0, camera_shake_left - delta)
 		var shake_ratio := clampf(camera_shake_left / maxf(0.01, camera_shake_duration), 0.0, 1.0)
@@ -2120,12 +2493,12 @@ func _update_camera_shake(delta: float) -> void:
 			randf_range(-1.0, 1.0),
 			randf_range(-1.0, 1.0)
 		) * camera_shake_current_strength * shake_ratio
-		camera_2d.offset = camera_base_offset + shake
+		camera_2d.offset = full_offset + shake
 		if camera_shake_left <= 0.0:
 			camera_shake_current_strength = 0.0
-			camera_2d.offset = camera_base_offset
+			camera_2d.offset = full_offset
 	else:
-		camera_2d.offset = camera_base_offset
+		camera_2d.offset = full_offset
 
 
 func _handle_actions() -> void:
@@ -2143,17 +2516,29 @@ func _handle_actions() -> void:
 		_start_roll()
 		return
 
-	var raw_wants_block := Input.is_action_pressed("block") or debug_auto_block_enabled
-	if raw_wants_block:
-		block_input_grace_left = maxf(block_input_grace_left, maxf(0.0, block_input_grace_duration))
-	var wants_block := raw_wants_block or block_input_grace_left > 0.0
 	var was_blocking := is_blocking
-	var can_block_now := current_block_stamina > 0.0 and (was_blocking or can_raise_block())
-	if not raw_wants_block and block_input_grace_left <= 0.0:
-		instant_dash_block_latched = false
-	if wants_block and can_block_now and _can_enter_instant_dash_block():
-		_enter_instant_dash_block()
-		return
+	var wants_block := false
+	var can_block_now := false
+	if _is_shield_ring_equipped():
+		block_input_grace_left = 0.0
+		var trigger_ring_block := Input.is_action_just_pressed("block")
+		if debug_auto_block_enabled and not is_blocking and ring_shield_block_cooldown_left <= 0.0:
+			trigger_ring_block = true
+		if trigger_ring_block and _can_start_ring_shield_block():
+			_start_ring_shield_block()
+		if not is_blocking:
+			perfect_block_window_left = 0.0
+	else:
+		var raw_wants_block := Input.is_action_pressed("block") or debug_auto_block_enabled
+		if raw_wants_block:
+			block_input_grace_left = maxf(block_input_grace_left, maxf(0.0, block_input_grace_duration))
+		wants_block = raw_wants_block or block_input_grace_left > 0.0
+		can_block_now = current_block_stamina > 0.0 and (was_blocking or can_raise_block())
+		if not raw_wants_block and block_input_grace_left <= 0.0:
+			instant_dash_block_latched = false
+		if wants_block and can_block_now and _can_enter_instant_dash_block():
+			_enter_instant_dash_block()
+			return
 
 	if is_charging_attack:
 		is_blocking = false
@@ -2185,11 +2570,12 @@ func _handle_actions() -> void:
 		_start_roll()
 		return
 
-	is_blocking = wants_block and can_block_now
-	if is_blocking and not was_blocking:
-		_on_block_started()
-	elif not is_blocking:
-		perfect_block_window_left = 0.0
+	if not _is_shield_ring_equipped():
+		is_blocking = wants_block and can_block_now
+		if is_blocking and not was_blocking:
+			_on_block_started()
+		elif not is_blocking:
+			perfect_block_window_left = 0.0
 	if Input.is_action_just_pressed("counter_strike"):
 		var counter_started := _try_start_counter_strike()
 		if counter_started or counter_strike_available:
@@ -2217,10 +2603,15 @@ func _handle_actions() -> void:
 				_log_basic_attack_cadence("REJECT reason=%s" % blocker)
 		return
 
-	if Input.is_action_just_pressed("ability_2") and ability_2_cooldown_left <= 0.0:
-		_reset_basic_combo_state()
-		if _start_ally_dash():
-			ability_2_cooldown_left = ability_2_cooldown
+	if Input.is_action_just_pressed("ability_2"):
+		if not _is_ally_dash_unlocked():
+			combat_status_message.emit("Bodyguard Boots required for Ally Dash", 1.0)
+			_emit_cooldown_state()
+			return
+		if ability_2_cooldown_left <= 0.0:
+			_reset_basic_combo_state()
+			if _start_ally_dash():
+				ability_2_cooldown_left = ability_2_cooldown
 
 
 func _queue_attack(kind: QueuedAttack, windup: float, attack_range: float, arc_degrees: float, telegraph_color: Color) -> void:
@@ -2245,19 +2636,21 @@ func _start_basic_combo_attack() -> void:
 	var arc_multiplier := float(BASIC_COMBO_ARC_MULTIPLIERS[combo_index])
 	var windup_multiplier := float(BASIC_COMBO_WINDUP_MULTIPLIERS[combo_index])
 	var cooldown_multiplier := float(BASIC_COMBO_COOLDOWN_MULTIPLIERS[combo_index])
+	var attack_speed_multiplier := _get_berserker_attack_speed_multiplier()
+	var attack_damage_multiplier := _get_berserker_attack_damage_multiplier()
 	var sword_range_multiplier := _get_equipped_basic_attack_range_multiplier()
 	if sword_range_multiplier > 1.001:
 		_log_sword_effect("BASIC_RANGE_MULT hit=%d x%.2f" % [combo_hit, sword_range_multiplier])
 
 	queued_basic_combo_hit_index = combo_hit
-	queued_basic_combo_damage = basic_attack_damage * damage_multiplier
+	queued_basic_combo_damage = basic_attack_damage * damage_multiplier * attack_damage_multiplier
 	queued_basic_combo_range = basic_attack_range * range_multiplier * sword_range_multiplier
 	queued_basic_combo_arc_degrees = basic_attack_arc_degrees * arc_multiplier
 
-	basic_attack_cooldown_left = maxf(basic_attack_cooldown, basic_attack_cooldown * cooldown_multiplier)
+	basic_attack_cooldown_left = maxf(0.01, basic_attack_cooldown * cooldown_multiplier * attack_speed_multiplier)
 	_queue_attack(
 		QueuedAttack.BASIC,
-		maxf(0.01, basic_attack_windup * windup_multiplier),
+		maxf(0.01, basic_attack_windup * windup_multiplier * attack_speed_multiplier),
 		queued_basic_combo_range,
 		queued_basic_combo_arc_degrees,
 		_get_equipped_sword_charge_preview_color(0.34)
@@ -2272,14 +2665,14 @@ func _start_basic_combo_attack() -> void:
 			basic_combo_step = 0
 			basic_combo_window_left = 0.0
 			basic_combo_buffered = false
-			basic_attack_cooldown_left = maxf(basic_attack_cooldown_left, basic_combo_end_cooldown)
+			basic_attack_cooldown_left = maxf(basic_attack_cooldown_left, basic_combo_end_cooldown * attack_speed_multiplier)
 		return
 
 	basic_combo_buffered = false
 	if combo_hit >= BASIC_COMBO_MAX_HITS:
 		basic_combo_step = 0
 		basic_combo_window_left = 0.0
-		basic_attack_cooldown_left = maxf(basic_attack_cooldown_left, basic_combo_end_cooldown)
+		basic_attack_cooldown_left = maxf(basic_attack_cooldown_left, basic_combo_end_cooldown * attack_speed_multiplier)
 	else:
 		basic_combo_step = combo_hit
 		basic_combo_window_left = basic_combo_chain_window
@@ -2288,17 +2681,19 @@ func _start_basic_combo_attack() -> void:
 func _start_basic_single_attack() -> void:
 	_reset_basic_combo_state()
 	var combo_index := 0
+	var attack_speed_multiplier := _get_berserker_attack_speed_multiplier()
+	var attack_damage_multiplier := _get_berserker_attack_damage_multiplier()
 	var sword_range_multiplier := _get_equipped_basic_attack_range_multiplier()
 	if sword_range_multiplier > 1.001:
 		_log_sword_effect("BASIC_RANGE_MULT hit=1 x%.2f" % sword_range_multiplier)
 	queued_basic_combo_hit_index = 1
-	queued_basic_combo_damage = basic_attack_damage * float(BASIC_COMBO_DAMAGE_MULTIPLIERS[combo_index])
+	queued_basic_combo_damage = basic_attack_damage * float(BASIC_COMBO_DAMAGE_MULTIPLIERS[combo_index]) * attack_damage_multiplier
 	queued_basic_combo_range = basic_attack_range * float(BASIC_COMBO_RANGE_MULTIPLIERS[combo_index]) * sword_range_multiplier
 	queued_basic_combo_arc_degrees = basic_attack_arc_degrees * float(BASIC_COMBO_ARC_MULTIPLIERS[combo_index])
-	basic_attack_cooldown_left = maxf(0.01, basic_attack_cooldown)
+	basic_attack_cooldown_left = maxf(0.01, basic_attack_cooldown * attack_speed_multiplier)
 	_queue_attack(
 		QueuedAttack.BASIC,
-		maxf(0.01, basic_attack_windup * float(BASIC_COMBO_WINDUP_MULTIPLIERS[combo_index])),
+		maxf(0.01, basic_attack_windup * float(BASIC_COMBO_WINDUP_MULTIPLIERS[combo_index]) * attack_speed_multiplier),
 		queued_basic_combo_range,
 		queued_basic_combo_arc_degrees,
 		_get_equipped_sword_charge_preview_color(0.34)
@@ -2573,6 +2968,8 @@ func _start_roll() -> void:
 
 
 func _start_ally_dash() -> bool:
+	if not _is_ally_dash_unlocked():
+		return false
 	var dash_selection := _find_guardian_dash_selection()
 	var dash_destination := global_position
 	if not dash_selection.is_empty():
@@ -2821,7 +3218,7 @@ func _apply_movement() -> void:
 	if movement_vector.length_squared() > 1.0:
 		movement_vector = movement_vector.normalized()
 	var movement_multiplier := block_move_multiplier if is_blocking else 1.0
-	velocity = movement_vector * move_speed * movement_multiplier + charge_lunge_velocity
+	velocity = movement_vector * move_speed * movement_multiplier * _get_current_move_speed_multiplier() + charge_lunge_velocity
 	if is_blocking and knockback_velocity.length_squared() > 0.0001:
 		velocity += knockback_velocity * blocked_knockback_move_scale
 
@@ -3016,6 +3413,24 @@ func _refresh_equipped_shield_visuals() -> void:
 	equipped_shield_definition = SHIELD_DEFINITIONS.get_definition(equipped_shield_id)
 
 
+func _refresh_equipped_ring_visuals() -> void:
+	if equipped_ring_id.is_empty() or available_ring_ids.find(equipped_ring_id) == -1:
+		equipped_ring_definition = {}
+		if not _is_shield_ring_equipped():
+			ring_shield_block_active_left = 0.0
+			ring_shield_pending_cooldown_reduction = 0.0
+			ring_shield_cooldown_pending = false
+		_reset_bulwark_fortify()
+		return
+	equipped_ring_definition = RING_DEFINITIONS.get_definition(equipped_ring_id)
+	if not _is_shield_ring_equipped():
+		ring_shield_block_active_left = 0.0
+		ring_shield_pending_cooldown_reduction = 0.0
+		ring_shield_cooldown_pending = false
+	if not _is_bulwark_ring_equipped():
+		_reset_bulwark_fortify()
+
+
 func _try_collect_shield_pickup(item_id: String) -> bool:
 	if not SHIELD_PICKUP_TO_SHIELD_ID.has(item_id):
 		return false
@@ -3065,12 +3480,38 @@ func _try_collect_sword_pickup(item_id: String) -> bool:
 	return true
 
 
+func _try_collect_ring_pickup(item_id: String) -> bool:
+	if not RING_PICKUP_TO_RING_ID.has(item_id):
+		return false
+	var ring_id := String(RING_PICKUP_TO_RING_ID[item_id])
+	if ring_id.is_empty():
+		return true
+	if available_ring_ids.find(ring_id) == -1:
+		available_ring_ids.append(ring_id)
+		available_ring_ids.sort()
+		var auto_equip := equipped_ring_id.is_empty()
+		if auto_equip:
+			equipped_ring_id = ring_id
+		_refresh_equipped_ring_visuals()
+		equipped_ring_changed.emit(equipped_ring_id, get_equipped_ring_name())
+		var ring_name := RING_DEFINITIONS.get_display_name(ring_id)
+		item_looted.emit(ring_name, available_ring_ids.size())
+		if auto_equip:
+			combat_status_message.emit("%s equipped" % ring_name, 1.1)
+	else:
+		item_looted.emit(String(ITEM_NAMES.get(item_id, item_id)), available_ring_ids.size())
+	_emit_cooldown_state()
+	return true
+
+
 func _is_counter_strike_unlocked() -> bool:
 	return true
 
 
 func _get_counter_strike_damage() -> float:
 	var damage_multiplier := maxf(0.0, float(equipped_shield_definition.get("counter_damage_multiplier", 1.0)))
+	if _is_berserker_rage_active():
+		damage_multiplier *= maxf(1.0, berserker_counter_damage_multiplier)
 	return maxf(0.0, counter_strike_damage * damage_multiplier)
 
 
@@ -3273,6 +3714,8 @@ func _apply_item_bonus(item_id: String, value: int) -> void:
 			var stack_count := maxi(0, value)
 			if stack_count > 0:
 				move_speed *= pow(maxf(1.0, movement_boots_speed_multiplier), float(stack_count))
+		BODYGUARD_BOOTS_ITEM_ID:
+			_emit_cooldown_state()
 		_:
 			pass
 
@@ -3281,6 +3724,91 @@ func _get_roll_cooldown_duration() -> float:
 	var has_roll_boots := has_inventory_item(ROLL_COOLDOWN_BOOT_ITEM_ID)
 	var cooldown_multiplier := roll_boots_cooldown_multiplier if has_roll_boots else 1.0
 	return maxf(0.05, roll_cooldown * cooldown_multiplier)
+
+
+func _is_ally_dash_unlocked() -> bool:
+	return has_inventory_item(BODYGUARD_BOOTS_ITEM_ID)
+
+
+func _is_ring_equipped(ring_id: String) -> bool:
+	if ring_id.is_empty():
+		return false
+	return equipped_ring_id == ring_id and not equipped_ring_definition.is_empty()
+
+
+func _is_bulwark_ring_equipped() -> bool:
+	return _is_ring_equipped(RING_DEFINITIONS.BULWARK_RING)
+
+
+func _is_berserker_ring_equipped() -> bool:
+	return _is_ring_equipped(RING_DEFINITIONS.BERSERKER_RING)
+
+
+func _is_shield_ring_equipped() -> bool:
+	return _is_ring_equipped(RING_DEFINITIONS.SHIELD_RING)
+
+
+func _is_berserker_rage_active() -> bool:
+	if not _is_berserker_ring_equipped():
+		return false
+	if max_health <= 0.0:
+		return false
+	return (current_health / max_health) <= clampf(berserker_health_threshold_ratio, 0.0, 1.0)
+
+
+func _get_berserker_attack_speed_multiplier() -> float:
+	if not _is_berserker_rage_active():
+		return 1.0
+	return clampf(berserker_attack_speed_multiplier, 0.1, 1.0)
+
+
+func _get_berserker_attack_damage_multiplier() -> float:
+	if not _is_berserker_rage_active():
+		return 1.0
+	return maxf(1.0, berserker_attack_damage_multiplier)
+
+
+func _get_current_move_speed_multiplier() -> float:
+	if not _is_bulwark_ring_equipped():
+		return 1.0
+	return clampf(bulwark_move_speed_multiplier, 0.1, 1.0)
+
+
+func _get_bulwark_damage_reduction_multiplier() -> float:
+	if not _is_bulwark_ring_equipped():
+		return 1.0
+	if bulwark_fortify_stacks <= 0:
+		return 1.0
+	var reduction := clampf(float(bulwark_fortify_stacks) * maxf(0.0, bulwark_fortify_damage_reduction_per_stack), 0.0, 0.95)
+	return 1.0 - reduction
+
+
+func _reset_bulwark_fortify() -> void:
+	bulwark_stationary_elapsed = 0.0
+	bulwark_fortify_stacks = 0
+
+
+func _tick_ring_states(delta: float, moved_distance: float) -> void:
+	if delta <= 0.0:
+		return
+	if not _is_bulwark_ring_equipped():
+		_reset_bulwark_fortify()
+		return
+	var moved_threshold := 0.18
+	var moved := moved_distance > moved_threshold
+	if moved:
+		_reset_bulwark_fortify()
+		return
+	bulwark_stationary_elapsed += delta
+	var start_delay := maxf(0.0, bulwark_fortify_stationary_time)
+	var interval := maxf(0.01, bulwark_fortify_stack_interval)
+	var max_stacks := maxi(0, bulwark_fortify_max_stacks)
+	if bulwark_stationary_elapsed < start_delay:
+		bulwark_fortify_stacks = 0
+		return
+	var elapsed_after_start := bulwark_stationary_elapsed - start_delay
+	var gained_stacks := 1 + int(floor(elapsed_after_start / interval))
+	bulwark_fortify_stacks = clampi(gained_stacks, 0, max_stacks)
 
 
 func _level_up() -> void:
@@ -3822,8 +4350,12 @@ func _emit_cooldown_state() -> void:
 		"basic": basic_attack_cooldown_left,
 		"ability_1": ability_1_cooldown_left,
 		"ability_2": ability_2_cooldown_left,
+		"ability_2_unlocked": _is_ally_dash_unlocked(),
 		"roll": roll_cooldown_left,
 		"block_active": is_blocking,
+		"block_cooldown_left": ring_shield_block_cooldown_left if _is_shield_ring_equipped() else 0.0,
+		"fortify_stacks": bulwark_fortify_stacks if _is_bulwark_ring_equipped() else 0,
+		"berserker_active": _is_berserker_rage_active(),
 		"counter_unlocked": _is_counter_strike_unlocked(),
 		"counter_ready": counter_strike_available,
 		"counter_window_left": counter_strike_window_left,
@@ -3834,7 +4366,9 @@ func _emit_cooldown_state() -> void:
 		"equipped_sword_id": equipped_sword_id,
 		"equipped_sword_name": get_equipped_sword_name(),
 		"equipped_shield_id": equipped_shield_id,
-		"equipped_shield_name": get_equipped_shield_name()
+		"equipped_shield_name": get_equipped_shield_name(),
+		"equipped_ring_id": equipped_ring_id,
+		"equipped_ring_name": get_equipped_ring_name()
 	})
 
 
@@ -3846,6 +4380,9 @@ func _die() -> void:
 	counter_strike_window_left = 0.0
 	is_rolling = false
 	is_invulnerable = false
+	ring_shield_block_active_left = 0.0
+	ring_shield_pending_cooldown_reduction = 0.0
+	ring_shield_cooldown_pending = false
 	heal_flash_left = 0.0
 	_cancel_harpoon_state()
 	_cancel_charge_attack()
@@ -4248,6 +4785,8 @@ func _spawn_damage_popup(world_position: Vector2, damage_amount: float) -> void:
 func _spawn_combat_text_popup(world_position: Vector2, text: String, text_color: Color, duration: float = 0.45) -> void:
 	if text.is_empty():
 		return
+	if not _is_debug_text_visible():
+		return
 	var scene_root := get_tree().current_scene
 	if scene_root == null:
 		scene_root = get_parent()
@@ -4280,6 +4819,13 @@ func _spawn_combat_text_popup(world_position: Vector2, text: String, text_color:
 		if is_instance_valid(label):
 			label.queue_free()
 	)
+
+
+func _is_debug_text_visible() -> bool:
+	var tree := get_tree()
+	if tree == null:
+		return false
+	return bool(tree.get_meta("debug_hitbox_mode_enabled", false))
 
 
 func _set_model_palette(body_color: Color, head_color: Color, arm_color: Color, blade_color: Color, cape_color: Color) -> void:
