@@ -173,14 +173,25 @@ func _rebuild_floor_tiles() -> void:
 	var top_rim_end := top_rim_rows - 1
 	var bottom_rim_start := maxi(0, fill_rows - bottom_rim_rows)
 	var left_rim_end := rim_cols - 1
-	var right_rim_start := maxi(0, fill_columns - rim_cols)
+	# Anchor the right wall to the actual arena/play-area boundary instead of the
+	# padded tile fill width so doors and wall visuals line up.
+	var right_edge_column := clampi(
+		int(floor((maxf(0.0, arena_width) - 0.001) / float(tile_w))),
+		0,
+		fill_columns - 1
+	)
+	var right_rim_start := maxi(0, right_edge_column - rim_cols + 1)
+	var right_rim_end := right_edge_column
 
 	for y in range(fill_rows):
 		for x in range(fill_columns):
+			# Do not render padded overflow columns beyond the playable right edge.
+			if x > right_edge_column:
+				continue
 			var use_top_rim := top_rim_rows > 0 and y <= top_rim_end
 			var use_bottom_rim := bottom_rim_rows > 0 and y >= bottom_rim_start
 			var use_left_rim := rim_cols > 0 and x <= left_rim_end
-			var use_right_rim := rim_cols > 0 and x >= right_rim_start
+			var use_right_rim := rim_cols > 0 and x >= right_rim_start and x <= right_rim_end
 			var atlas_coord: Vector2i
 			if use_top_rim:
 				atlas_coord = _pick_tile_coord(

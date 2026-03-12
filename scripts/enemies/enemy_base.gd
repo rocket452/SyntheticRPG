@@ -119,6 +119,7 @@ const THREAT_EPSILON: float = 0.001
 @export var attack_hold_frame: int = 2
 @export var attack_recovery_hold_duration: float = 0.0
 @export var use_single_phase_loop: bool = true
+@export var minotaur_aggro_distance_multiplier: float = 4.0
 @export var boss_can_summon_minions: bool = true
 @export var boss_mark_start_range: float = 210.0
 @export var boss_mark_duration: float = 2.0
@@ -559,6 +560,8 @@ var cobra_recoil_pose_left: float = 0.0
 var cobra_pending_attack_mode: CobraAttackMode = CobraAttackMode.NONE
 var cobra_last_heavy_start_distance: float = 0.0
 var cobra_aggroed: bool = false
+var cacodemon_aggroed: bool = false
+var minotaur_aggroed: bool = false
 var pending_attack: bool = false
 var player: Node = null
 var dead: bool = false
@@ -832,6 +835,8 @@ func _ready() -> void:
 	cobra_pending_attack_mode = CobraAttackMode.NONE
 	cobra_last_heavy_start_distance = 0.0
 	cobra_aggroed = false
+	cacodemon_aggroed = false
+	minotaur_aggroed = false
 	player_weapon_debuff_debug_logging = player_weapon_debuff_debug_logging or _is_env_flag_enabled("SWORD_DEBUG")
 	_reset_periodic_hurt_anim_cooldown()
 	_set_boss_loop_state(BossLoopState.IDLE, 0.0)
@@ -1061,15 +1066,26 @@ func _move_and_slide_with_debuffs() -> void:
 	move_and_slide()
 
 
-func _hold_shadow_fear_state(delta: float, to_player: Vector2) -> void:
+func _hold_shadow_fear_state(delta: float) -> void:
+	var locked_facing := external_sprite_facing_direction
+	if locked_facing.length_squared() <= 0.0001:
+		locked_facing = committed_attack_facing_direction
+	if locked_facing.length_squared() <= 0.0001:
+		locked_facing = Vector2.RIGHT
+	locked_facing = locked_facing.normalized()
+
+	external_sprite_facing_direction = locked_facing
+	if using_external_monster_sprite:
+		rotation = 0.0
+	else:
+		rotation = locked_facing.angle()
+
 	velocity = Vector2.ZERO
 	knockback_velocity = Vector2.ZERO
 	attack_telegraph.visible = false
 	weapon_trail.visible = false
 	slash_effect.visible = false
-	_move_and_slide_with_debuffs()
-	_clamp_to_arena()
-	_update_visuals(delta, to_player)
+	_update_visuals(delta, locked_facing)
 	_update_health_bar()
 
 
@@ -1213,6 +1229,9 @@ func _physics_process(delta: float) -> void:
 		return
 
 	var to_player: Vector2 = player.global_position - global_position
+	if shadow_fear_left > 0.0:
+		_hold_shadow_fear_state(delta)
+		return
 	var lock_facing_from_hit := (stun_left > 0.0 or hurt_anim_left > 0.0) and not _is_cacodemon_uninterruptible_action_active()
 	var committed_attack_active := (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0 or spin_active_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001
 	if not lock_facing_from_hit:
@@ -1243,10 +1262,6 @@ func _physics_process(delta: float) -> void:
 		_clamp_to_arena()
 		_update_visuals(delta, to_player)
 		_update_health_bar()
-		return
-
-	if shadow_fear_left > 0.0:
-		_hold_shadow_fear_state(delta, to_player)
 		return
 
 	if spin_charge_left > 0.0:
@@ -1312,7 +1327,9 @@ func _physics_process(delta: float) -> void:
 	attack_cooldown_left = maxf(0.0, attack_cooldown_left - delta)
 
 	var distance_to_player := to_player.length()
-	if _is_cobra_visual_profile():
+	if _hold_minotaur_until_player_aggro(distance_to_player):
+		velocity = Vector2.ZERO
+	elif _is_cobra_visual_profile():
 		_tick_cobra_duel_loop(distance_to_player, to_player)
 	else:
 		if distance_to_player > attack_range * 0.9:
@@ -1377,6 +1394,10 @@ func _physics_process_single_phase(delta: float) -> void:
 	if is_instance_valid(player):
 		to_player = player.global_position - global_position
 
+	if shadow_fear_left > 0.0:
+		_hold_shadow_fear_state(delta)
+		return
+
 	_update_boss_facing(delta, to_player)
 
 	if stun_left > 0.0:
@@ -1395,8 +1416,15 @@ func _physics_process_single_phase(delta: float) -> void:
 		_update_health_bar()
 		return
 
-	if shadow_fear_left > 0.0:
-		_hold_shadow_fear_state(delta, to_player)
+	var distance_to_player := to_player.length()
+	if _hold_cacodemon_until_player_aggro(distance_to_player):
+		velocity = Vector2.ZERO
+		_move_and_slide_with_debuffs()
+		_apply_soft_enemy_separation(delta)
+		_clamp_to_arena()
+		knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, hit_knockback_decay * delta)
+		_update_visuals(delta, to_player)
+		_update_health_bar()
 		return
 
 	if _uses_breath_weapon_profile() and is_miniboss:
@@ -1966,6 +1994,8 @@ func _tick_boss_idle_state(to_player: Vector2) -> void:
 	pending_attack = false
 	attack_windup_left = 0.0
 	attack_prestrike_hold_left = 0.0
+	if _hold_minotaur_until_player_aggro(to_player.length()):
+		return
 	if attack_recovery_hold_left > 0.0:
 		return
 	if boss_can_summon_minions and boss_summon_count > 0 and boss_summon_cycle_left <= 0.0:
@@ -1989,14 +2019,16 @@ func _tick_boss_idle_state(to_player: Vector2) -> void:
 	# 3) mark charge target
 	# 4) hold mark window
 	# 5) charge
-	boss_marked_ally = null
-	boss_marked_ally_locked_position = Vector2.ZERO
+	# Lock the selected mark target for this cycle so the post-shockwave phase
+	# still advances even if the shockwave itself does not connect.
+	boss_marked_ally = preview_mark_target
+	boss_marked_ally_locked_position = preview_mark_target.global_position
 	boss_charge_reposition_complete = false
 	boss_charge_commit_hold_left = 0.0
 	boss_charge_runway_anchor = global_position
 	boss_charge_lane_start = global_position
 	boss_charge_lane_end = global_position
-	var to_marked := preview_mark_target.global_position - global_position
+	var to_marked := boss_marked_ally_locked_position - global_position
 	if to_marked.length_squared() <= 0.0001:
 		# If we are stacked on top of the mark target, keep the loop progressing.
 		# Use a stable fallback facing instead of bailing out of the attack cycle.
@@ -2674,11 +2706,14 @@ func _tick_boss_windup_state(delta: float) -> void:
 				_log_boss_lunge("SHOCKWAVE_SKIPPED basic_attacks=%d required=%d" % [boss_charge_basic_attacks_since_last_shockwave, _get_required_boss_shockwave_basic_attacks()])
 			else:
 				_log_boss_lunge("SHOCKWAVE_SKIPPED no_targets_in_range")
-		var mark_target := _select_mark_target()
+		var mark_target := _get_or_reacquire_mark_target()
+		if mark_target == null:
+			mark_target = _select_mark_target()
+			if mark_target != null:
+				boss_marked_ally = mark_target
 		if mark_target == null:
 			_set_boss_loop_state(BossLoopState.IDLE, 0.0)
 			return
-		boss_marked_ally = mark_target
 		boss_marked_ally_locked_position = mark_target.global_position
 		boss_charge_lane_start = global_position
 		boss_charge_lane_end = boss_marked_ally_locked_position
@@ -3667,14 +3702,7 @@ func _tick_cobra_duel_loop(distance_to_player: float, to_player: Vector2) -> voi
 	# Grunt duel loop: hold a readable threat range, commit one strike, then reset spacing.
 	# Cobra duels read better with direct movement, not anti-clump slot steering.
 	if not cobra_aggroed:
-		var aggro_trigger_distance := maxf(
-			24.0,
-			maxf(
-				cobra_attack_max_range * 1.3,
-				cobra_preferred_range + cobra_preferred_range_tolerance
-			)
-		)
-		aggro_trigger_distance *= 4.0
+		var aggro_trigger_distance := _get_snake_style_aggro_trigger_distance()
 		if distance_to_player > aggro_trigger_distance:
 			velocity = Vector2.ZERO
 			return
@@ -3742,6 +3770,51 @@ func _tick_cobra_duel_loop(distance_to_player: float, to_player: Vector2) -> voi
 	committed_attack_facing_direction = attack_facing.normalized()
 
 
+func _get_snake_style_aggro_trigger_distance() -> float:
+	var aggro_trigger_distance := maxf(
+		24.0,
+		maxf(
+			cobra_attack_max_range * 1.3,
+			cobra_preferred_range + cobra_preferred_range_tolerance
+		)
+	)
+	return aggro_trigger_distance * 4.0
+
+
+func _hold_cacodemon_until_player_aggro(distance_to_player: float) -> bool:
+	if not _is_exact_cacodemon_visual_profile():
+		return false
+	if cacodemon_aggroed:
+		return false
+	if not is_instance_valid(player):
+		return true
+	# Mirror snake-style one-way aggro: idle until the player enters aggro range,
+	# then stay aggressive for the rest of the encounter.
+	var aggro_trigger_distance := _get_snake_style_aggro_trigger_distance()
+	if distance_to_player > aggro_trigger_distance:
+		return true
+	cacodemon_aggroed = true
+	return false
+
+
+func _hold_minotaur_until_player_aggro(distance_to_player: float) -> bool:
+	if monster_visual_profile != MonsterVisualProfile.MINOTAUR:
+		return false
+	if minotaur_aggroed:
+		return false
+	if not is_instance_valid(player):
+		return true
+	# Mirror snake-style one-way aggro: stay planted until player enters close-combat range,
+	# then stay aggressive for the rest of the encounter.
+	# Intentionally do NOT use boss_mark_start_range here (too large for room-entry gating).
+	var aggro_trigger_distance := maxf(24.0, attack_range * 1.3)
+	aggro_trigger_distance *= maxf(0.1, minotaur_aggro_distance_multiplier)
+	if distance_to_player > aggro_trigger_distance:
+		return true
+	minotaur_aggroed = true
+	return false
+
+
 func _set_cobra_recovery_window(base_duration: float, apply_bait_bonus: bool, damage_multiplier: float = -1.0) -> void:
 	# Correct defense (block/dodge/bait) opens this punish window.
 	if not _is_cobra_visual_profile():
@@ -3768,6 +3841,10 @@ func _apply_soft_enemy_separation(delta: float) -> void:
 	if not soft_collision_enabled:
 		return
 	if _is_cobra_visual_profile() and not cobra_aggroed:
+		return
+	if _is_exact_cacodemon_visual_profile() and not cacodemon_aggroed:
+		return
+	if monster_visual_profile == MonsterVisualProfile.MINOTAUR and not minotaur_aggroed:
 		return
 	if dead or delta <= 0.0:
 		return

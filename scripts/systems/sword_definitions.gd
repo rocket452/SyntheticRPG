@@ -14,8 +14,8 @@ const SWORD_DEFINITIONS: Dictionary = {
 		"description": "Basic attack swings reach farther.",
 		"accent_color": Color(1.0, 0.77, 0.34, 1.0),
 		"aura_color": Color(1.0, 0.76, 0.28, 0.82),
-		"charge_preview_color": Color(1.0, 0.78, 0.32, 0.44),
-		"charge_release_color": Color(1.0, 0.64, 0.26, 0.52),
+		"charge_preview_color": Color(0.42, 0.86, 1.0, 0.44),
+		"charge_release_color": Color(0.36, 0.8, 1.0, 0.52),
 		"impact_color": Color(1.0, 0.82, 0.45, 0.95),
 		"extended_basic_range_multiplier": 1.7
 	},
