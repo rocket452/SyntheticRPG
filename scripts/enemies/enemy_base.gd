@@ -151,7 +151,11 @@ const THREAT_EPSILON: float = 0.001
 @export var boss_charge_shockwave_basic_attacks_required: int = 3
 @export var boss_charge_shockwave_block_push_resistance: float = 0.45
 @export var boss_charge_shockwave_block_stamina_drain: float = 18.0
-@export var boss_charge_post_shockwave_delay: float = 0.04
+@export var boss_charge_post_shockwave_delay: float = 0.12
+@export var boss_charge_shockwave_attack_anim_duration: float = 0.18
+@export var boss_charge_shockwave_fill_duration: float = 0.24
+@export var boss_charge_shockwave_fill_peak_alpha: float = 0.82
+@export var boss_charge_shockwave_fill_end_alpha: float = 0.08
 @export var boss_charge_opening_leap_enabled: bool = true
 @export var boss_charge_opening_leap_distance: float = 132.0
 @export var boss_charge_opening_leap_diagonal_offset: float = 56.0
@@ -624,6 +628,9 @@ var boss_charge_reposition_complete: bool = false
 var boss_charge_commit_hold_left: float = 0.0
 var boss_charge_runway_anchor: Vector2 = Vector2.ZERO
 var boss_charge_shockwave_emitted: bool = false
+var boss_charge_post_shockwave_left: float = 0.0
+var boss_charge_shockwave_fill_left: float = 0.0
+var boss_charge_shockwave_fill_total: float = 0.0
 var boss_charge_basic_attacks_since_last_shockwave: int = 0
 var boss_charge_opening_leap_done: bool = false
 var boss_charge_opening_leap_left: float = 0.0
@@ -1561,6 +1568,7 @@ func _tick_enemy_runtime_timers(delta: float) -> void:
 	boss_mark_cycle_left = maxf(0.0, boss_mark_cycle_left - delta)
 	boss_summon_cycle_left = maxf(0.0, boss_summon_cycle_left - delta)
 	boss_dps_mark_left = maxf(0.0, boss_dps_mark_left - delta)
+	boss_charge_shockwave_fill_left = maxf(0.0, boss_charge_shockwave_fill_left - delta)
 	companion_target_refresh_left = maxf(0.0, companion_target_refresh_left - delta)
 	periodic_hurt_anim_cooldown_left = maxf(0.0, periodic_hurt_anim_cooldown_left - delta)
 	_tick_pending_basic_block_success_fx(delta)
@@ -2019,16 +2027,16 @@ func _tick_boss_idle_state(to_player: Vector2) -> void:
 	# 3) mark charge target
 	# 4) hold mark window
 	# 5) charge
-	# Lock the selected mark target for this cycle so the post-shockwave phase
-	# still advances even if the shockwave itself does not connect.
-	boss_marked_ally = preview_mark_target
-	boss_marked_ally_locked_position = preview_mark_target.global_position
+	# Do not commit the marked target yet; commit only after the shockwave has fired.
+	# This preserves the intended sequence and avoids pre-shockwave mark behaviors.
+	boss_marked_ally = null
+	boss_marked_ally_locked_position = Vector2.ZERO
 	boss_charge_reposition_complete = false
 	boss_charge_commit_hold_left = 0.0
 	boss_charge_runway_anchor = global_position
 	boss_charge_lane_start = global_position
 	boss_charge_lane_end = global_position
-	var to_marked := boss_marked_ally_locked_position - global_position
+	var to_marked := preview_mark_target.global_position - global_position
 	if to_marked.length_squared() <= 0.0001:
 		# If we are stacked on top of the mark target, keep the loop progressing.
 		# Use a stable fallback facing instead of bailing out of the attack cycle.
@@ -2665,10 +2673,6 @@ func _tick_boss_mark_state(delta: float) -> void:
 	velocity = Vector2.ZERO
 	var mark_target := _get_or_reacquire_mark_target()
 	if mark_target == null:
-		mark_target = _select_mark_target()
-		if mark_target != null:
-			boss_marked_ally = mark_target
-	if mark_target == null:
 		_set_boss_loop_state(BossLoopState.IDLE, 0.0)
 		return
 	boss_marked_ally_locked_position = mark_target.global_position
@@ -2696,32 +2700,34 @@ func _tick_boss_windup_state(delta: float) -> void:
 		_tick_boss_state_timer(delta)
 		if boss_state_time_left > 0.0:
 			return
-		var shockwave_targets_in_range := _count_boss_shockwave_targets_in_range()
 		var can_emit_shockwave := _can_emit_boss_charge_shockwave()
 		boss_charge_shockwave_emitted = true
-		if can_emit_shockwave and shockwave_targets_in_range > 0:
+		if can_emit_shockwave:
 			_emit_boss_charge_shockwave_push()
 		else:
-			if not can_emit_shockwave:
-				_log_boss_lunge("SHOCKWAVE_SKIPPED basic_attacks=%d required=%d" % [boss_charge_basic_attacks_since_last_shockwave, _get_required_boss_shockwave_basic_attacks()])
-			else:
-				_log_boss_lunge("SHOCKWAVE_SKIPPED no_targets_in_range")
-		var mark_target := _get_or_reacquire_mark_target()
-		if mark_target == null:
-			mark_target = _select_mark_target()
-			if mark_target != null:
-				boss_marked_ally = mark_target
-		if mark_target == null:
-			_set_boss_loop_state(BossLoopState.IDLE, 0.0)
+			_log_boss_lunge("SHOCKWAVE_SKIPPED basic_attacks=%d required=%d" % [boss_charge_basic_attacks_since_last_shockwave, _get_required_boss_shockwave_basic_attacks()])
+		boss_charge_post_shockwave_left = maxf(0.0, boss_charge_post_shockwave_delay)
+		if boss_charge_post_shockwave_left > 0.0:
 			return
-		boss_marked_ally_locked_position = mark_target.global_position
-		boss_charge_lane_start = global_position
-		boss_charge_lane_end = boss_marked_ally_locked_position
-		var to_marked := boss_marked_ally_locked_position - global_position
-		if to_marked.length_squared() > 0.0001:
-			committed_attack_facing_direction = to_marked.normalized()
-		_log_boss_lunge("MARK target=%s hold=%.2f" % [mark_target.name, maxf(0.0, boss_mark_duration)])
-		_set_boss_loop_state(BossLoopState.MARK, boss_mark_duration)
+
+	if boss_charge_post_shockwave_left > 0.0:
+		boss_charge_post_shockwave_left = maxf(0.0, boss_charge_post_shockwave_left - delta)
+		if boss_charge_post_shockwave_left > 0.0:
+			return
+
+	var mark_target := _select_mark_target()
+	if mark_target == null:
+		_set_boss_loop_state(BossLoopState.IDLE, 0.0)
+		return
+	boss_marked_ally = mark_target
+	boss_marked_ally_locked_position = mark_target.global_position
+	boss_charge_lane_start = global_position
+	boss_charge_lane_end = boss_marked_ally_locked_position
+	var to_marked := boss_marked_ally_locked_position - global_position
+	if to_marked.length_squared() > 0.0001:
+		committed_attack_facing_direction = to_marked.normalized()
+	_log_boss_lunge("MARK target=%s hold=%.2f" % [mark_target.name, maxf(0.0, boss_mark_duration)])
+	_set_boss_loop_state(BossLoopState.MARK, boss_mark_duration)
 
 
 func _count_boss_shockwave_targets_in_range() -> int:
@@ -2840,10 +2846,26 @@ func _emit_boss_charge_shockwave_push() -> void:
 		# Apply push after damage so receive_hit() knockback does not overwrite shockwave displacement.
 		_apply_boss_shockwave_push_to_target(candidate, push_direction, push_strength, push_stun)
 		pushed_count += 1
+	_trigger_boss_shockwave_execution_visuals()
 	_spawn_hit_effect(global_position + Vector2(0.0, -16.0), Color(1.0, 0.36, 0.22, 0.98), maxf(14.0, boss_lunge_impact_effect_size * 1.22))
 	_trigger_slash_effect(maxf(52.0, boss_charge_shockwave_radius * 0.6), 172.0, Color(1.0, 0.42, 0.24, 0.92), 0.26, 8.0)
 	boss_charge_basic_attacks_since_last_shockwave = 0
 	_log_boss_lunge("SHOCKWAVE push_count=%d damaged_count=%d radius=%.1f strength=%.1f damage=%.1f basic_count=%d required=%d" % [pushed_count, damaged_count, boss_charge_shockwave_radius, push_strength, shockwave_damage, consumed_basic_count, _get_required_boss_shockwave_basic_attacks()])
+
+
+func _trigger_boss_shockwave_execution_visuals() -> void:
+	if monster_visual_profile != MonsterVisualProfile.MINOTAUR:
+		return
+	pending_attack = false
+	attack_windup_left = 0.0
+	attack_prestrike_hold_left = 0.0
+	attack_flash_left = maxf(attack_flash_left, 0.16)
+	var anim_duration := maxf(0.1, boss_charge_shockwave_attack_anim_duration)
+	_start_attack_animation(anim_duration, 1.45)
+	boss_charge_shockwave_fill_total = maxf(0.08, boss_charge_shockwave_fill_duration)
+	boss_charge_shockwave_fill_left = boss_charge_shockwave_fill_total
+	_rebuild_spin_warning_polygon()
+	_update_spin_warning_transform()
 
 
 func _can_emit_boss_charge_shockwave() -> bool:
@@ -3368,6 +3390,9 @@ func _set_boss_loop_state(next_state: BossLoopState, duration: float) -> void:
 			boss_charge_reposition_complete = false
 			boss_charge_commit_hold_left = 0.0
 			boss_charge_shockwave_emitted = false
+			boss_charge_post_shockwave_left = 0.0
+			boss_charge_shockwave_fill_left = 0.0
+			boss_charge_shockwave_fill_total = 0.0
 			boss_charge_opening_leap_done = false
 			boss_charge_opening_leap_left = 0.0
 			boss_charge_opening_leap_velocity = Vector2.ZERO
@@ -3382,16 +3407,22 @@ func _set_boss_loop_state(next_state: BossLoopState, duration: float) -> void:
 			boss_charge_reposition_complete = false
 			boss_charge_commit_hold_left = 0.0
 			boss_charge_shockwave_emitted = false
+			boss_charge_post_shockwave_left = 0.0
 			boss_charge_opening_leap_done = false
 			boss_charge_opening_leap_left = 0.0
 			boss_charge_opening_leap_velocity = Vector2.ZERO
 			_hide_spin_warning()
 		BossLoopState.WINDUP:
+			boss_marked_ally = null
+			boss_marked_ally_locked_position = Vector2.ZERO
 			pending_attack = true
 			attack_windup_left = maxf(0.01, duration)
 			attack_prestrike_hold_left = 0.0
 			boss_charge_commit_hold_left = 0.0
 			boss_charge_shockwave_emitted = false
+			boss_charge_post_shockwave_left = 0.0
+			boss_charge_shockwave_fill_left = 0.0
+			boss_charge_shockwave_fill_total = 0.0
 			boss_charge_opening_leap_done = false
 			boss_charge_opening_leap_left = 0.0
 			boss_charge_opening_leap_velocity = Vector2.ZERO
@@ -3403,6 +3434,7 @@ func _set_boss_loop_state(next_state: BossLoopState, duration: float) -> void:
 			boss_charge_reposition_complete = false
 			boss_charge_commit_hold_left = 0.0
 			boss_charge_shockwave_emitted = false
+			boss_charge_post_shockwave_left = 0.0
 			boss_charge_opening_leap_left = 0.0
 			boss_charge_opening_leap_velocity = Vector2.ZERO
 			_hide_spin_warning()
@@ -3414,6 +3446,9 @@ func _set_boss_loop_state(next_state: BossLoopState, duration: float) -> void:
 			boss_charge_reposition_complete = false
 			boss_charge_commit_hold_left = 0.0
 			boss_charge_shockwave_emitted = false
+			boss_charge_post_shockwave_left = 0.0
+			boss_charge_shockwave_fill_left = 0.0
+			boss_charge_shockwave_fill_total = 0.0
 			boss_charge_opening_leap_left = 0.0
 			boss_charge_opening_leap_velocity = Vector2.ZERO
 			_hide_spin_warning()
@@ -3427,11 +3462,17 @@ func _set_boss_loop_state(next_state: BossLoopState, duration: float) -> void:
 			boss_charge_reposition_complete = false
 			boss_charge_commit_hold_left = 0.0
 			boss_charge_shockwave_emitted = false
+			boss_charge_post_shockwave_left = 0.0
+			boss_charge_shockwave_fill_left = 0.0
+			boss_charge_shockwave_fill_total = 0.0
 			boss_charge_opening_leap_left = 0.0
 			boss_charge_opening_leap_velocity = Vector2.ZERO
 			_hide_spin_warning()
 			_hide_boss_charge_telegraph()
 		_:
+			boss_charge_post_shockwave_left = 0.0
+			boss_charge_shockwave_fill_left = 0.0
+			boss_charge_shockwave_fill_total = 0.0
 			pending_attack = false
 			_hide_spin_warning()
 			_hide_boss_charge_telegraph()
@@ -3462,6 +3503,8 @@ func _is_valid_mark_target(target: Variant) -> bool:
 	var target_healer := target_node as FriendlyHealer
 	var target_ratfolk := target_node as FriendlyRatfolk
 	if target_healer == null and target_ratfolk == null:
+		return false
+	if _is_friendly_npc_temporarily_unavailable(target_node):
 		return false
 	if not _is_friendly_target_alive(target_node):
 		return false
@@ -4043,7 +4086,7 @@ func _get_spin_attack_center() -> Vector2:
 func _update_spin_warning_transform() -> void:
 	if spin_warning_area == null:
 		return
-	if use_single_phase_loop and boss_loop_state == BossLoopState.WINDUP:
+	if use_single_phase_loop and (boss_loop_state == BossLoopState.WINDUP or boss_charge_shockwave_fill_left > 0.0):
 		spin_warning_area.position = Vector2.ZERO
 		spin_warning_area.rotation = 0.0
 		return
@@ -4092,6 +4135,8 @@ func _get_tank_player_target() -> Player:
 func _is_valid_threat_target(target: Node2D) -> bool:
 	if target == null or not is_instance_valid(target):
 		return false
+	if _is_friendly_npc_temporarily_unavailable(target):
+		return false
 	if target.is_in_group("shadow_clones"):
 		return false
 	if target.has_method("is_shadow_clone_actor") and bool(target.call("is_shadow_clone_actor")):
@@ -4104,6 +4149,15 @@ func _is_valid_threat_target(target: Node2D) -> bool:
 	var target_healer := target as FriendlyHealer
 	var target_ratfolk := target as FriendlyRatfolk
 	return target_player != null or target_healer != null or target_ratfolk != null
+
+
+func _is_friendly_npc_temporarily_unavailable(target: Node2D) -> bool:
+	if target == null or not is_instance_valid(target):
+		return true
+	if not target.is_in_group("friendly_npcs"):
+		return false
+	# Caged allies are spawned but have physics processing disabled until rescued.
+	return not target.is_physics_processing()
 
 
 func _get_friendly_threat_candidates() -> Array[Node2D]:
@@ -5221,7 +5275,7 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	var holding_recovery_frame := action_key == "attack" and not pending_attack and attack_anim_left <= 0.0 and attack_recovery_hold_left > 0.0
 	var holding_spin_charge_frame := action_key == "attack" and spin_charge_left > 0.0
 	var holding_lunge_charge_frame := action_key == "attack" and lunge_charge_visual_active
-	var holding_mark_charge_prepare_frame := action_key == "attack" and mark_charge_prepare_visual_active
+	var holding_mark_charge_prepare_frame := action_key == "attack" and mark_charge_prepare_visual_active and attack_anim_left <= 0.0
 	var holding_fireball_cast_frame := action_key == "attack" and fireball_cast_active
 	var holding_summon_cast_frame := action_key == "attack" and summon_cast_active
 	if not holding_attack_frame and not holding_recovery_frame and not holding_fireball_cast_frame and not holding_summon_cast_frame:
@@ -5965,10 +6019,20 @@ func _update_spin_warning_visual(delta: float) -> void:
 	_update_spin_warning_transform()
 	if use_single_phase_loop:
 		var warning_active := boss_loop_state == BossLoopState.WINDUP and not boss_charge_shockwave_emitted
-		if not warning_active:
+		var fill_active := monster_visual_profile == MonsterVisualProfile.MINOTAUR and boss_charge_shockwave_fill_left > 0.0
+		if not warning_active and not fill_active:
 			if spin_warning_area.visible:
 				spin_warning_area.visible = false
 				spin_warning_area.scale = Vector2.ONE
+			return
+		if fill_active:
+			var safe_fill_duration := maxf(0.01, boss_charge_shockwave_fill_total)
+			var fill_progress := clampf(1.0 - (boss_charge_shockwave_fill_left / safe_fill_duration), 0.0, 1.0)
+			var peak_alpha := clampf(boss_charge_shockwave_fill_peak_alpha, 0.0, 1.0)
+			var end_alpha := clampf(boss_charge_shockwave_fill_end_alpha, 0.0, peak_alpha)
+			spin_warning_area.visible = true
+			spin_warning_area.color = Color(1.0, 0.38, 0.18, lerpf(peak_alpha, end_alpha, fill_progress))
+			spin_warning_area.scale = spin_warning_area.scale.lerp(Vector2.ONE * lerpf(1.0, 1.06, fill_progress), clampf(delta * 16.0, 0.0, 1.0))
 			return
 		var safe_duration := maxf(0.01, boss_windup_duration)
 		var stage_progress := clampf(1.0 - (boss_state_time_left / safe_duration), 0.0, 1.0)

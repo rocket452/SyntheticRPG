@@ -1,23 +1,22 @@
-[gd_scene load_steps=4 format=3]
+[gd_scene load_steps=4 format=3 uid="uid://b1ovly82eepet"]
 
-[ext_resource type="Script" path="res://scripts/player/player.gd" id="1_4w5lx"]
-[ext_resource type="Texture2D" path="res://assets/external/ElthenAssets/fishfolk/Fishfolk Knight Sprite Sheet.png" id="2_h9e6x"]
+[ext_resource type="Script" uid="uid://ctv8ak6ruk2ye" path="res://scripts/player/player.gd" id="1_4w5lx"]
+[ext_resource type="Texture2D" uid="uid://xcuhufqtws1k" path="res://assets/external/ElthenAssets/fishfolk/Fishfolk Knight Sprite Sheet.png" id="2_h9e6x"]
 
 [sub_resource type="CircleShape2D" id="CircleShape2D_2mqlq"]
 radius = 14.0
 
 [node name="Player" type="CharacterBody2D"]
-collision_layer = 1
-collision_mask = 0
 z_index = 30
+collision_mask = 0
 script = ExtResource("1_4w5lx")
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
 shape = SubResource("CircleShape2D_2mqlq")
 
 [node name="CharacterSprite" type="Sprite2D" parent="."]
-texture_filter = 1
 z_index = 2
+texture_filter = 1
 position = Vector2(0, -12)
 scale = Vector2(2, 2)
 texture = ExtResource("2_h9e6x")
@@ -25,12 +24,14 @@ hframes = 8
 vframes = 6
 
 [node name="Shadow" type="Polygon2D" parent="."]
-position = Vector2(0, 16)
+visible = false
 z_index = -3
+position = Vector2(0, 16)
 color = Color(0, 0, 0, 0.36)
 polygon = PackedVector2Array(-24, 0, -22, -5, -14, -8, -4, -10, 4, -10, 14, -8, 22, -5, 24, 0, 22, 5, 14, 8, 4, 10, -4, 10, -14, 8, -22, 5)
 
 [node name="Body" type="Polygon2D" parent="."]
+visible = false
 z_index = 2
 color = Color(0.28, 0.33, 0.44, 1)
 polygon = PackedVector2Array(0, -17, 12, -9, 13, 8, 0, 16, -13, 8, -12, -9)
@@ -61,7 +62,6 @@ color = Color(0.36, 0.38, 0.45, 1)
 polygon = PackedVector2Array(-6, -2, 6, -2, 5, 2, -5, 2)
 
 [node name="NeckTrim" type="Polygon2D" parent="Body/NeckGuard"]
-position = Vector2(0, 0)
 color = Color(0.66, 0.56, 0.4, 0.8)
 polygon = PackedVector2Array(-5, -1, 5, -1, 4, 1, -4, 1)
 
@@ -258,30 +258,29 @@ polygon = PackedVector2Array(-3, -2, 3, -2, 3, 2, -3, 2)
 [node name="WeaponTrail" type="Line2D" parent="."]
 visible = false
 z_index = 4
-default_color = Color(0.84, 0.56, 0.28, 0.75)
+points = PackedVector2Array(0, 0, 1, 0)
 width = 3.0
-round_precision = 8
+default_color = Color(0.84, 0.56, 0.28, 0.75)
 joint_mode = 2
 begin_cap_mode = 1
 end_cap_mode = 1
-points = PackedVector2Array(0, 0, 1, 0)
 
 [node name="SlashEffect" type="Line2D" parent="."]
 visible = false
 z_index = 4
-default_color = Color(0.94, 0.66, 0.34, 0.85)
+points = PackedVector2Array(0, 0, 12, 0, 24, 0)
 width = 5.0
-round_precision = 8
+default_color = Color(0.94, 0.66, 0.34, 0.85)
 joint_mode = 2
 begin_cap_mode = 1
 end_cap_mode = 1
-points = PackedVector2Array(0, 0, 12, 0, 24, 0)
 
 [node name="BlockIndicator" type="Line2D" parent="."]
+visible = false
 z_index = 5
-default_color = Color(0.42, 0.42, 0.48, 0.45)
-width = 4.0
 points = PackedVector2Array(0, 0, 30, 0)
+width = 4.0
+default_color = Color(0.42, 0.42, 0.48, 0.45)
 
 [node name="AttackTelegraph" type="Polygon2D" parent="."]
 visible = false
@@ -290,8 +289,7 @@ color = Color(0.94, 0.66, 0.34, 0.34)
 polygon = PackedVector2Array(0, 0, 42, -14, 42, 14)
 
 [node name="Camera2D" type="Camera2D" parent="."]
+zoom = Vector2(1.6, 1.6)
+limit_smoothed = true
 position_smoothing_enabled = true
 position_smoothing_speed = 8.0
-enabled = true
-limit_smoothed = true
-zoom = Vector2(1.6, 1.6)

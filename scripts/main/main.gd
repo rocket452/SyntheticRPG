@@ -2,17 +2,61 @@ extends Node2D
 
 const AUTOPLAY_TEST_RUNNER_SCRIPT := preload("res://scripts/testing/autoplay_test_runner.gd")
 const INVENTORY_MENU_SCRIPT := preload("res://scripts/ui/inventory_menu.gd")
+const SWORD_DEFINITIONS := preload("res://scripts/systems/sword_definitions.gd")
+const SHIELD_DEFINITIONS := preload("res://scripts/systems/shield_definitions.gd")
+const RING_DEFINITIONS := preload("res://scripts/systems/ring_definitions.gd")
+const CHEST_BOOT_ITEM_DESCRIPTIONS: Dictionary = {
+	"swift_boots": "Reduces Roll cooldown by 50%.",
+	"strider_boots": "Increases base movement speed by 15%.",
+	"bodyguard_boots": "Enables Dash to Ally ability.",
+	"trailblazer_boots": "Increases base movement speed by 15%."
+}
+const CHEST_ITEM_DISPLAY_NAMES: Dictionary = {
+	"swift_boots": "Swift Boots",
+	"strider_boots": "Strider Boots",
+	"bodyguard_boots": "Bodyguard Boots",
+	"ring_bulwark": "Ring of the Bulwark",
+	"ring_berserker": "Ring of the Berserker",
+	"ring_shield": "Ring of the Shield",
+	"trailblazer_boots": "Trailblazer Boots",
+	"sword_extended_charge": "Extended Charge Sword",
+	"sword_slowing": "Slowing Sword",
+	"sword_stacking_dot": "Stacking DoT Sword",
+	"shield_revenge": "Revenge Shield",
+	"shield_thorns": "Thorns Shield",
+	"shield_wide_guard": "Wide Guard Shield"
+}
+const CHEST_PICKUP_TO_SWORD_ID: Dictionary = {
+	"sword_extended_charge": SWORD_DEFINITIONS.EXTENDED_CHARGE_SWORD,
+	"sword_slowing": SWORD_DEFINITIONS.SLOWING_SWORD,
+	"sword_stacking_dot": SWORD_DEFINITIONS.STACKING_DOT_SWORD
+}
+const CHEST_PICKUP_TO_SHIELD_ID: Dictionary = {
+	"shield_revenge": SHIELD_DEFINITIONS.REVENGE_SHIELD,
+	"shield_thorns": SHIELD_DEFINITIONS.THORNS_SHIELD,
+	"shield_wide_guard": SHIELD_DEFINITIONS.WIDE_GUARD_SHIELD
+}
+const CHEST_PICKUP_TO_RING_ID: Dictionary = {
+	"ring_bulwark": RING_DEFINITIONS.BULWARK_RING,
+	"ring_berserker": RING_DEFINITIONS.BERSERKER_RING,
+	"ring_shield": RING_DEFINITIONS.SHIELD_RING
+}
+const CHEST_POPUP_MIN_CLOSE_DELAY_MS: int = 120
 
 @onready var arena: Arena = $Arena
 @onready var hud: HUD = $HUD
 
 var encounter_picker_layer: CanvasLayer = null
 var inventory_menu_layer: CanvasLayer = null
+var chest_item_popup_layer: CanvasLayer = null
+var chest_item_popup_opened_at_ms: int = 0
 
 
 func _ready() -> void:
 	InputConfig.ensure_actions()
 	_connect_signals()
+	if is_instance_valid(hud) and hud.has_method("set_text_debug_visible"):
+		hud.call("set_text_debug_visible", false)
 	if _is_autoplay_requested():
 		arena.start_demo_with_encounter(_get_autoplay_encounter_type())
 		_maybe_start_autoplay_test()
@@ -21,6 +65,14 @@ func _ready() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if _has_active_chest_item_popup():
+		var key_event := event as InputEventKey
+		if key_event != null and key_event.pressed and not key_event.echo:
+			var elapsed := Time.get_ticks_msec() - chest_item_popup_opened_at_ms
+			if elapsed >= CHEST_POPUP_MIN_CLOSE_DELAY_MS:
+				_close_chest_item_popup()
+			get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed("inventory_toggle"):
 		if not _has_active_encounter_picker():
 			_toggle_inventory_menu()
@@ -77,6 +129,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if key_event.keycode == KEY_F10:
 		if is_instance_valid(arena):
 			var hitbox_debug_enabled := arena.toggle_hitbox_debug_mode()
+			if is_instance_valid(hud) and hud.has_method("set_text_debug_visible"):
+				hud.call("set_text_debug_visible", hitbox_debug_enabled)
 			hud.show_status_message("Hit/Hurtbox Debug %s" % ("ON" if hitbox_debug_enabled else "OFF"), 1.0)
 			get_viewport().set_input_as_handled()
 		return
@@ -97,10 +151,14 @@ func _connect_signals() -> void:
 	arena.player_died.connect(hud.show_defeat)
 	arena.demo_won.connect(hud.show_victory)
 	arena.combat_debug_changed.connect(hud.update_combat_debug)
+	if arena.has_signal("two_room_chest_item_received"):
+		arena.two_room_chest_item_received.connect(_on_two_room_chest_item_received)
 	if is_instance_valid(arena.player) and arena.player.has_signal("equipped_sword_changed"):
 		arena.player.equipped_sword_changed.connect(_on_player_equipped_sword_changed)
 	if is_instance_valid(arena.player) and arena.player.has_signal("equipped_shield_changed"):
 		arena.player.equipped_shield_changed.connect(_on_player_equipped_shield_changed)
+	if is_instance_valid(arena.player) and arena.player.has_signal("equipped_ring_changed"):
+		arena.player.equipped_ring_changed.connect(_on_player_equipped_ring_changed)
 
 
 func _maybe_start_autoplay_test() -> void:
@@ -178,7 +236,7 @@ func _show_encounter_picker() -> void:
 	content.add_child(shardsoul_button)
 
 	var two_room_button := Button.new()
-	two_room_button.text = "5. Start Cobra 5-Room Test"
+	two_room_button.text = "5. Adventure Mode"
 	two_room_button.custom_minimum_size = Vector2(0.0, 44.0)
 	two_room_button.pressed.connect(func() -> void:
 		_start_selected_encounter(Arena.EncounterType.COBRA_TWO_ROOM_TEST)
@@ -196,6 +254,7 @@ func _show_encounter_picker() -> void:
 func _start_selected_encounter(encounter_type: int) -> void:
 	if not is_instance_valid(arena):
 		return
+	_close_chest_item_popup()
 	_close_inventory_menu()
 	if _has_active_encounter_picker():
 		encounter_picker_layer.queue_free()
@@ -236,18 +295,26 @@ func _open_inventory_menu() -> void:
 			arena.player.call("get_available_sword_entries"),
 			arena.player.call("get_equipped_sword_id"),
 			arena.player.call("get_available_shield_entries"),
-			arena.player.call("get_equipped_shield_id")
+			arena.player.call("get_equipped_shield_id"),
+			arena.player.call("get_available_ring_entries"),
+			arena.player.call("get_equipped_ring_id"),
+			arena.player.call("get_gold_total"),
+			arena.player.call("get_store_entries")
 		)
 	if menu_layer.has_signal("sword_selected"):
 		menu_layer.connect("sword_selected", Callable(self, "_on_inventory_sword_selected"))
 	if menu_layer.has_signal("shield_selected"):
 		menu_layer.connect("shield_selected", Callable(self, "_on_inventory_shield_selected"))
+	if menu_layer.has_signal("ring_selected"):
+		menu_layer.connect("ring_selected", Callable(self, "_on_inventory_ring_selected"))
+	if menu_layer.has_signal("store_purchase_requested"):
+		menu_layer.connect("store_purchase_requested", Callable(self, "_on_inventory_store_purchase_requested"))
 	if menu_layer.has_signal("menu_closed"):
 		menu_layer.connect("menu_closed", Callable(self, "_on_inventory_menu_closed"))
 	if arena.player.has_method("set_gameplay_input_blocked"):
 		arena.player.call("set_gameplay_input_blocked", true)
 	get_tree().paused = true
-	hud.show_status_message("Inventory Open - Select sword/shield", 1.0)
+	hud.show_status_message("Inventory Open - Equip gear / buy from store", 1.0)
 
 
 func _close_inventory_menu() -> void:
@@ -271,8 +338,7 @@ func _on_inventory_sword_selected(sword_id: String) -> void:
 	if changed:
 		var sword_name := String(arena.player.call("get_equipped_sword_name"))
 		hud.show_status_message("Equipped: %s" % sword_name, 1.2)
-	if _has_active_inventory_menu() and inventory_menu_layer.has_method("set_equipped_sword"):
-		inventory_menu_layer.call("set_equipped_sword", arena.player.call("get_equipped_sword_id"))
+	_refresh_inventory_menu_contents()
 
 
 func _on_inventory_shield_selected(shield_id: String) -> void:
@@ -284,8 +350,41 @@ func _on_inventory_shield_selected(shield_id: String) -> void:
 	if changed:
 		var shield_name := String(arena.player.call("get_equipped_shield_name"))
 		hud.show_status_message("Equipped: %s" % shield_name, 1.2)
-	if _has_active_inventory_menu() and inventory_menu_layer.has_method("set_equipped_shield"):
-		inventory_menu_layer.call("set_equipped_shield", arena.player.call("get_equipped_shield_id"))
+	_refresh_inventory_menu_contents()
+
+
+func _on_inventory_ring_selected(ring_id: String) -> void:
+	if not is_instance_valid(arena) or not is_instance_valid(arena.player):
+		return
+	if not arena.player.has_method("equip_ring"):
+		return
+	var changed := bool(arena.player.call("equip_ring", ring_id))
+	if changed:
+		var ring_name := String(arena.player.call("get_equipped_ring_name"))
+		hud.show_status_message("Equipped: %s" % ring_name, 1.2)
+	_refresh_inventory_menu_contents()
+
+
+func _on_inventory_store_purchase_requested(item_id: String) -> void:
+	if not is_instance_valid(arena) or not is_instance_valid(arena.player):
+		return
+	if not arena.player.has_method("purchase_store_item"):
+		return
+	var result_variant: Variant = arena.player.call("purchase_store_item", item_id)
+	if result_variant is Dictionary:
+		var result := result_variant as Dictionary
+		var purchase_succeeded := bool(result.get("success", false))
+		if purchase_succeeded:
+			var item_name := String(result.get("item_name", item_id))
+			var gold_left := maxi(0, int(result.get("gold_total", 0)))
+			hud.show_status_message("Purchased %s (%d gold left)" % [item_name, gold_left], 1.3)
+		else:
+			var reason := String(result.get("reason", "Purchase failed."))
+			if reason.to_lower().find("not enough gold") != -1 and hud.has_method("show_warning_status_message"):
+				hud.call("show_warning_status_message", reason, 2.2)
+			else:
+				hud.show_status_message(reason, 1.0)
+	_refresh_inventory_menu_contents()
 
 
 func _on_inventory_menu_closed() -> void:
@@ -298,6 +397,171 @@ func _on_player_equipped_sword_changed(_sword_id: String, sword_name: String) ->
 
 func _on_player_equipped_shield_changed(_shield_id: String, shield_name: String) -> void:
 	hud.show_status_message("Shield: %s" % shield_name, 1.2)
+
+
+func _on_player_equipped_ring_changed(_ring_id: String, ring_name: String) -> void:
+	hud.show_status_message("Ring: %s" % ring_name, 1.2)
+
+
+func _refresh_inventory_menu_contents() -> void:
+	if not _has_active_inventory_menu():
+		return
+	if not is_instance_valid(arena) or not is_instance_valid(arena.player):
+		return
+	if not inventory_menu_layer.has_method("configure"):
+		return
+	inventory_menu_layer.call(
+		"configure",
+		arena.player.call("get_available_sword_entries"),
+		arena.player.call("get_equipped_sword_id"),
+		arena.player.call("get_available_shield_entries"),
+		arena.player.call("get_equipped_shield_id"),
+		arena.player.call("get_available_ring_entries"),
+		arena.player.call("get_equipped_ring_id"),
+		arena.player.call("get_gold_total"),
+		arena.player.call("get_store_entries")
+	)
+
+
+func _on_two_room_chest_item_received(item_id: String) -> void:
+	var chest_item_data := _build_chest_item_popup_data(item_id)
+	_show_chest_item_popup(
+		String(chest_item_data.get("name", "Treasure")),
+		String(chest_item_data.get("description", "A rare item from the chest."))
+	)
+
+
+func _has_active_chest_item_popup() -> bool:
+	return is_instance_valid(chest_item_popup_layer)
+
+
+func _show_chest_item_popup(item_name: String, item_description: String) -> void:
+	_close_chest_item_popup()
+	var layer := CanvasLayer.new()
+	layer.name = "ChestItemPopup"
+	add_child(layer)
+	chest_item_popup_layer = layer
+	chest_item_popup_opened_at_ms = Time.get_ticks_msec()
+
+	var backdrop := ColorRect.new()
+	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
+	backdrop.color = Color(0.01, 0.01, 0.02, 0.78)
+	layer.add_child(backdrop)
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(center)
+
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(560.0, 0.0)
+	center.add_child(panel)
+
+	var content := VBoxContainer.new()
+	content.custom_minimum_size = Vector2(0.0, 220.0)
+	content.add_theme_constant_override("separation", 10)
+	panel.add_child(content)
+
+	var title := Label.new()
+	title.text = "Treasure Acquired"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 30)
+	content.add_child(title)
+
+	var item_label := Label.new()
+	item_label.text = item_name
+	item_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	item_label.add_theme_font_size_override("font_size", 24)
+	item_label.modulate = Color(0.98, 0.91, 0.62, 1.0)
+	content.add_child(item_label)
+
+	var description_label := Label.new()
+	description_label.text = item_description
+	description_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	description_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	description_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	description_label.custom_minimum_size = Vector2(500.0, 92.0)
+	description_label.add_theme_font_size_override("font_size", 18)
+	content.add_child(description_label)
+
+	var hint := Label.new()
+	hint.text = "Press any key to continue"
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.modulate = Color(0.82, 0.9, 1.0, 0.95)
+	hint.add_theme_font_size_override("font_size", 16)
+	content.add_child(hint)
+
+	if is_instance_valid(arena) and is_instance_valid(arena.player) and arena.player.has_method("set_gameplay_input_blocked"):
+		arena.player.call("set_gameplay_input_blocked", true)
+
+
+func _close_chest_item_popup() -> void:
+	if not _has_active_chest_item_popup():
+		return
+	if is_instance_valid(chest_item_popup_layer):
+		chest_item_popup_layer.queue_free()
+	chest_item_popup_layer = null
+	chest_item_popup_opened_at_ms = 0
+	if is_instance_valid(arena) and is_instance_valid(arena.player) and arena.player.has_method("set_gameplay_input_blocked"):
+		if not _has_active_inventory_menu():
+			arena.player.call("set_gameplay_input_blocked", false)
+
+
+func _build_chest_item_popup_data(item_id: String) -> Dictionary:
+	var normalized_item_id := item_id.strip_edges().to_lower()
+	var display_name := String(CHEST_ITEM_DISPLAY_NAMES.get(normalized_item_id, _format_item_id_for_display(normalized_item_id)))
+
+	if CHEST_BOOT_ITEM_DESCRIPTIONS.has(normalized_item_id):
+		return {
+			"name": display_name,
+			"description": String(CHEST_BOOT_ITEM_DESCRIPTIONS[normalized_item_id])
+		}
+
+	if CHEST_PICKUP_TO_SWORD_ID.has(normalized_item_id):
+		var sword_id := String(CHEST_PICKUP_TO_SWORD_ID[normalized_item_id])
+		var sword_data := SWORD_DEFINITIONS.get_definition(sword_id)
+		return {
+			"name": String(sword_data.get("name", display_name)),
+			"description": String(sword_data.get("description", "A sword empowered for your basic attacks."))
+		}
+
+	if CHEST_PICKUP_TO_SHIELD_ID.has(normalized_item_id):
+		var shield_id := String(CHEST_PICKUP_TO_SHIELD_ID[normalized_item_id])
+		var shield_data := SHIELD_DEFINITIONS.get_definition(shield_id)
+		return {
+			"name": String(shield_data.get("name", display_name)),
+			"description": String(shield_data.get("description", "A shield blessed with defensive power."))
+		}
+
+	if CHEST_PICKUP_TO_RING_ID.has(normalized_item_id):
+		var ring_id := String(CHEST_PICKUP_TO_RING_ID[normalized_item_id])
+		var ring_data := RING_DEFINITIONS.get_definition(ring_id)
+		return {
+			"name": String(ring_data.get("name", display_name)),
+			"description": String(ring_data.get("description", "A ring with unusual power."))
+		}
+
+	return {
+		"name": display_name,
+		"description": "A rare item from the treasure chest."
+	}
+
+
+func _format_item_id_for_display(item_id: String) -> String:
+	if item_id.is_empty():
+		return "Unknown Item"
+	var words: Array[String] = []
+	var split_words := item_id.split("_", false)
+	for word_variant in split_words:
+		var word := String(word_variant)
+		if word.is_empty():
+			continue
+		var first := word.substr(0, 1).to_upper()
+		var rest := word.substr(1)
+		words.append("%s%s" % [first, rest])
+	if words.is_empty():
+		return "Unknown Item"
+	return " ".join(words)
 
 
 func _get_autoplay_encounter_type() -> int:

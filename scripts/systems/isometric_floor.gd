@@ -24,6 +24,9 @@ extends Node2D
 @export var wall_face_tile_coords: Array[Vector2i] = [
 	Vector2i(10, 3), Vector2i(11, 3)
 ]
+@export var wall_bottom_cap_tile_coords: Array[Vector2i] = [
+	Vector2i(10, 1), Vector2i(11, 1)
+]
 @export var wall_left_tile_coords: Array[Vector2i] = [
 	Vector2i(0, 1)
 ]
@@ -40,6 +43,7 @@ extends Node2D
 @export var top_border_rows: int = 1
 @export var bottom_border_rows: int = 1
 @export var border_columns: int = 1
+@export var bottom_border_align_to_playable_area: bool = true
 
 var _tile_layer: TileMapLayer = null
 var _decor_layer: TileMapLayer = null
@@ -142,6 +146,7 @@ func _rebuild_floor_tiles() -> void:
 	all_coords.append_array(floor_tile_coords)
 	all_coords.append_array(wall_cap_tile_coords)
 	all_coords.append_array(wall_face_tile_coords)
+	all_coords.append_array(wall_bottom_cap_tile_coords)
 	all_coords.append_array(wall_left_tile_coords)
 	all_coords.append_array(wall_right_tile_coords)
 	all_coords.append_array(decor_tile_coords)
@@ -171,7 +176,17 @@ func _rebuild_floor_tiles() -> void:
 	var rim_cols := maxi(0, border_columns)
 	var max_row := fill_rows - 1
 	var top_rim_end := top_rim_rows - 1
-	var bottom_rim_start := maxi(0, fill_rows - bottom_rim_rows)
+	var clamped_sidewalk_height := clampf(sidewalk_height, 0.0, arena_height * 0.45)
+	var bottom_anchor_px := maxf(0.0, arena_height)
+	if bottom_border_align_to_playable_area:
+		bottom_anchor_px = maxf(0.0, arena_height - clamped_sidewalk_height)
+	var bottom_edge_row := 0
+	if bottom_border_align_to_playable_area:
+		bottom_edge_row = clampi(int(ceili(bottom_anchor_px / float(tile_h))), 0, max_row)
+	else:
+		bottom_edge_row = clampi(int(floor((bottom_anchor_px - 0.001) / float(tile_h))), 0, max_row)
+	var bottom_rim_start := maxi(0, bottom_edge_row - bottom_rim_rows + 1)
+	var bottom_rim_end := bottom_edge_row
 	var left_rim_end := rim_cols - 1
 	# Anchor the right wall to the actual arena/play-area boundary instead of the
 	# padded tile fill width so doors and wall visuals line up.
@@ -184,12 +199,16 @@ func _rebuild_floor_tiles() -> void:
 	var right_rim_end := right_edge_column
 
 	for y in range(fill_rows):
+		# When aligning the bottom border to the playable area, do not render any
+		# extra rows beneath that boundary.
+		if bottom_border_align_to_playable_area and y > bottom_edge_row:
+			continue
 		for x in range(fill_columns):
 			# Do not render padded overflow columns beyond the playable right edge.
 			if x > right_edge_column:
 				continue
 			var use_top_rim := top_rim_rows > 0 and y <= top_rim_end
-			var use_bottom_rim := bottom_rim_rows > 0 and y >= bottom_rim_start
+			var use_bottom_rim := bottom_rim_rows > 0 and y >= bottom_rim_start and y <= bottom_rim_end
 			var use_left_rim := rim_cols > 0 and x <= left_rim_end
 			var use_right_rim := rim_cols > 0 and x >= right_rim_start and x <= right_rim_end
 			var atlas_coord: Vector2i
@@ -201,7 +220,11 @@ func _rebuild_floor_tiles() -> void:
 					wall_tile_variation_chance
 				)
 			elif use_bottom_rim:
-				atlas_coord = _pick_tile_coord(wall_face_tile_coords, x, y, wall_tile_variation_chance)
+				if y == bottom_rim_start:
+					var bottom_cap_coords := wall_bottom_cap_tile_coords if not wall_bottom_cap_tile_coords.is_empty() else wall_cap_tile_coords
+					atlas_coord = _pick_tile_coord(bottom_cap_coords, x, y, wall_tile_variation_chance)
+				else:
+					atlas_coord = _pick_tile_coord(wall_face_tile_coords, x, y, wall_tile_variation_chance)
 			elif use_left_rim:
 				atlas_coord = _pick_tile_coord(wall_left_tile_coords, x, y, wall_tile_variation_chance)
 			elif use_right_rim:

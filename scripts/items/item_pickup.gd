@@ -18,6 +18,22 @@ const ITEM_DATA: Dictionary = {
 		"name": "Strider Boots",
 		"color": Color(0.2, 0.95, 0.64, 1.0)
 	},
+	"bodyguard_boots": {
+		"name": "Bodyguard Boots",
+		"color": Color(0.6, 0.88, 1.0, 1.0)
+	},
+	"ring_bulwark": {
+		"name": "Ring of the Bulwark",
+		"color": Color(0.82, 0.88, 1.0, 1.0)
+	},
+	"ring_berserker": {
+		"name": "Ring of the Berserker",
+		"color": Color(1.0, 0.54, 0.44, 1.0)
+	},
+	"ring_shield": {
+		"name": "Ring of the Shield",
+		"color": Color(0.66, 0.9, 1.0, 1.0)
+	},
 	"sword_extended_charge": {
 		"name": "Extended Charge Sword",
 		"color": Color(1.0, 0.78, 0.34, 1.0)
@@ -61,13 +77,16 @@ func _ready() -> void:
 	add_to_group("pickups")
 	base_position = position
 	_apply_item_style()
+	label.visible = _is_debug_text_visible()
 
 
 func _process(delta: float) -> void:
 	time_passed += delta
 	position = base_position + Vector2(0.0, sin(time_passed * bob_speed) * bob_height)
 	rotation += delta * spin_speed
-	label.rotation = -rotation
+	label.visible = _is_debug_text_visible()
+	if label.visible:
+		label.rotation = -rotation
 
 
 func set_item(new_item_id: String, new_value: int = 1) -> void:
@@ -91,3 +110,11 @@ func _apply_item_style() -> void:
 	var item_color: Color = data["color"]
 	visual.color = item_color
 	label.text = item_name.substr(0, 1)
+	label.visible = _is_debug_text_visible()
+
+
+func _is_debug_text_visible() -> bool:
+	var tree := get_tree()
+	if tree == null:
+		return false
+	return bool(tree.get_meta("debug_hitbox_mode_enabled", false))
