@@ -81,7 +81,9 @@ signal combat_status_message(text: String, duration: float)
 
 @export var roll_speed: float = 210.0
 @export var roll_duration: float = 0.24
-@export var roll_cooldown: float = 1.0
+@export var roll_cooldown: float = 4.0
+@export_range(0.1, 1.0, 0.05) var roll_boots_cooldown_multiplier: float = 0.5
+@export_range(1.0, 3.0, 0.05) var movement_boots_speed_multiplier: float = 1.15
 
 @export var block_arc_degrees: float = 120.0
 @export var block_damage_reduction: float = 0.65
@@ -179,11 +181,16 @@ const ITEM_NAMES: Dictionary = {
 	"iron_shard": "Iron Shard",
 	"sturdy_hide": "Sturdy Hide",
 	"swift_boots": "Swift Boots",
+	"strider_boots": "Strider Boots",
 	"sword_extended_charge": "Extended Charge Sword",
 	"sword_slowing": "Slowing Sword",
 	"sword_stacking_dot": "Stacking DoT Sword",
-	"shield_revenge": "Revenge Shield"
+	"shield_revenge": "Revenge Shield",
+	"shield_thorns": "Thorns Shield",
+	"shield_wide_guard": "Wide Guard Shield"
 }
+const ROLL_COOLDOWN_BOOT_ITEM_ID: String = "swift_boots"
+const MOVE_SPEED_BOOT_ITEM_ID: String = "strider_boots"
 
 const SWORD_PICKUP_TO_SWORD_ID: Dictionary = {
 	"sword_extended_charge": SWORD_DEFINITIONS.EXTENDED_CHARGE_SWORD,
@@ -192,7 +199,9 @@ const SWORD_PICKUP_TO_SWORD_ID: Dictionary = {
 }
 
 const SHIELD_PICKUP_TO_SHIELD_ID: Dictionary = {
-	"shield_revenge": SHIELD_DEFINITIONS.REVENGE_SHIELD
+	"shield_revenge": SHIELD_DEFINITIONS.REVENGE_SHIELD,
+	"shield_thorns": SHIELD_DEFINITIONS.THORNS_SHIELD,
+	"shield_wide_guard": SHIELD_DEFINITIONS.WIDE_GUARD_SHIELD
 }
 
 const PLAYER_HD_HFRAMES: int = 8
@@ -320,6 +329,7 @@ var basic_combo_buffered: bool = false
 var basic_combo_auto_hits_remaining: int = 0
 var basic_attack_input_buffered: bool = false
 var basic_attack_input_buffer_left: float = 0.0
+var basic_attack_hold_buffer_armed: bool = false
 var queued_basic_combo_hit_index: int = 1
 var queued_basic_combo_damage: float = 0.0
 var queued_basic_combo_range: float = 0.0
@@ -717,7 +727,7 @@ func _update_health_bar() -> void:
 		if stamina_locked:
 			block_stamina_bar_fill.default_color = Color(1.0, 0.22, 0.18, 0.98)
 		else:
-			block_stamina_bar_fill.default_color = Color(0.96, 0.82, 0.22, 0.98)
+			block_stamina_bar_fill.default_color = Color(0.34, 0.86, 1.0, 0.98)
 
 
 func add_experience(amount: int) -> void:
@@ -803,8 +813,6 @@ func equip_shield(shield_id: String) -> bool:
 	equipped_shield_id = shield_id
 	_refresh_equipped_shield_visuals()
 	equipped_shield_changed.emit(equipped_shield_id, get_equipped_shield_name())
-	if not _is_counter_strike_unlocked():
-		_expire_counter_strike()
 	_emit_cooldown_state()
 	return true
 
@@ -835,6 +843,10 @@ func get_missing_shield_ids() -> Array[String]:
 		if available_shield_ids.find(shield_id) == -1:
 			missing.append(shield_id)
 	return missing
+
+
+func has_inventory_item(item_id: String) -> bool:
+	return int(inventory.get(item_id, 0)) > 0
 
 
 func reset_sword_inventory_for_encounter() -> void:
@@ -921,6 +933,7 @@ func receive_hit(amount: float, source_position: Vector2, guard_break: bool = fa
 	var damage_to_apply := amount
 	var blocked := false
 	var perfect_block := false
+	var blocked_damage := 0.0
 	var incoming_direction := (source_position - global_position).normalized()
 	if incoming_direction == Vector2.ZERO:
 		incoming_direction = Vector2.LEFT if facing_direction.x >= 0.0 else Vector2.RIGHT
@@ -929,11 +942,15 @@ func receive_hit(amount: float, source_position: Vector2, guard_break: bool = fa
 		if facing_direction.dot(incoming_direction) >= block_threshold:
 			damage_to_apply *= (1.0 - block_damage_reduction)
 			blocked = true
+			blocked_damage = maxf(0.0, amount - damage_to_apply)
 			perfect_block = perfect_block_window_left > 0.0
 			perfect_block_window_left = 0.0
 			drain_block_stamina(block_stamina_blocked_hit_cost)
 			if perfect_block:
 				_register_perfect_block(source_position)
+
+	if blocked and blocked_damage > 0.0:
+		_apply_block_reflect(blocked_damage, source_position)
 
 	if damage_to_apply <= 0.0:
 		return false
@@ -1110,11 +1127,6 @@ func _on_block_started() -> void:
 
 
 func _unlock_counter_strike() -> void:
-	if not _is_counter_strike_unlocked():
-		counter_strike_available = false
-		counter_strike_window_left = 0.0
-		_emit_cooldown_state()
-		return
 	counter_strike_available = true
 	counter_strike_window_left = maxf(0.0, counter_strike_unlock_duration)
 	_emit_cooldown_state()
@@ -1149,10 +1161,6 @@ func _register_perfect_block(source_position: Vector2) -> void:
 	_start_hitstop(0.05)
 	_start_camera_shake(0.1, 3.2)
 	_spawn_combat_text_popup(get_block_shield_center_global() + Vector2(-8.0, -72.0), "Perfect Block!", Color(0.78, 0.98, 1.0, 1.0), 0.55)
-	if not _is_counter_strike_unlocked():
-		combat_status_message.emit("Perfect Block! Equip a shield to unlock Counter", 1.1)
-		_emit_cooldown_state()
-		return
 	_unlock_counter_strike()
 
 
@@ -1822,9 +1830,47 @@ func _clear_basic_attack_buffer() -> void:
 	basic_attack_input_buffer_left = 0.0
 
 
+func _get_basic_attack_bufferable_time_left(blocker: String) -> float:
+	match blocker:
+		"cooldown":
+			return basic_attack_cooldown_left
+		"attack_anim":
+			return attack_anim_left
+		"attack_recovery":
+			return light_attack_recovery_left
+		"attack_windup":
+			return attack_windup_left
+		_:
+			return INF
+
+
+func _try_buffer_basic_attack_from_hold() -> bool:
+	if not basic_attack_hold_buffer_armed:
+		return false
+	if not Input.is_action_pressed("basic_attack"):
+		return false
+	if basic_attack_input_buffered:
+		return false
+	var blocker := _get_basic_attack_start_blocker()
+	if blocker.is_empty():
+		return false
+	var buffer_window := maxf(0.0, basic_attack_input_buffer_window)
+	if buffer_window <= 0.0:
+		return false
+	var time_left := _get_basic_attack_bufferable_time_left(blocker)
+	if time_left > buffer_window:
+		return false
+	basic_combo_auto_hits_remaining = 0
+	basic_combo_buffered = false
+	_log_basic_attack_cadence("BUFFER_HOLD_SET reason=%s remaining=%.3f window=%.3f" % [blocker, maxf(0.0, time_left), buffer_window])
+	_queue_basic_attack_buffer("hold_%s" % blocker)
+	return true
+
+
 func _try_start_basic_attack(use_combo: bool, source: String, consumed_buffer: bool = false) -> bool:
 	if not _can_start_basic_attack_now():
 		return false
+	basic_attack_hold_buffer_armed = false
 	if consumed_buffer:
 		_log_basic_attack_cadence("BUFFER_CONSUMED source=%s" % source)
 	_log_basic_attack_cadence("ACCEPT source=%s mode=%s" % [source, "combo" if use_combo else "single"])
@@ -2085,7 +2131,12 @@ func _update_camera_shake(delta: float) -> void:
 func _handle_actions() -> void:
 	if gameplay_input_blocked:
 		is_blocking = false
+		basic_attack_hold_buffer_armed = false
 		return
+	if Input.is_action_just_pressed("basic_attack"):
+		basic_attack_hold_buffer_armed = true
+	elif not Input.is_action_pressed("basic_attack"):
+		basic_attack_hold_buffer_armed = false
 
 	if _can_dodge_cancel_charge_recovery() and Input.is_action_just_pressed("roll") and roll_cooldown_left <= 0.0:
 		_cancel_charge_attack_recovery()
@@ -2112,6 +2163,8 @@ func _handle_actions() -> void:
 			return
 		if not Input.is_action_pressed("ability_1"):
 			_release_charge_attack()
+		return
+	if _try_buffer_basic_attack_from_hold():
 		return
 
 	if charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0:
@@ -2291,7 +2344,7 @@ func _resolve_queued_attack() -> void:
 			var counter_range := maxf(10.0, counter_strike_range)
 			var counter_arc := clampf(counter_strike_arc_degrees, 10.0, 179.0)
 			_queue_melee_hit_for_final_attack_frame(
-				counter_strike_damage,
+				_get_counter_strike_damage(),
 				counter_range,
 				counter_arc,
 				maxf(0.0, counter_strike_enemy_stun),
@@ -2501,7 +2554,7 @@ func _start_roll() -> void:
 	is_rolling = true
 	is_invulnerable = true
 	roll_time_left = roll_duration
-	roll_cooldown_left = roll_cooldown
+	roll_cooldown_left = _get_roll_cooldown_duration()
 	is_blocking = false
 	_cancel_harpoon_state()
 	_cancel_charge_attack()
@@ -2980,7 +3033,7 @@ func _try_collect_shield_pickup(item_id: String) -> bool:
 		var shield_name := SHIELD_DEFINITIONS.get_display_name(shield_id)
 		item_looted.emit(shield_name, available_shield_ids.size())
 		if auto_equip:
-			combat_status_message.emit("%s equipped - Counter unlocked" % shield_name, 1.1)
+			combat_status_message.emit("%s equipped" % shield_name, 1.1)
 	else:
 		item_looted.emit(String(ITEM_NAMES.get(item_id, item_id)), available_shield_ids.size())
 	_emit_cooldown_state()
@@ -3013,7 +3066,54 @@ func _try_collect_sword_pickup(item_id: String) -> bool:
 
 
 func _is_counter_strike_unlocked() -> bool:
-	return bool(equipped_shield_definition.get("unlocks_counter_strike", false))
+	return true
+
+
+func _get_counter_strike_damage() -> float:
+	var damage_multiplier := maxf(0.0, float(equipped_shield_definition.get("counter_damage_multiplier", 1.0)))
+	return maxf(0.0, counter_strike_damage * damage_multiplier)
+
+
+func _get_block_reflect_ratio() -> float:
+	return clampf(float(equipped_shield_definition.get("blocked_damage_reflect_ratio", 0.0)), 0.0, 1.0)
+
+
+func _get_block_area_multiplier() -> float:
+	return maxf(1.0, float(equipped_shield_definition.get("block_area_multiplier", 1.0)))
+
+
+func _apply_block_reflect(blocked_damage: float, source_position: Vector2) -> void:
+	var reflect_ratio := _get_block_reflect_ratio()
+	if reflect_ratio <= 0.0 or blocked_damage <= 0.0:
+		return
+	var attacker := _resolve_block_reflect_target(source_position)
+	if attacker == null:
+		return
+	var reflected_damage := blocked_damage * reflect_ratio
+	if reflected_damage <= 0.0:
+		return
+	attacker.receive_hit(reflected_damage, global_position, 0.0, false, 0.25, self)
+	_spawn_hit_effect(attacker.global_position + Vector2(0.0, -10.0), Color(0.96, 0.9, 0.48, 0.9), 6.4)
+
+
+func _resolve_block_reflect_target(source_position: Vector2) -> EnemyBase:
+	var best_target: EnemyBase = null
+	var best_distance_sq := INF
+	var max_distance := maxf(80.0, block_shield_radius * 8.0)
+	var max_distance_sq := max_distance * max_distance
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		var distance_sq := enemy.global_position.distance_squared_to(source_position)
+		if distance_sq < best_distance_sq:
+			best_distance_sq = distance_sq
+			best_target = enemy
+	if best_target == null:
+		return null
+	if best_distance_sq > max_distance_sq:
+		return null
+	return best_target
 
 
 func _is_extended_charge_sword_equipped() -> bool:
@@ -3027,7 +3127,7 @@ func _get_equipped_basic_attack_range_multiplier() -> float:
 
 
 func _get_equipped_sword_charge_preview_color(alpha: float = 0.35) -> Color:
-	var fallback := Color(1.0, 0.78, 0.32, alpha)
+	var fallback := Color(0.42, 0.86, 1.0, alpha)
 	var color_variant: Variant = equipped_sword_definition.get("charge_preview_color", fallback)
 	var color := fallback
 	if color_variant is Color:
@@ -3037,7 +3137,7 @@ func _get_equipped_sword_charge_preview_color(alpha: float = 0.35) -> Color:
 
 
 func _get_equipped_sword_charge_release_color(alpha: float = 0.45) -> Color:
-	var fallback := Color(1.0, 0.62, 0.28, alpha)
+	var fallback := Color(0.36, 0.8, 1.0, alpha)
 	var color_variant: Variant = equipped_sword_definition.get("charge_release_color", fallback)
 	var color := fallback
 	if color_variant is Color:
@@ -3167,10 +3267,20 @@ func _apply_item_bonus(item_id: String, value: int) -> void:
 		"sturdy_hide":
 			max_health += 4.0 * float(value)
 			current_health = minf(max_health, current_health + (4.0 * float(value)))
-		"swift_boots":
-			move_speed += 4.0 * float(value)
+		ROLL_COOLDOWN_BOOT_ITEM_ID:
+			roll_cooldown_left = minf(roll_cooldown_left, _get_roll_cooldown_duration())
+		MOVE_SPEED_BOOT_ITEM_ID:
+			var stack_count := maxi(0, value)
+			if stack_count > 0:
+				move_speed *= pow(maxf(1.0, movement_boots_speed_multiplier), float(stack_count))
 		_:
 			pass
+
+
+func _get_roll_cooldown_duration() -> float:
+	var has_roll_boots := has_inventory_item(ROLL_COOLDOWN_BOOT_ITEM_ID)
+	var cooldown_multiplier := roll_boots_cooldown_multiplier if has_roll_boots else 1.0
+	return maxf(0.05, roll_cooldown * cooldown_multiplier)
 
 
 func _level_up() -> void:
@@ -3313,9 +3423,10 @@ func get_block_shield_center_global() -> Vector2:
 
 func get_block_shield_half_extents() -> Vector2:
 	var radius := maxf(8.0, block_shield_radius)
+	var area_multiplier := _get_block_area_multiplier()
 	return Vector2(
-		maxf(6.0, radius * maxf(0.2, block_shield_half_width_scale)),
-		maxf(6.0, radius * maxf(0.2, block_shield_half_height_scale))
+		maxf(6.0, radius * maxf(0.2, block_shield_half_width_scale) * area_multiplier),
+		maxf(6.0, radius * maxf(0.2, block_shield_half_height_scale) * area_multiplier)
 	)
 
 

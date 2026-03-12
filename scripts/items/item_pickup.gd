@@ -14,6 +14,10 @@ const ITEM_DATA: Dictionary = {
 		"name": "Swift Boots",
 		"color": Color(0.35, 0.8, 1.0, 1.0)
 	},
+	"strider_boots": {
+		"name": "Strider Boots",
+		"color": Color(0.2, 0.95, 0.64, 1.0)
+	},
 	"sword_extended_charge": {
 		"name": "Extended Charge Sword",
 		"color": Color(1.0, 0.78, 0.34, 1.0)
@@ -29,6 +33,14 @@ const ITEM_DATA: Dictionary = {
 	"shield_revenge": {
 		"name": "Revenge Shield",
 		"color": Color(0.44, 0.9, 1.0, 1.0)
+	},
+	"shield_thorns": {
+		"name": "Thorns Shield",
+		"color": Color(0.48, 1.0, 0.56, 1.0)
+	},
+	"shield_wide_guard": {
+		"name": "Wide Guard Shield",
+		"color": Color(0.66, 0.86, 1.0, 1.0)
 	}
 }
 

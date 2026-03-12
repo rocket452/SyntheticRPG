@@ -75,7 +75,7 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var hit_effect_duration: float = 0.12
 @export var heal_flash_duration: float = 0.16
 @export var shadow_fear_enabled: bool = true
-@export var shadow_fear_duration: float = 5.0
+@export var shadow_fear_duration: float = 10.0
 @export var shadow_fear_cooldown: float = 20.0
 @export var shadow_fear_trigger_delay_min: float = 0.25
 @export var shadow_fear_trigger_delay_max: float = 0.5
@@ -1022,6 +1022,14 @@ func _update_shadow_fear_trigger() -> void:
 		tracked_enemy_ids.clear()
 		shadow_fear_focus_target = null
 		shadow_fear_pending_left = -1.0
+		shadow_fear_pending_total = 0.0
+		shadow_fear_focus_requires_close = true
+		return
+	if _is_shadow_fear_locked_for_two_room_fourth_room():
+		tracked_enemy_ids.clear()
+		shadow_fear_focus_target = null
+		shadow_fear_pending_left = -1.0
+		shadow_fear_pending_total = 0.0
 		shadow_fear_focus_requires_close = true
 		return
 	var current_enemy_ids: Dictionary = {}
@@ -1080,6 +1088,12 @@ func _update_shadow_fear_trigger() -> void:
 func _try_cast_shadow_fear() -> bool:
 	if is_shadow_clone or not shadow_fear_enabled:
 		shadow_fear_focus_target = null
+		shadow_fear_focus_requires_close = true
+		return false
+	if _is_shadow_fear_locked_for_two_room_fourth_room():
+		shadow_fear_focus_target = null
+		shadow_fear_pending_left = -1.0
+		shadow_fear_pending_total = 0.0
 		shadow_fear_focus_requires_close = true
 		return false
 	if shadow_fear_focus_target == null or not is_instance_valid(shadow_fear_focus_target) or shadow_fear_focus_target.dead:
@@ -1377,6 +1391,47 @@ func _roll_shadow_fear_delay() -> float:
 	var min_delay := maxf(0.0, shadow_fear_trigger_delay_min)
 	var max_delay := maxf(min_delay, shadow_fear_trigger_delay_max)
 	return rng.randf_range(min_delay, max_delay)
+
+
+func _is_shadow_fear_locked_for_two_room_fourth_room() -> bool:
+	var active_arena := _get_active_arena()
+	if active_arena == null:
+		return false
+	if not active_arena.two_room_test_active:
+		return false
+	if int(active_arena.two_room_test_room_index) != 4:
+		return false
+	return not _is_any_room_four_minotaur_fighting_player()
+
+
+func _get_active_arena() -> Arena:
+	var scene_root := get_tree().current_scene
+	if scene_root is Arena:
+		return scene_root as Arena
+	var cursor := get_parent()
+	while cursor != null:
+		if cursor is Arena:
+			return cursor as Arena
+		cursor = cursor.get_parent()
+	return null
+
+
+func _is_any_room_four_minotaur_fighting_player() -> bool:
+	var tank_player := player if is_instance_valid(player) else (get_tree().get_first_node_in_group("player") as Player)
+	if tank_player == null or not is_instance_valid(tank_player) or tank_player.is_dead:
+		return false
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := _coerce_enemy_base(node)
+		if enemy == null or enemy.dead:
+			continue
+		if enemy.monster_visual_profile != EnemyBase.MonsterVisualProfile.MINOTAUR:
+			continue
+		if not enemy.minotaur_aggroed:
+			continue
+		var current_target := enemy.player
+		if current_target != null and is_instance_valid(current_target) and current_target == tank_player:
+			return true
+	return false
 
 
 func _is_enemy_in_shadow_fear_consideration_range(enemy: EnemyBase) -> bool:

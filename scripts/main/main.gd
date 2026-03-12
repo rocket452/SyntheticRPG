@@ -178,7 +178,7 @@ func _show_encounter_picker() -> void:
 	content.add_child(shardsoul_button)
 
 	var two_room_button := Button.new()
-	two_room_button.text = "5. Start Cobra Two-Room Test"
+	two_room_button.text = "5. Start Cobra 5-Room Test"
 	two_room_button.custom_minimum_size = Vector2(0.0, 44.0)
 	two_room_button.pressed.connect(func() -> void:
 		_start_selected_encounter(Arena.EncounterType.COBRA_TWO_ROOM_TEST)

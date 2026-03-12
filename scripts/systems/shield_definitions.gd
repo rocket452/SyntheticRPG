@@ -2,15 +2,33 @@ extends RefCounted
 class_name ShieldDefinitions
 
 const REVENGE_SHIELD: String = "revenge_shield"
+const THORNS_SHIELD: String = "thorns_shield"
+const WIDE_GUARD_SHIELD: String = "wide_guard_shield"
 
 const SHIELD_DEFINITIONS: Dictionary = {
 	REVENGE_SHIELD: {
 		"id": REVENGE_SHIELD,
 		"name": "Revenge Shield",
 		"icon": "SHD",
-		"description": "Enables Perfect Block revenge counter.",
+		"description": "Counter Strike deals double damage.",
 		"accent_color": Color(0.56, 0.9, 1.0, 1.0),
-		"unlocks_counter_strike": true
+		"counter_damage_multiplier": 2.0
+	},
+	THORNS_SHIELD: {
+		"id": THORNS_SHIELD,
+		"name": "Thorns Shield",
+		"icon": "THR",
+		"description": "Reflects 30% of blocked damage back to the attacker.",
+		"accent_color": Color(0.92, 0.76, 0.44, 1.0),
+		"blocked_damage_reflect_ratio": 0.3
+	},
+	WIDE_GUARD_SHIELD: {
+		"id": WIDE_GUARD_SHIELD,
+		"name": "Wide Guard Shield",
+		"icon": "WGD",
+		"description": "Increases block area by 30%.",
+		"accent_color": Color(0.74, 0.88, 1.0, 1.0),
+		"block_area_multiplier": 1.3
 	}
 }
 

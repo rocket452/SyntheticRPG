@@ -21,7 +21,7 @@ attack_hold_frame = 0
 attack_recovery_hold_duration = 0.18
 xp_reward = 28
 drop_chance = 0.55
-drop_table = ["iron_shard", "sturdy_hide", "swift_boots"]
+drop_table = ["iron_shard", "sturdy_hide", "swift_boots", "strider_boots"]
 is_miniboss = false
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
