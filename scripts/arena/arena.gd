@@ -33,6 +33,8 @@ const IMP_SUMMON_PENTAGRAM_EFFECT_SCRIPT := preload("res://scripts/effects/imp_s
 const PARTY_MEMBER_HEALER: String = "healer"
 const PARTY_MEMBER_RATFOLK: String = "ratfolk"
 const PARTY_MEMBER_LIZARDFOLK: String = "lizardfolk"
+const CONTROLLED_CHARACTER_TANK: String = "tank"
+const CONTROLLED_CHARACTER_HEALER: String = "healer"
 const MAX_PARTY_SIZE: int = 3
 const PARTY_MEMBER_LABELS: Dictionary = {
 	PARTY_MEMBER_HEALER: "Healer",
@@ -176,6 +178,8 @@ var party_member_enabled_by_id: Dictionary = {
 	PARTY_MEMBER_LIZARDFOLK: false
 }
 var party_member_toggle_failure_reason: String = ""
+var controlled_character_id: String = CONTROLLED_CHARACTER_TANK
+var control_target_failure_reason: String = ""
 var alive_regular_enemies: int = 0
 var demo_started: bool = false
 var spawn_next_debug_enemy_on_left: bool = true
@@ -275,6 +279,66 @@ func get_max_party_size() -> int:
 
 func get_party_member_toggle_failure_reason() -> String:
 	return party_member_toggle_failure_reason
+
+
+func get_control_target_failure_reason() -> String:
+	return control_target_failure_reason
+
+
+func get_controlled_character_id() -> String:
+	return controlled_character_id
+
+
+func get_controlled_inventory_actor() -> Object:
+	if controlled_character_id == CONTROLLED_CHARACTER_HEALER and is_instance_valid(healer):
+		return healer
+	if is_instance_valid(player):
+		return player
+	if is_instance_valid(healer):
+		return healer
+	return null
+
+
+func get_controlled_character_display_name() -> String:
+	if controlled_character_id == CONTROLLED_CHARACTER_HEALER:
+		return "Healer"
+	return "Tank"
+
+
+func get_control_target_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	entries.append({
+		"id": CONTROLLED_CHARACTER_TANK,
+		"name": "Tank",
+		"description": "Directly control the tank fighter.",
+		"available": is_instance_valid(player),
+		"selected": controlled_character_id == CONTROLLED_CHARACTER_TANK
+	})
+	var healer_available := _is_healer_control_available()
+	entries.append({
+		"id": CONTROLLED_CHARACTER_HEALER,
+		"name": "Healer",
+		"description": "Directly control the healer; tank fights with AI.",
+		"available": healer_available,
+		"selected": controlled_character_id == CONTROLLED_CHARACTER_HEALER
+	})
+	return entries
+
+
+func set_controlled_character(control_id: String) -> bool:
+	control_target_failure_reason = ""
+	var normalized_control_id := control_id.strip_edges().to_lower()
+	if normalized_control_id != CONTROLLED_CHARACTER_TANK and normalized_control_id != CONTROLLED_CHARACTER_HEALER:
+		control_target_failure_reason = "Unknown controlled character."
+		return false
+	if normalized_control_id == CONTROLLED_CHARACTER_HEALER and not _is_healer_control_available():
+		control_target_failure_reason = "Healer control is unavailable right now."
+		return false
+	if controlled_character_id == normalized_control_id:
+		return false
+	controlled_character_id = normalized_control_id
+	_apply_control_mode_runtime()
+	return true
 
 
 func _get_max_companion_count() -> int:
@@ -393,6 +457,7 @@ func _enforce_companion_selection_limit() -> void:
 
 func _apply_party_selection_runtime() -> void:
 	if not _encounter_uses_companions() or two_room_test_active:
+		_apply_control_mode_runtime()
 		return
 	_enforce_companion_selection_limit()
 	if _is_party_member_enabled(PARTY_MEMBER_HEALER, true):
@@ -410,6 +475,7 @@ func _apply_party_selection_runtime() -> void:
 			_spawn_friendly_lizardfolk()
 	else:
 		_despawn_companion(PARTY_MEMBER_LIZARDFOLK)
+	_apply_control_mode_runtime()
 	_sync_hitbox_debug_mode()
 
 
@@ -418,16 +484,19 @@ func _despawn_companion(member_id: String) -> void:
 		if is_instance_valid(healer):
 			healer.queue_free()
 		healer = null
+		_apply_control_mode_runtime()
 		return
 	if member_id == PARTY_MEMBER_RATFOLK:
 		if is_instance_valid(ratfolk):
 			ratfolk.queue_free()
 		ratfolk = null
+		_apply_control_mode_runtime()
 		return
 	if member_id == PARTY_MEMBER_LIZARDFOLK:
 		if is_instance_valid(lizardfolk):
 			lizardfolk.queue_free()
 		lizardfolk = null
+		_apply_control_mode_runtime()
 
 
 func _get_fallback_lizard_spawn_position() -> Vector2:
@@ -475,6 +544,7 @@ func start_demo() -> void:
 		healer = null
 		ratfolk = null
 		lizardfolk = null
+		_apply_control_mode_runtime()
 	_prewarm_imp_summon_effect_cache()
 	_spawn_regular_enemies()
 	_log_encounter_spacing_snapshot("spawn_init")
@@ -520,6 +590,9 @@ func _spawn_friendly_healer() -> void:
 	_apply_hitbox_debug_to_node(healer)
 	if healer.has_method("set_player") and is_instance_valid(player):
 		healer.set_player(player)
+	if healer.has_method("set_manual_control_enabled"):
+		healer.call("set_manual_control_enabled", false)
+	_apply_control_mode_runtime()
 
 
 func _spawn_friendly_ratfolk() -> void:
@@ -2823,6 +2896,7 @@ func _ensure_rescued_adventure_companions_spawned() -> void:
 		_spawn_friendly_ratfolk()
 	if two_room_lizard_released and not is_instance_valid(lizardfolk):
 		_spawn_friendly_lizardfolk()
+	_apply_control_mode_runtime()
 
 
 func _revive_party_member_if_needed(member: Node2D) -> void:
@@ -2836,6 +2910,7 @@ func _revive_party_member_if_needed(member: Node2D) -> void:
 	member.set_physics_process(true)
 	member.set_process_input(false)
 	_apply_hitbox_debug_to_node(member)
+	_apply_control_mode_runtime()
 
 
 func _revive_active_adventure_companions() -> void:
@@ -2862,6 +2937,7 @@ func recover_from_adventure_death() -> bool:
 		return false
 	_ensure_rescued_adventure_companions_spawned()
 	_revive_active_adventure_companions()
+	_apply_control_mode_runtime()
 	two_room_force_next_transition_spawn_on_left = true
 	if two_room_test_room_index > 1:
 		_transition_two_room_to_room(1)
@@ -2919,6 +2995,71 @@ func debug_jump_to_adventure_room(target_room_index: int) -> bool:
 	two_room_force_next_transition_spawn_on_left = true
 	_transition_two_room_to_room(clamped_target)
 	return true
+
+
+func _is_healer_control_available() -> bool:
+	if not is_instance_valid(healer):
+		return false
+	var healer_ref := healer as FriendlyHealer
+	if healer_ref != null and healer_ref.dead:
+		return false
+	if two_room_test_active:
+		return two_room_healer_released
+	if not _encounter_uses_companions():
+		return false
+	return _is_party_member_enabled(PARTY_MEMBER_HEALER, true)
+
+
+func _apply_control_mode_runtime() -> void:
+	var manual_healer_control := controlled_character_id == CONTROLLED_CHARACTER_HEALER and _is_healer_control_available()
+	if not manual_healer_control and controlled_character_id == CONTROLLED_CHARACTER_HEALER:
+		controlled_character_id = CONTROLLED_CHARACTER_TANK
+	if is_instance_valid(player) and player.has_method("set_ai_control_enabled"):
+		player.call("set_ai_control_enabled", manual_healer_control)
+	if is_instance_valid(healer) and healer.has_method("set_manual_control_enabled"):
+		healer.call("set_manual_control_enabled", manual_healer_control)
+
+
+func _is_manual_healer_control_active() -> bool:
+	if controlled_character_id != CONTROLLED_CHARACTER_HEALER:
+		return false
+	if not is_instance_valid(healer):
+		return false
+	if healer.has_method("is_manual_control_enabled"):
+		return bool(healer.call("is_manual_control_enabled"))
+	return _is_healer_control_available()
+
+
+func _build_healer_manual_control_cooldowns() -> Dictionary:
+	var fallback := {
+		"ability_layout": "healer",
+		"basic": 0.0,
+		"basic_unlocked": false,
+		"quick_heal": 0.0,
+		"quick_heal_unlocked": true,
+		"ability_1": 0.0,
+		"ability_1_unlocked": true,
+		"ability_2": 0.0,
+		"ability_2_unlocked": false,
+		"roll": 0.0,
+		"roll_unlocked": false,
+		"block_active": false,
+		"block_cooldown_left": 0.0,
+		"counter_unlocked": true,
+		"counter_ready": false,
+		"counter_window_left": 0.0,
+		"special_meter_ratio": 0.0
+	}
+	if not is_instance_valid(healer):
+		return fallback
+	if not healer.has_method("get_manual_control_cooldown_state"):
+		return fallback
+	var data_variant: Variant = healer.call("get_manual_control_cooldown_state")
+	if not (data_variant is Dictionary):
+		return fallback
+	var data := (data_variant as Dictionary).duplicate(true)
+	data["ability_layout"] = "healer"
+	return data
 
 
 func toggle_hitbox_debug_mode() -> bool:
@@ -3152,7 +3293,12 @@ func _on_player_xp_changed(current: int, needed: int, level: int) -> void:
 
 
 func _on_player_cooldowns_changed(values: Dictionary) -> void:
-	cooldowns_changed.emit(values)
+	if _is_manual_healer_control_active():
+		cooldowns_changed.emit(_build_healer_manual_control_cooldowns())
+		return
+	var emitted_values := values.duplicate(true)
+	emitted_values["ability_layout"] = "tank"
+	cooldowns_changed.emit(emitted_values)
 
 
 func _on_player_item_looted(item_name: String, total_owned: int) -> void:

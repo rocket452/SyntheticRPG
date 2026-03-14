@@ -45,7 +45,7 @@ var lizard_arrow_projectile_scene_cache: PackedScene = null
 @export var flurry_windup: float = 0.34
 @export var flurry_duration: float = 1.05
 @export var flurry_shot_interval: float = 0.16
-@export var flurry_min_targets: int = 2
+@export var flurry_min_targets: int = 1
 @export var flurry_max_targets_per_volley: int = 3
 @export var flurry_trigger_range: float = 560.0
 @export var flurry_arrow_damage_scale: float = 0.65
@@ -56,6 +56,9 @@ var lizard_arrow_projectile_scene_cache: PackedScene = null
 @export var behind_tank_depth_offset: float = 18.0
 @export var engage_distance_from_player: float = 260.0
 @export var disengage_distance_from_player: float = 340.0
+@export var tank_guard_hold_radius: float = 20.0
+@export_range(-0.25, 0.95, 0.01) var tank_guard_alignment_threshold: float = 0.35
+@export var tank_guard_max_distance: float = 228.0
 
 var flurry_cooldown_left: float = 0.0
 var flurry_windup_left: float = 0.0
@@ -217,6 +220,49 @@ func _get_preferred_attack_position(enemy: EnemyBase) -> Vector2:
 	return _clamp_world_position_to_bounds(desired_position)
 
 
+func _get_backstab_target_position(enemy: EnemyBase) -> Vector2:
+	# Reuse the ranger's guarded firing slot so inherited miniboss flank logic
+	# keeps this ally behind the tank instead of circling behind the boss.
+	return _get_preferred_attack_position(enemy)
+
+
+func _is_position_behind_enemy(enemy: EnemyBase, world_position: Vector2) -> bool:
+	if enemy == null or not is_instance_valid(enemy) or not is_instance_valid(player):
+		return super._is_position_behind_enemy(enemy, world_position)
+	var tank_to_enemy := enemy.global_position - player.global_position
+	if tank_to_enemy.length_squared() <= 0.0001:
+		return world_position.distance_to(player.global_position) <= maxf(24.0, behind_tank_distance * 0.72)
+	var tank_to_self := world_position - player.global_position
+	if tank_to_self.length_squared() <= 0.0001:
+		return false
+	var away_from_enemy := -tank_to_enemy.normalized()
+	var self_direction := tank_to_self.normalized()
+	var alignment := away_from_enemy.dot(self_direction)
+	return alignment >= clampf(tank_guard_alignment_threshold, -0.25, 0.95) \
+		and tank_to_self.length() <= maxf(48.0, tank_guard_max_distance)
+
+
+func _compute_reposition_velocity(enemy: EnemyBase, to_enemy: Vector2, distance_to_enemy: float) -> Vector2:
+	var fallback_velocity := super._compute_reposition_velocity(enemy, to_enemy, distance_to_enemy)
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+		return fallback_velocity
+	if not enemy.is_miniboss:
+		return fallback_velocity
+	var preferred_position := _get_preferred_attack_position(enemy)
+	var to_preferred := preferred_position - global_position
+	var hold_radius := maxf(8.0, tank_guard_hold_radius)
+	if distance_to_enemy < _get_attack_spacing_min():
+		if to_preferred.length() > hold_radius:
+			return to_preferred.normalized() * move_speed * 0.9
+		var retreat_direction := -to_enemy
+		if retreat_direction.length_squared() <= 0.0001:
+			retreat_direction = Vector2.LEFT if facing_left else Vector2.RIGHT
+		return retreat_direction.normalized() * move_speed * 0.86
+	if to_preferred.length() > hold_radius:
+		return to_preferred.normalized() * move_speed * 0.9
+	return Vector2.ZERO
+
+
 func _tick_combat_logic(delta: float) -> void:
 	if flurry_sequence_active:
 		if _handle_breath_threat():
@@ -273,6 +319,8 @@ func _perform_attack() -> void:
 
 	if target.has_method("receive_hit"):
 		var fallback_hit := bool(target.call("receive_hit", attack_damage, global_position, outgoing_hit_stun_duration, true, attack_knockback_scale, self))
+		if fallback_hit:
+			add_special_meter_from_damage(attack_damage)
 		if fallback_hit and target.has_method("apply_hitstop"):
 			target.call("apply_hitstop", arrow_impact_hitstop)
 
@@ -282,7 +330,7 @@ func _can_start_flurry() -> bool:
 		return false
 	if flurry_sequence_active:
 		return false
-	if flurry_cooldown_left > 0.0:
+	if not _is_special_meter_full():
 		return false
 	if attack_windup_left > 0.0 or attack_recovery_left > 0.0:
 		return false
@@ -291,10 +339,11 @@ func _can_start_flurry() -> bool:
 	if not is_instance_valid(player):
 		return false
 	var ready_targets := _get_flurry_targets(flurry_max_targets_per_volley)
-	return ready_targets.size() >= maxi(2, flurry_min_targets)
+	return ready_targets.size() >= maxi(1, flurry_min_targets)
 
 
 func _start_flurry() -> void:
+	_consume_special_meter()
 	flurry_sequence_active = true
 	flurry_has_started_firing = false
 	flurry_windup_left = maxf(0.06, flurry_windup)
@@ -314,7 +363,9 @@ func _reset_flurry_state() -> void:
 
 
 func _find_target_enemy() -> EnemyBase:
-	var candidate := super._find_target_enemy()
+	var candidate := _find_priority_miniboss_target()
+	if candidate == null:
+		candidate = super._find_target_enemy()
 	if candidate == null or not is_instance_valid(candidate):
 		lizard_combat_engaged = false
 		return null
@@ -333,6 +384,33 @@ func _find_target_enemy() -> EnemyBase:
 		lizard_combat_engaged = true
 		return candidate
 	return null
+
+
+func _find_priority_miniboss_target() -> EnemyBase:
+	var nearest_boss: EnemyBase = null
+	var nearest_boss_distance_sq := INF
+	var nearest_boss_id := INF
+	var player_position := player.global_position if is_instance_valid(player) else global_position
+	var max_chase_distance_sq := maxf(1.0, max_chase_distance_from_player) * maxf(1.0, max_chase_distance_from_player)
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if not enemy.is_miniboss:
+			continue
+		if _is_enemy_shadow_feared(enemy):
+			continue
+		if enemy.global_position.distance_squared_to(player_position) > max_chase_distance_sq:
+			continue
+		var distance_sq := enemy.global_position.distance_squared_to(global_position)
+		var enemy_id := enemy.get_instance_id()
+		if nearest_boss == null \
+			or distance_sq < nearest_boss_distance_sq \
+			or (is_equal_approx(distance_sq, nearest_boss_distance_sq) and enemy_id < nearest_boss_id):
+			nearest_boss = enemy
+			nearest_boss_distance_sq = distance_sq
+			nearest_boss_id = enemy_id
+	return nearest_boss
 
 
 func _fire_flurry_volley(targets: Array[EnemyBase]) -> void:

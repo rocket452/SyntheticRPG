@@ -201,6 +201,22 @@ signal combat_status_message(text: String, duration: float)
 @export var block_stamina_bar_width_scale: float = 0.92
 @export var block_stamina_bar_thickness: float = 4.0
 @export var block_stamina_bar_y_offset: float = -9.0
+@export var ai_follow_range: float = 66.0
+@export var ai_follow_range_tolerance: float = 14.0
+@export var ai_kite_min_range: float = 32.0
+@export var ai_strafe_speed_ratio: float = 0.42
+@export var ai_strafe_direction_swap_interval: float = 0.95
+@export var ai_faceoff_depth_tolerance: float = 24.0
+@export var ai_faceoff_hold_distance_padding: float = 12.0
+@export var ai_faceoff_reposition_deadzone: float = 6.0
+@export var ai_block_detection_range: float = 146.0
+@export var ai_block_max_threat_lead_time: float = 0.82
+@export var ai_block_target_lead_time: float = 0.08
+@export var ai_block_hold_min_time: float = 0.14
+@export var ai_block_hold_max_time: float = 0.3
+@export_range(0.0, 1.0, 0.01) var ai_block_forget_chance: float = 0.18
+@export_range(0.0, 1.0, 0.01) var ai_block_mistime_chance: float = 0.28
+@export var ai_block_mistime_window: float = 0.2
 
 const ITEM_NAMES: Dictionary = {
 	"iron_shard": "Iron Shard",
@@ -369,6 +385,17 @@ var equipped_ring_id: String = ""
 var equipped_ring_definition: Dictionary = {}
 var gameplay_input_blocked: bool = false
 var last_charge_attack_raw_ratio: float = 0.0
+var ai_control_enabled: bool = false
+var ai_strafe_direction: float = 1.0
+var ai_strafe_swap_left: float = 0.0
+var ai_block_queue_left: float = 0.0
+var ai_block_hold_left: float = 0.0
+var ai_block_reaction_lock_left: float = 0.0
+var input_override_enabled: bool = false
+var input_override_pressed: Dictionary = {}
+var input_override_just_pressed: Dictionary = {}
+var input_override_strengths: Dictionary = {}
+var input_override_previous_pressed: Dictionary = {}
 
 var facing_direction: Vector2 = Vector2.RIGHT
 var is_blocking: bool = false
@@ -376,6 +403,8 @@ var debug_auto_block_enabled: bool = false
 var is_rolling: bool = false
 var is_invulnerable: bool = false
 var is_dead: bool = false
+var death_animation_elapsed: float = 0.0
+var death_animation_finished: bool = false
 
 var basic_attack_cooldown_left: float = 0.0
 var ability_1_cooldown_left: float = 0.0
@@ -696,12 +725,14 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	_request_hitbox_debug_redraw()
 	if is_dead:
+		_tick_dead_state(delta)
 		return
 
 	var pre_move_position := global_position
 	_tick_timers(delta)
 	_update_camera_move_offset(delta)
 	_update_camera_shake(delta)
+	_update_ai_input(delta)
 	if hitstop_left > 0.0:
 		_update_health_bar()
 		_update_visual_feedback(0.0)
@@ -726,6 +757,34 @@ func _physics_process(delta: float) -> void:
 	_collect_nearby_pickups()
 	_update_visual_feedback(delta)
 	_emit_cooldown_state()
+
+
+func _tick_dead_state(delta: float) -> void:
+	velocity = Vector2.ZERO
+	knockback_velocity = Vector2.ZERO
+	_update_player_sprite(maxf(0.0, delta), 0.0)
+	death_animation_elapsed += maxf(0.0, delta)
+	if not death_animation_finished and death_animation_elapsed >= _get_death_animation_duration():
+		death_animation_finished = true
+		_set_health_bar_visible(false)
+	if not death_animation_finished:
+		_update_health_bar()
+	_emit_cooldown_state()
+
+
+func _get_death_animation_duration() -> float:
+	var frame_columns: Array = PLAYER_ACTION_FRAME_COLUMNS.get("death", [])
+	var frame_count := frame_columns.size() if not frame_columns.is_empty() else int(PLAYER_ACTION_FRAME_COUNTS.get("death", 0))
+	var fps := float(PLAYER_HD_FPS.get("death", 0.0))
+	if frame_count <= 0 or fps <= 0.0:
+		return 0.42
+	return float(frame_count) / fps
+
+
+func _set_health_bar_visible(visible: bool) -> void:
+	if not is_instance_valid(health_bar_root):
+		return
+	health_bar_root.visible = visible
 
 
 func _exit_tree() -> void:
@@ -794,6 +853,7 @@ func _setup_health_bar() -> void:
 	health_bar_root.name = "PlayerHealthBar"
 	health_bar_root.top_level = true
 	health_bar_root.z_index = 260
+	health_bar_root.visible = true
 	add_child(health_bar_root)
 
 	health_bar_background = Line2D.new()
@@ -1207,6 +1267,21 @@ func set_gameplay_input_blocked(blocked: bool) -> void:
 	_cancel_charge_attack()
 	_reset_basic_combo_state()
 	_emit_cooldown_state()
+
+
+func set_ai_control_enabled(enabled: bool) -> void:
+	ai_control_enabled = enabled
+	input_override_enabled = ai_control_enabled
+	_reset_input_override_state()
+	_reset_ai_block_logic_state()
+	if not ai_control_enabled:
+		return
+	ai_strafe_direction = 1.0
+	ai_strafe_swap_left = randf_range(0.35, maxf(0.4, ai_strafe_direction_swap_interval))
+
+
+func is_ai_control_enabled() -> bool:
+	return ai_control_enabled
 
 
 func needs_healing(threshold_ratio: float = 0.999) -> bool:
@@ -1630,7 +1705,7 @@ func _tick_harpoon_state(delta: float) -> void:
 		if is_blocking or is_rolling or lunge_time_left > 0.0 or attack_windup_left > 0.0:
 			_cancel_harpoon_state()
 			return
-		if Input.is_action_pressed("ability_1"):
+		if _is_action_pressed("ability_1"):
 			harpoon_charge_time = minf(maxf(0.01, harpoon_max_charge_time), harpoon_charge_time + maxf(0.0, delta))
 			harpoon_charge_ratio = _get_harpoon_charge_ratio_from_time(harpoon_charge_time)
 		else:
@@ -2252,7 +2327,7 @@ func _get_basic_attack_bufferable_time_left(blocker: String) -> float:
 func _try_buffer_basic_attack_from_hold() -> bool:
 	if not basic_attack_hold_buffer_armed:
 		return false
-	if not Input.is_action_pressed("basic_attack"):
+	if not _is_action_pressed("basic_attack"):
 		return false
 	if basic_attack_input_buffered:
 		return false
@@ -2362,7 +2437,7 @@ func _release_charge_attack() -> void:
 
 func _tick_charge_attack_state(delta: float) -> void:
 	if is_charging_attack:
-		if Input.is_action_pressed("ability_1"):
+		if _is_action_pressed("ability_1"):
 			charge_time = minf(max_charge_time, charge_time + delta)
 			if charge_time >= max_charge_time - 0.0001:
 				_release_charge_attack()
@@ -2574,12 +2649,12 @@ func _handle_actions() -> void:
 		is_blocking = false
 		basic_attack_hold_buffer_armed = false
 		return
-	if Input.is_action_just_pressed("basic_attack"):
+	if _is_action_just_pressed("basic_attack"):
 		basic_attack_hold_buffer_armed = true
-	elif not Input.is_action_pressed("basic_attack"):
+	elif not _is_action_pressed("basic_attack"):
 		basic_attack_hold_buffer_armed = false
 
-	if _can_dodge_cancel_charge_recovery() and Input.is_action_just_pressed("roll") and roll_cooldown_left <= 0.0:
+	if _can_dodge_cancel_charge_recovery() and _is_action_just_pressed("roll") and roll_cooldown_left <= 0.0:
 		_cancel_charge_attack_recovery()
 		_start_roll()
 		return
@@ -2589,7 +2664,7 @@ func _handle_actions() -> void:
 	var can_block_now := false
 	if _is_shield_ring_equipped():
 		block_input_grace_left = 0.0
-		var trigger_ring_block := Input.is_action_just_pressed("block")
+		var trigger_ring_block := _is_action_just_pressed("block")
 		if debug_auto_block_enabled and not is_blocking and ring_shield_block_cooldown_left <= 0.0:
 			trigger_ring_block = true
 		if trigger_ring_block and _can_start_ring_shield_block():
@@ -2597,7 +2672,7 @@ func _handle_actions() -> void:
 		if not is_blocking:
 			perfect_block_window_left = 0.0
 	else:
-		var raw_wants_block := Input.is_action_pressed("block") or debug_auto_block_enabled
+		var raw_wants_block := _is_action_pressed("block") or debug_auto_block_enabled
 		if raw_wants_block:
 			block_input_grace_left = maxf(block_input_grace_left, maxf(0.0, block_input_grace_duration))
 		wants_block = raw_wants_block or block_input_grace_left > 0.0
@@ -2610,11 +2685,11 @@ func _handle_actions() -> void:
 
 	if is_charging_attack:
 		is_blocking = false
-		if Input.is_action_just_pressed("roll") and roll_cooldown_left <= 0.0 and charge_time >= charge_cancel_lockout:
+		if _is_action_just_pressed("roll") and roll_cooldown_left <= 0.0 and charge_time >= charge_cancel_lockout:
 			_cancel_charge_attack()
 			_start_roll()
 			return
-		if not Input.is_action_pressed("ability_1"):
+		if not _is_action_pressed("ability_1"):
 			_release_charge_attack()
 		return
 	if _try_buffer_basic_attack_from_hold():
@@ -2634,7 +2709,7 @@ func _handle_actions() -> void:
 		is_blocking = false
 		return
 
-	if Input.is_action_just_pressed("roll") and roll_cooldown_left <= 0.0:
+	if _is_action_just_pressed("roll") and roll_cooldown_left <= 0.0:
 		_start_roll()
 		return
 
@@ -2644,17 +2719,17 @@ func _handle_actions() -> void:
 			_on_block_started()
 		elif not is_blocking:
 			perfect_block_window_left = 0.0
-	if Input.is_action_just_pressed("counter_strike"):
+	if _is_action_just_pressed("counter_strike"):
 		var counter_started := _try_start_counter_strike()
 		if counter_started or counter_strike_available:
 			return
 	if is_blocking:
 		return
-	if Input.is_action_just_pressed("ability_1"):
+	if _is_action_just_pressed("ability_1"):
 		_try_start_harpoon_charge()
 		return
 
-	if Input.is_action_just_pressed("basic_attack"):
+	if _is_action_just_pressed("basic_attack"):
 		_log_basic_attack_cadence("INPUT_PRESS cooldown_left=%.3f" % basic_attack_cooldown_left)
 		var blocker := _get_basic_attack_start_blocker()
 		if blocker.is_empty():
@@ -2671,7 +2746,7 @@ func _handle_actions() -> void:
 				_log_basic_attack_cadence("REJECT reason=%s" % blocker)
 		return
 
-	if Input.is_action_just_pressed("ability_2"):
+	if _is_action_just_pressed("ability_2"):
 		if not _is_ally_dash_unlocked():
 			combat_status_message.emit("Bodyguard Boots required for Ally Dash", 1.0)
 			_emit_cooldown_state()
@@ -3415,12 +3490,261 @@ func _apply_miniboss_soft_separation(delta: float) -> void:
 	global_position += push_step
 
 
+func _is_action_pressed(action: StringName) -> bool:
+	if input_override_enabled:
+		return bool(input_override_pressed.get(String(action), false))
+	return Input.is_action_pressed(action)
+
+
+func _is_action_just_pressed(action: StringName) -> bool:
+	if input_override_enabled:
+		return bool(input_override_just_pressed.get(String(action), false))
+	return Input.is_action_just_pressed(action)
+
+
+func _get_action_strength(action: StringName) -> float:
+	if input_override_enabled:
+		return clampf(float(input_override_strengths.get(String(action), 0.0)), 0.0, 1.0)
+	return Input.get_action_strength(action)
+
+
+func _reset_input_override_state() -> void:
+	input_override_pressed.clear()
+	input_override_just_pressed.clear()
+	input_override_strengths.clear()
+	input_override_previous_pressed.clear()
+
+
+func _set_input_override_action(action: String, pressed: bool, strength: float = 1.0) -> void:
+	var normalized_action := action.strip_edges()
+	if normalized_action.is_empty():
+		return
+	var next_pressed := bool(pressed)
+	var was_pressed := bool(input_override_previous_pressed.get(normalized_action, false))
+	input_override_pressed[normalized_action] = next_pressed
+	input_override_just_pressed[normalized_action] = next_pressed and not was_pressed
+	input_override_previous_pressed[normalized_action] = next_pressed
+	input_override_strengths[normalized_action] = clampf(strength if next_pressed else 0.0, 0.0, 1.0)
+
+
+func _set_input_override_move_vector(move_vector: Vector2) -> void:
+	var clamped_move := move_vector
+	if clamped_move.length_squared() > 1.0:
+		clamped_move = clamped_move.normalized()
+	_set_input_override_action("move_left", clamped_move.x < -0.01, absf(minf(0.0, clamped_move.x)))
+	_set_input_override_action("move_right", clamped_move.x > 0.01, absf(maxf(0.0, clamped_move.x)))
+	_set_input_override_action("move_up", clamped_move.y < -0.01, absf(minf(0.0, clamped_move.y)))
+	_set_input_override_action("move_down", clamped_move.y > 0.01, absf(maxf(0.0, clamped_move.y)))
+
+
+func _find_ai_primary_enemy() -> EnemyBase:
+	var nearest_enemy: EnemyBase = null
+	var nearest_distance_sq := INF
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		var distance_sq := enemy.global_position.distance_squared_to(global_position)
+		if nearest_enemy == null or distance_sq < nearest_distance_sq:
+			nearest_enemy = enemy
+			nearest_distance_sq = distance_sq
+	return nearest_enemy
+
+
+func _reset_ai_block_logic_state() -> void:
+	ai_block_queue_left = 0.0
+	ai_block_hold_left = 0.0
+	ai_block_reaction_lock_left = 0.0
+
+
+func _estimate_ai_block_threat_time(enemy: EnemyBase) -> float:
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+		return INF
+	var earliest_time := INF
+	if enemy.attack_windup_left > 0.0:
+		earliest_time = minf(earliest_time, enemy.attack_windup_left)
+	if enemy.attack_prestrike_hold_left > 0.0:
+		earliest_time = minf(earliest_time, enemy.attack_prestrike_hold_left)
+	if enemy.spin_charge_left > 0.0:
+		earliest_time = minf(earliest_time, enemy.spin_charge_left)
+	if enemy.cacodemon_breath_charge_left > 0.0:
+		earliest_time = minf(earliest_time, enemy.cacodemon_breath_charge_left)
+	if enemy.cacodemon_fireball_cast_left > 0.0:
+		earliest_time = minf(earliest_time, enemy.cacodemon_fireball_cast_left)
+	if enemy.cacodemon_bite_hit_pending and enemy.cacodemon_bite_hit_left > 0.0:
+		earliest_time = minf(earliest_time, enemy.cacodemon_bite_hit_left)
+	if enemy.boss_charge_shockwave_fill_left > 0.0 and not enemy.boss_charge_shockwave_emitted:
+		earliest_time = minf(earliest_time, enemy.boss_charge_shockwave_fill_left)
+
+	var currently_incoming := (enemy.pending_attack and enemy.attack_anim_left > 0.0) \
+		or enemy.spin_active_left > 0.0 \
+		or enemy.cacodemon_breath_left > 0.0 \
+		or enemy.cacodemon_bite_hit_pending
+	if currently_incoming:
+		earliest_time = minf(earliest_time, 0.0)
+	return earliest_time
+
+
+func _find_ai_block_threat() -> Dictionary:
+	var max_range := maxf(20.0, ai_block_detection_range)
+	var max_lead_time := maxf(0.05, ai_block_max_threat_lead_time)
+	var best_enemy_id := -1
+	var best_score := INF
+	var best_time := INF
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		var to_self := global_position - enemy.global_position
+		var distance := to_self.length()
+		if distance > max_range:
+			continue
+		var incoming_time := _estimate_ai_block_threat_time(enemy)
+		if incoming_time > max_lead_time:
+			continue
+		if to_self.length_squared() > 0.001 and enemy.committed_attack_facing_direction.length_squared() > 0.001:
+			var attack_dir := enemy.committed_attack_facing_direction.normalized()
+			var to_self_dir := to_self.normalized()
+			if attack_dir.dot(to_self_dir) < -0.22 and incoming_time > 0.03:
+				continue
+		var distance_score := distance / max_range
+		var time_score := incoming_time / max_lead_time
+		var score := (time_score * 1.25) + distance_score
+		if score >= best_score:
+			continue
+		best_score = score
+		best_time = incoming_time
+		best_enemy_id = enemy.get_instance_id()
+	if best_enemy_id < 0:
+		return {}
+	return {
+		"enemy_id": best_enemy_id,
+		"time": best_time
+	}
+
+
+func _update_ai_block_input(delta: float) -> bool:
+	ai_block_reaction_lock_left = maxf(0.0, ai_block_reaction_lock_left - maxf(0.0, delta))
+	if ai_block_hold_left > 0.0:
+		ai_block_hold_left = maxf(0.0, ai_block_hold_left - maxf(0.0, delta))
+		return true
+	if ai_block_queue_left > 0.0:
+		ai_block_queue_left = maxf(0.0, ai_block_queue_left - maxf(0.0, delta))
+		if ai_block_queue_left <= 0.0:
+			var hold_min := maxf(0.05, ai_block_hold_min_time)
+			var hold_max := maxf(hold_min, ai_block_hold_max_time)
+			ai_block_hold_left = randf_range(hold_min, hold_max)
+			return ai_block_hold_left > 0.0
+		return false
+	if ai_block_reaction_lock_left > 0.0:
+		return false
+
+	var threat := _find_ai_block_threat()
+	if threat.is_empty():
+		return false
+	var incoming_time := maxf(0.0, float(threat.get("time", INF)))
+	if incoming_time >= INF:
+		return false
+	if randf() < clampf(ai_block_forget_chance, 0.0, 1.0):
+		ai_block_reaction_lock_left = clampf(incoming_time * 0.66, 0.08, 0.46)
+		return false
+
+	var timing_offset := randf_range(-0.035, 0.055)
+	if randf() < clampf(ai_block_mistime_chance, 0.0, 1.0):
+		timing_offset += randf_range(-absf(ai_block_mistime_window), absf(ai_block_mistime_window))
+	var desired_lead := maxf(0.01, ai_block_target_lead_time)
+	var trigger_in := incoming_time - desired_lead + timing_offset
+	if trigger_in <= 0.01:
+		var hold_min := maxf(0.05, ai_block_hold_min_time)
+		var hold_max := maxf(hold_min, ai_block_hold_max_time)
+		ai_block_hold_left = randf_range(hold_min, hold_max)
+		ai_block_reaction_lock_left = maxf(0.1, ai_block_hold_left * 0.55)
+		return ai_block_hold_left > 0.0
+	ai_block_queue_left = trigger_in
+	ai_block_reaction_lock_left = maxf(0.12, incoming_time + 0.12)
+	return false
+
+
+func _update_ai_input(delta: float) -> void:
+	if not ai_control_enabled:
+		input_override_enabled = false
+		return
+	input_override_enabled = true
+	var controls_blocked := gameplay_input_blocked or is_dead
+	if controls_blocked:
+		_reset_ai_block_logic_state()
+		_reset_input_override_state()
+		return
+
+	var move_input := Vector2.ZERO
+	var press_basic := false
+	var press_block := _update_ai_block_input(delta)
+	var nearest_enemy := _find_ai_primary_enemy()
+	var to_enemy := Vector2.ZERO
+	var enemy_distance := INF
+	if nearest_enemy != null and is_instance_valid(nearest_enemy):
+		to_enemy = nearest_enemy.global_position - global_position
+		enemy_distance = to_enemy.length()
+		if absf(to_enemy.x) > 2.0:
+			facing_direction = Vector2.RIGHT if to_enemy.x > 0.0 else Vector2.LEFT
+
+		var desired_range := maxf(18.0, ai_follow_range)
+		var range_tolerance := maxf(2.0, ai_follow_range_tolerance)
+		var kite_min_range := maxf(8.0, ai_kite_min_range)
+		var melee_reach := maxf(12.0, basic_attack_range + 22.0)
+		var faceoff_depth_tolerance := maxf(8.0, ai_faceoff_depth_tolerance)
+		var faceoff_hold_max_distance := maxf(kite_min_range + 4.0, melee_reach + ai_faceoff_hold_distance_padding)
+		var in_faceoff_band := enemy_distance >= kite_min_range \
+			and enemy_distance <= faceoff_hold_max_distance \
+			and absf(to_enemy.y) <= faceoff_depth_tolerance
+		if in_faceoff_band:
+			# Hold steady when toe-to-toe to avoid jittery micro-strafe movement.
+			if absf(to_enemy.x) > maxf(2.0, ai_faceoff_reposition_deadzone):
+				facing_direction = Vector2.RIGHT if to_enemy.x > 0.0 else Vector2.LEFT
+			move_input = Vector2.ZERO
+		elif enemy_distance > desired_range + range_tolerance:
+			move_input = to_enemy.normalized()
+		elif enemy_distance < kite_min_range:
+			move_input = (-to_enemy).normalized()
+		else:
+			ai_strafe_swap_left = maxf(0.0, ai_strafe_swap_left - maxf(0.0, delta))
+			if ai_strafe_swap_left <= 0.0:
+				ai_strafe_direction *= -1.0
+				ai_strafe_swap_left = randf_range(0.35, maxf(0.4, ai_strafe_direction_swap_interval))
+			var strafe_scale := clampf(ai_strafe_speed_ratio, 0.0, 1.0)
+			move_input = Vector2(ai_strafe_direction * strafe_scale, sin(anim_time * 1.9) * 0.28 * strafe_scale)
+
+		press_basic = _should_ai_press_basic_attack(enemy_distance, melee_reach)
+	else:
+		ai_strafe_swap_left = 0.0
+
+	_set_input_override_move_vector(move_input)
+	_set_input_override_action("basic_attack", press_basic, 1.0)
+	_set_input_override_action("ability_1", false, 0.0)
+	_set_input_override_action("ability_2", false, 0.0)
+	_set_input_override_action("roll", false, 0.0)
+	_set_input_override_action("block", press_block, 1.0 if press_block else 0.0)
+	_set_input_override_action("counter_strike", false, 0.0)
+
+
+func _should_ai_press_basic_attack(enemy_distance: float, melee_reach: float) -> bool:
+	if enemy_distance > melee_reach + 24.0:
+		return false
+	var blocker := _get_basic_attack_start_blocker()
+	if blocker.is_empty():
+		return enemy_distance <= melee_reach
+	if blocker != "cooldown":
+		return false
+	var buffer_window := maxf(0.01, basic_attack_input_buffer_window)
+	return basic_attack_cooldown_left <= buffer_window
+
+
 func _get_movement_vector() -> Vector2:
 	if gameplay_input_blocked:
 		return Vector2.ZERO
 	var movement_vector := Vector2(
-		Input.get_action_strength("move_right") - Input.get_action_strength("move_left"),
-		Input.get_action_strength("move_down") - Input.get_action_strength("move_up")
+		_get_action_strength("move_right") - _get_action_strength("move_left"),
+		_get_action_strength("move_down") - _get_action_strength("move_up")
 	)
 	if movement_vector.length_squared() > 1.0:
 		movement_vector = movement_vector.normalized()
@@ -4565,6 +4889,9 @@ func _emit_cooldown_state() -> void:
 
 func _die() -> void:
 	is_dead = true
+	death_animation_elapsed = 0.0
+	death_animation_finished = false
+	_set_health_bar_visible(true)
 	is_blocking = false
 	perfect_block_window_left = 0.0
 	counter_strike_available = false
@@ -4612,6 +4939,9 @@ func _die() -> void:
 
 func revive_at_full_health() -> void:
 	is_dead = false
+	death_animation_elapsed = 0.0
+	death_animation_finished = false
+	_set_health_bar_visible(true)
 	current_health = maxf(1.0, max_health)
 	is_blocking = false
 	perfect_block_window_left = 0.0
