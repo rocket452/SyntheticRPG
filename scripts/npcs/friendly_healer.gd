@@ -212,10 +212,13 @@ var breath_was_safe: bool = false
 var hitbox_debug_enabled: bool = false
 
 @onready var sprite: Sprite2D = $Sprite2D
+@onready var shadow_visual: Polygon2D = get_node_or_null("Shadow") as Polygon2D
 @onready var collision_shape: CollisionShape2D = get_node_or_null("CollisionShape2D") as CollisionShape2D
 
 
 func _ready() -> void:
+	if is_instance_valid(shadow_visual):
+		shadow_visual.visible = true
 	add_to_group("friendly_npcs")
 	add_to_group("hitbox_debuggable")
 	if get_tree() != null and get_tree().has_meta("debug_hitbox_mode_enabled"):
@@ -605,12 +608,14 @@ func _needs_reposition(primary_enemy: EnemyBase) -> bool:
 		return false
 	var to_player := player.global_position - global_position
 	var distance_to_player := to_player.length()
+	if primary_enemy == null or not is_instance_valid(primary_enemy):
+		var idle_min_band := maxf(min_distance_to_player, follow_distance - 24.0)
+		var idle_max_band := maxf(idle_min_band + 8.0, follow_distance + 28.0)
+		return distance_to_player < idle_min_band or distance_to_player > idle_max_band
 	var min_band := maxf(min_distance_to_player, healer_follow_min_band)
 	var max_band := maxf(min_band + 8.0, healer_follow_max_band)
 	if distance_to_player < min_band or distance_to_player > max_band:
 		return true
-	if primary_enemy == null or not is_instance_valid(primary_enemy):
-		return false
 	var player_to_enemy := primary_enemy.global_position - player.global_position
 	var player_to_healer := global_position - player.global_position
 	if absf(player_to_enemy.x) <= 8.0:
@@ -729,7 +734,10 @@ func _tick_cast(delta: float) -> void:
 	var cast_rate_scale := 1.0 / maxf(0.01, cast_time_multiplier)
 	cast_anim_time += delta * fps * cast_rate_scale
 
-	var frame_index := mini(int(floor(cast_anim_time)), frame_count - 1)
+	var cast_progress := clampf(cast_anim_time / maxf(1.0, float(frame_count)), 0.0, 1.0)
+	var frame_index := frame_count - 1
+	if frame_count > 1:
+		frame_index = mini(int(floor(cast_progress * float(frame_count - 1))), frame_count - 1)
 	_set_anim_frame("cast", frame_index)
 
 	if not heal_applied_this_cast and cast_anim_time >= float(frame_count):
@@ -970,6 +978,35 @@ func receive_heal(amount: float) -> bool:
 	return true
 
 
+func revive_at_full_health() -> void:
+	dead = false
+	is_casting = false
+	heal_applied_this_cast = false
+	pending_cast_action = CastAction.NONE
+	pending_cast_target = null
+	current_health = maxf(1.0, max_health)
+	stun_left = 0.0
+	hit_flash_left = 0.0
+	heal_flash_left = 0.0
+	knockback_velocity = Vector2.ZERO
+	death_anim_time = 0.0
+	death_cleanup_started = false
+	active_shield_target_id = -1
+	active_shield_left = 0.0
+	marked_lunge_panic_left = 0.0
+	marked_lunge_enemy_id = -1
+	breath_threat_snapshot = {}
+	breath_safe_indicator_left = 0.0
+	_clear_tidal_waves()
+	if not is_instance_valid(health_bar_root):
+		_setup_health_bar()
+	if is_instance_valid(sprite):
+		sprite.modulate = Color(1.0, 1.0, 1.0, 1.0)
+	_set_anim_frame("idle", 0)
+	_update_health_bar()
+	health_changed.emit(current_health, max_health)
+
+
 func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = false, stun_duration: float = 0.0, knockback_scale: float = 1.0) -> bool:
 	if dead:
 		return false
@@ -1115,6 +1152,14 @@ func _quantize_player_like_direction(direction: Vector2) -> Vector2:
 	return Vector2.RIGHT.rotated(snapped_angle)
 
 
+func _should_quantize_player_like_move(enemy: EnemyBase) -> bool:
+	if healer_ai_state == HealerAIState.BREATH_STACK:
+		return true
+	if healer_ai_state == HealerAIState.HEALING or healer_ai_state == HealerAIState.SHIELDING or healer_ai_state == HealerAIState.ATTACKING:
+		return true
+	return enemy != null and is_instance_valid(enemy)
+
+
 func _update_tactical_positioning(delta: float) -> void:
 	if not is_instance_valid(player):
 		move_velocity = move_velocity.move_toward(Vector2.ZERO, movement_deceleration * delta)
@@ -1185,11 +1230,13 @@ func _update_tactical_positioning(delta: float) -> void:
 		if must_stop or (not moving_now and not can_start):
 			move_velocity = Vector2.ZERO
 		else:
-			var quantized_direction := _quantize_player_like_direction(direct_to_target)
-			if quantized_direction.length_squared() <= 0.0001:
+			var move_direction := direct_to_target.normalized() if direct_distance > 0.0001 else Vector2.ZERO
+			if _should_quantize_player_like_move(enemy):
+				move_direction = _quantize_player_like_direction(move_direction)
+			if move_direction.length_squared() <= 0.0001:
 				move_velocity = Vector2.ZERO
 			else:
-				move_velocity = quantized_direction * speed_cap
+				move_velocity = move_direction * speed_cap
 		position += move_velocity * delta
 		position = _clamp_to_bounds(position)
 		if pixel_snap_movement:
@@ -1239,10 +1286,18 @@ func _compute_desired_position() -> Vector2:
 			follow_vertical_bias + (orbit_depth * follow_vertical_scale)
 		)
 	else:
-		desired_offset = Vector2(
-			(desired_side * ((follow_distance * 0.72) + (orbit_depth * 0.3))) + (orbit_lateral * 0.55),
-			follow_vertical_bias + (sin(orbit_phase * 0.65) * 4.0)
-		)
+		var follow_direction := player.facing_direction
+		if player.velocity.length_squared() > 36.0:
+			follow_direction = player.velocity.normalized()
+		elif follow_direction.length_squared() > 0.0001:
+			follow_direction = follow_direction.normalized()
+		else:
+			follow_direction = Vector2.RIGHT
+		var lateral := Vector2(-follow_direction.y, follow_direction.x)
+		var idle_follow_distance := clampf(follow_distance, min_distance_to_player + 8.0, max_distance_to_player - 6.0)
+		desired_offset = (-follow_direction * idle_follow_distance) \
+			+ (lateral * desired_side * maxf(8.0, orbit_lateral_distance * 0.8)) \
+			+ Vector2(0.0, follow_vertical_bias)
 
 	var target_position := player_position + desired_offset
 	if enemy != null and is_instance_valid(enemy):

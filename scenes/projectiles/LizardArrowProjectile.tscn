@@ -1,0 +1,20 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/projectiles/lizard_arrow_projectile.gd" id="1_dw8qu"]
+
+[node name="LizardArrowProjectile" type="Node2D"]
+z_index = 4
+script = ExtResource("1_dw8qu")
+
+[node name="Trail" type="Line2D" parent="."]
+default_color = Color(0.72, 0.9, 0.56, 0.76)
+width = 1.8
+round_precision = 8
+joint_mode = 2
+begin_cap_mode = 1
+end_cap_mode = 1
+points = PackedVector2Array(0, 0, -22, 0)
+
+[node name="Sprite2D" type="Sprite2D" parent="."]
+texture_filter = 1
+scale = Vector2(2, 2)

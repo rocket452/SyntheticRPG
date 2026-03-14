@@ -48,7 +48,7 @@ signal combat_status_message(text: String, duration: float)
 @export var ability_1_damage: float = 30.0
 @export var ability_1_range: float = 84.0
 @export var ability_1_arc_degrees: float = 140.0
-@export var ability_1_cooldown: float = 4.5
+@export var ability_1_cooldown: float = 6.75
 @export var ability_1_windup: float = 0.14
 @export var harpoon_min_charge_time: float = 0.12
 @export var harpoon_max_charge_time: float = 0.9
@@ -110,6 +110,9 @@ signal combat_status_message(text: String, duration: float)
 @export var counter_strike_vfx_scale: float = 1.45
 @export var counter_strike_anim_duration: float = 0.21
 @export var counter_strike_anim_strength: float = 1.75
+@export var counter_strike_oval_forward_offset: float = 30.0
+@export var counter_strike_oval_half_width: float = 22.0
+@export var counter_strike_oval_half_height: float = 12.0
 @export var depth_speed_multiplier: float = 0.62
 @export var lane_min_x: float = -760.0
 @export var lane_max_x: float = 760.0
@@ -232,16 +235,21 @@ const STORE_ITEM_ORDER: Array[String] = [
 	"shield_thorns",
 	"shield_wide_guard"
 ]
+const BOOT_ITEM_ORDER: Array[String] = [
+	"bodyguard_boots",
+	"swift_boots",
+	"strider_boots"
+]
 const STORE_ITEM_PRICES: Dictionary = {
-	"bodyguard_boots": 28,
-	"swift_boots": 24,
-	"strider_boots": 26,
-	"sword_extended_charge": 34,
-	"sword_slowing": 36,
-	"sword_stacking_dot": 38,
-	"shield_revenge": 34,
-	"shield_thorns": 36,
-	"shield_wide_guard": 38
+	"bodyguard_boots": 15,
+	"swift_boots": 15,
+	"strider_boots": 15,
+	"sword_extended_charge": 15,
+	"sword_slowing": 15,
+	"sword_stacking_dot": 15,
+	"shield_revenge": 15,
+	"shield_thorns": 15,
+	"shield_wide_guard": 15
 }
 
 const SWORD_PICKUP_TO_SWORD_ID: Dictionary = {
@@ -400,6 +408,7 @@ var queued_melee_hit_knockback_scale: float = 1.0
 var queued_melee_hit_hitstop: float = 0.0
 var queued_melee_hit_vfx_scale: float = 1.0
 var queued_melee_hit_apply_sword_effect: bool = false
+var queued_melee_hit_use_forward_oval_hitbox: bool = false
 
 var lunge_time_left: float = 0.0
 var lunge_total_duration: float = 0.0
@@ -472,6 +481,10 @@ var harpoon_reel_charge_ratio: float = 0.0
 var harpoon_hooked_target: Node2D = null
 var harpoon_hooked_target_is_enemy: bool = false
 var harpoon_hooked_target_is_heavy: bool = false
+var harpoon_hooked_has_velocity: bool = false
+var harpoon_hooked_has_move_velocity: bool = false
+var harpoon_hooked_has_knockback_velocity: bool = false
+var harpoon_hooked_has_stun_left: bool = false
 var harpoon_heavy_start_x: float = 0.0
 var harpoon_tether_line: Line2D = null
 var harpoon_tether_glow_line: Line2D = null
@@ -601,6 +614,8 @@ func _ready() -> void:
 	_refresh_equipped_sword_visuals()
 	_refresh_equipped_shield_visuals()
 	_refresh_equipped_ring_visuals()
+	if is_instance_valid(shadow_visual):
+		shadow_visual.visible = true
 	if is_instance_valid(camera_2d):
 		camera_base_offset = Vector2.ZERO
 		camera_move_offset = Vector2.ZERO
@@ -798,7 +813,7 @@ func _setup_health_bar() -> void:
 	health_bar_root.add_child(health_bar_fill)
 
 	block_stamina_bar_background = Line2D.new()
-	block_stamina_bar_background.default_color = Color(0.06, 0.08, 0.12, 0.9)
+	block_stamina_bar_background.default_color = Color(0.0, 0.0, 0.0, 0.94)
 	block_stamina_bar_background.width = maxf(2.0, block_stamina_bar_thickness)
 	block_stamina_bar_background.z_index = 2
 	block_stamina_bar_background.begin_cap_mode = Line2D.LINE_CAP_ROUND
@@ -806,7 +821,7 @@ func _setup_health_bar() -> void:
 	health_bar_root.add_child(block_stamina_bar_background)
 
 	block_stamina_bar_fill = Line2D.new()
-	block_stamina_bar_fill.default_color = Color(0.34, 0.86, 1.0, 0.96)
+	block_stamina_bar_fill.default_color = Color(1.0, 1.0, 1.0, 0.98)
 	block_stamina_bar_fill.width = maxf(1.0, block_stamina_bar_thickness - 1.0)
 	block_stamina_bar_fill.z_index = 3
 	block_stamina_bar_fill.begin_cap_mode = Line2D.LINE_CAP_ROUND
@@ -837,12 +852,8 @@ func _update_health_bar() -> void:
 		var stamina_fill_x := lerpf(stamina_start.x, stamina_end.x, stamina_ratio)
 		block_stamina_bar_fill.points = PackedVector2Array([stamina_start, Vector2(stamina_fill_x, block_stamina_bar_y_offset)])
 		block_stamina_bar_fill.visible = stamina_ratio > 0.0
-		var stamina_locked := block_stamina_broken
-		block_stamina_bar_background.default_color = Color(0.28, 0.08, 0.08, 0.92) if stamina_locked else Color(0.2, 0.15, 0.04, 0.92)
-		if stamina_locked:
-			block_stamina_bar_fill.default_color = Color(1.0, 0.22, 0.18, 0.98)
-		else:
-			block_stamina_bar_fill.default_color = Color(0.34, 0.86, 1.0, 0.98)
+		block_stamina_bar_background.default_color = Color(0.0, 0.0, 0.0, 0.94)
+		block_stamina_bar_fill.default_color = Color(1.0, 1.0, 1.0, 0.98)
 
 
 func add_experience(amount: int) -> void:
@@ -889,6 +900,34 @@ func get_available_ring_entries() -> Array[Dictionary]:
 	var entries: Array[Dictionary] = []
 	for ring_id in available_ring_ids:
 		entries.append(RING_DEFINITIONS.get_definition(ring_id))
+	return entries
+
+
+func get_equipped_boot_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	var known_boot_ids: Array[String] = []
+	for boot_id in BOOT_ITEM_ORDER:
+		if has_inventory_item(boot_id):
+			known_boot_ids.append(boot_id)
+	for item_key in inventory.keys():
+		var dynamic_boot_id := String(item_key)
+		if dynamic_boot_id.is_empty():
+			continue
+		if known_boot_ids.find(dynamic_boot_id) != -1:
+			continue
+		if not dynamic_boot_id.ends_with("_boots"):
+			continue
+		if not has_inventory_item(dynamic_boot_id):
+			continue
+		known_boot_ids.append(dynamic_boot_id)
+	for boot_id in known_boot_ids:
+		entries.append({
+			"id": boot_id,
+			"name": String(ITEM_NAMES.get(boot_id, boot_id)),
+			"icon": "BTS",
+			"description": _get_store_item_description(boot_id),
+			"equipped": true
+		})
 	return entries
 
 
@@ -1098,6 +1137,8 @@ func _get_store_item_description(item_id: String) -> String:
 			return "Increases base movement speed by 15%."
 		"bodyguard_boots":
 			return "Enables Dash to Ally ability."
+		"trailblazer_boots":
+			return "Increases base movement speed by 15%."
 		_:
 			return "Equipment upgrade."
 
@@ -1498,7 +1539,7 @@ func _register_perfect_block(source_position: Vector2) -> void:
 	_spawn_hit_effect(source_position + Vector2(0.0, -8.0), Color(0.72, 0.96, 1.0, 0.9), 6.4)
 	_start_hitstop(0.05)
 	_start_camera_shake(0.1, 3.2)
-	_spawn_combat_text_popup(get_block_shield_center_global() + Vector2(-8.0, -72.0), "Perfect Block!", Color(0.78, 0.98, 1.0, 1.0), 0.55)
+	_spawn_combat_text_popup(get_block_shield_center_global() + Vector2(-8.0, -72.0), "Perfect Block!", Color(0.78, 0.98, 1.0, 1.0), 0.55, true)
 	_unlock_counter_strike()
 
 
@@ -1654,6 +1695,7 @@ func _begin_harpoon_reel(target: Node2D, target_is_enemy: bool, target_is_heavy:
 	harpoon_hooked_target = target
 	harpoon_hooked_target_is_enemy = target_is_enemy
 	harpoon_hooked_target_is_heavy = target_is_heavy
+	_cache_harpoon_hooked_target_properties(target)
 	harpoon_heavy_start_x = target.global_position.x
 	harpoon_reel_active = true
 	harpoon_reel_speed = lerpf(maxf(80.0, harpoon_min_reel_speed), maxf(harpoon_min_reel_speed, harpoon_max_reel_speed), harpoon_reel_charge_ratio)
@@ -1710,6 +1752,10 @@ func _cancel_harpoon_state() -> void:
 	harpoon_hooked_target = null
 	harpoon_hooked_target_is_enemy = false
 	harpoon_hooked_target_is_heavy = false
+	harpoon_hooked_has_velocity = false
+	harpoon_hooked_has_move_velocity = false
+	harpoon_hooked_has_knockback_velocity = false
+	harpoon_hooked_has_stun_left = false
 	if harpoon_tether_line != null and is_instance_valid(harpoon_tether_line):
 		harpoon_tether_line.visible = false
 	if harpoon_tether_glow_line != null and is_instance_valid(harpoon_tether_glow_line):
@@ -1909,23 +1955,43 @@ func _set_node_float(target: Object, property_name: String, value: float) -> voi
 	target.set(property_name, value)
 
 
+func _cache_harpoon_hooked_target_properties(target: Node2D) -> void:
+	harpoon_hooked_has_velocity = false
+	harpoon_hooked_has_move_velocity = false
+	harpoon_hooked_has_knockback_velocity = false
+	harpoon_hooked_has_stun_left = false
+	if target == null or not is_instance_valid(target):
+		return
+	harpoon_hooked_has_velocity = _object_has_property(target, "velocity")
+	harpoon_hooked_has_move_velocity = _object_has_property(target, "move_velocity")
+	harpoon_hooked_has_knockback_velocity = _object_has_property(target, "knockback_velocity")
+	harpoon_hooked_has_stun_left = _object_has_property(target, "stun_left")
+
+
 func _apply_harpoon_reel_target_position(target: Node2D, reel_position: Vector2, delta: float) -> void:
 	if target == null or not is_instance_valid(target):
 		return
 	if harpoon_hooked_target_is_enemy:
 		# Lock enemy motion each reel tick so enemy AI/physics cannot immediately overwrite the pull.
-		_set_node_vector(target, "velocity", Vector2.ZERO)
-		_set_node_vector(target, "move_velocity", Vector2.ZERO)
-		_set_node_vector(target, "knockback_velocity", Vector2.ZERO)
+		if harpoon_hooked_has_velocity:
+			target.set("velocity", Vector2.ZERO)
+		if harpoon_hooked_has_move_velocity:
+			target.set("move_velocity", Vector2.ZERO)
+		if harpoon_hooked_has_knockback_velocity:
+			target.set("knockback_velocity", Vector2.ZERO)
 		var reel_stun := maxf(0.05, maxf(0.0, delta) + 0.02)
 		if harpoon_hooked_target_is_heavy:
 			reel_stun = minf(reel_stun, 0.06)
-		_set_node_float_max(target, "stun_left", reel_stun)
+		if harpoon_hooked_has_stun_left:
+			var current_stun := float(target.get("stun_left"))
+			if reel_stun > current_stun:
+				target.set("stun_left", reel_stun)
 	else:
 		# Allies should keep their current action state while being repositioned.
-		_set_node_vector(target, "knockback_velocity", Vector2.ZERO)
-	target.global_position = reel_position
-	target.set_deferred("global_position", reel_position)
+		if harpoon_hooked_has_knockback_velocity:
+			target.set("knockback_velocity", Vector2.ZERO)
+	if target.global_position.distance_squared_to(reel_position) > 0.0001:
+		target.global_position = reel_position
 
 
 func _object_has_property(target: Object, property_name: String) -> bool:
@@ -2034,7 +2100,8 @@ func _set_harpoon_tether_visual(
 
 
 func _build_harpoon_tether_points(origin: Vector2, tip: Vector2, wave_strength: float) -> PackedVector2Array:
-	var segment_count := maxi(8, int(round(origin.distance_to(tip) / 18.0)))
+	var desired_segments := int(round(origin.distance_to(tip) / 24.0))
+	var segment_count := clampi(desired_segments, 8, 24)
 	var points := PackedVector2Array()
 	var span := tip - origin
 	var span_length := maxf(1.0, span.length())
@@ -2268,7 +2335,8 @@ func _release_charge_attack() -> void:
 		_begin_basic_combo_sequence()
 		return
 
-	charge_release_direction = _resolve_charge_release_direction()
+	if charge_release_direction.length_squared() <= 0.0001:
+		charge_release_direction = _resolve_charge_release_direction()
 	if absf(charge_release_direction.x) > 0.01:
 		facing_direction = Vector2.RIGHT if charge_release_direction.x > 0.0 else Vector2.LEFT
 	charge_attack_damage = basic_attack_damage * lerpf(1.0, charge_max_damage_mult, scaled_ratio)
@@ -2309,7 +2377,7 @@ func _tick_charge_attack_state(delta: float) -> void:
 				basic_attack_arc_degrees + (charge_arc_bonus * scaled_ratio * 0.5),
 				preview_color
 			)
-			attack_telegraph.rotation = _resolve_charge_release_direction().angle()
+			attack_telegraph.rotation = charge_release_direction.angle()
 			attack_telegraph.modulate.a = lerpf(0.35, 0.92, charge_ratio)
 			attack_telegraph.scale = Vector2.ONE * lerpf(0.94, 1.12, charge_ratio)
 
@@ -2620,7 +2688,10 @@ func _queue_attack(kind: QueuedAttack, windup: float, attack_range: float, arc_d
 	attack_windup_left = attack_windup_total
 	light_attack_recovery_left = 0.0
 	_set_combat_state(CombatState.ATTACK_WINDUP)
-	_show_attack_telegraph(attack_range, arc_degrees, telegraph_color)
+	if kind == QueuedAttack.COUNTER_STRIKE:
+		_show_forward_oval_attack_telegraph(attack_range, telegraph_color)
+	else:
+		_show_attack_telegraph(attack_range, arc_degrees, telegraph_color)
 
 
 func _start_basic_combo_attack() -> void:
@@ -2746,12 +2817,13 @@ func _resolve_queued_attack() -> void:
 				maxf(0.1, counter_strike_knockback_scale),
 				maxf(0.0, counter_strike_hitstop),
 				maxf(0.25, counter_strike_vfx_scale),
-				false
+				false,
+				true
 			)
 			_start_attack_animation(maxf(0.06, counter_strike_anim_duration), maxf(0.2, counter_strike_anim_strength))
 			light_attack_recovery_left = maxf(light_attack_recovery_left, maxf(0.06, counter_strike_recovery))
 			_set_combat_state(CombatState.ATTACK_ACTIVE)
-			_show_instant_attack_flash(counter_range, counter_arc, Color(0.86, 0.98, 1.0, 0.92))
+			_show_instant_forward_oval_attack_flash(counter_range, Color(0.86, 0.98, 1.0, 0.92))
 			_spawn_hit_effect(global_position + Vector2(12.0 * _get_block_shield_facing_sign(), -12.0), Color(0.86, 0.98, 1.0, 0.9), 7.4)
 			if not using_external_player_sprite:
 				_trigger_slash_effect(counter_range, counter_arc, Color(0.86, 0.98, 1.0, 0.92), 0.19, 7.0)
@@ -2772,7 +2844,8 @@ func _queue_melee_hit_for_final_attack_frame(
 	knockback_scale: float = 1.0,
 	hitstop_duration: float = 0.05,
 	vfx_scale: float = 1.0,
-	apply_sword_effect: bool = false
+	apply_sword_effect: bool = false,
+	use_forward_oval_hitbox: bool = false
 ) -> void:
 	queued_melee_hit_pending = true
 	queued_melee_hit_damage = damage
@@ -2783,6 +2856,7 @@ func _queue_melee_hit_for_final_attack_frame(
 	queued_melee_hit_hitstop = maxf(0.0, hitstop_duration)
 	queued_melee_hit_vfx_scale = maxf(0.25, vfx_scale)
 	queued_melee_hit_apply_sword_effect = apply_sword_effect
+	queued_melee_hit_use_forward_oval_hitbox = use_forward_oval_hitbox
 
 
 func _clear_queued_melee_hit() -> void:
@@ -2795,6 +2869,7 @@ func _clear_queued_melee_hit() -> void:
 	queued_melee_hit_hitstop = 0.0
 	queued_melee_hit_vfx_scale = 1.0
 	queued_melee_hit_apply_sword_effect = false
+	queued_melee_hit_use_forward_oval_hitbox = false
 
 
 func _apply_queued_melee_hit() -> void:
@@ -2808,8 +2883,20 @@ func _apply_queued_melee_hit() -> void:
 	var hitstop_duration := queued_melee_hit_hitstop
 	var vfx_scale := queued_melee_hit_vfx_scale
 	var apply_sword_effect := queued_melee_hit_apply_sword_effect
+	var use_forward_oval_hitbox := queued_melee_hit_use_forward_oval_hitbox
 	_clear_queued_melee_hit()
-	var hit_confirmed := _apply_melee_strike(damage, attack_range, arc_degrees, stun_duration, knockback_scale, hitstop_duration, vfx_scale, Vector2.ZERO, apply_sword_effect)
+	var hit_confirmed := _apply_melee_strike(
+		damage,
+		attack_range,
+		arc_degrees,
+		stun_duration,
+		knockback_scale,
+		hitstop_duration,
+		vfx_scale,
+		Vector2.ZERO,
+		apply_sword_effect,
+		use_forward_oval_hitbox
+	)
 	if hit_confirmed:
 		charge_attack_hit_confirmed = true
 
@@ -2877,6 +2964,49 @@ func _show_instant_attack_flash(
 	)
 
 
+func _show_forward_oval_attack_telegraph(
+	attack_range: float,
+	telegraph_color: Color,
+	telegraph_direction: Vector2 = Vector2.ZERO
+) -> void:
+	var half_extents := _get_counter_strike_oval_half_extents_for_range(attack_range)
+	var forward_offset := _get_counter_strike_oval_forward_offset(half_extents)
+	attack_telegraph.visible = true
+	attack_telegraph.color = telegraph_color
+	attack_telegraph.polygon = _build_forward_oval_polygon(forward_offset, half_extents, 20)
+	attack_telegraph.position = Vector2.ZERO
+	var direction := telegraph_direction
+	if direction.length_squared() <= 0.0001:
+		direction = facing_direction
+	attack_telegraph.rotation = direction.angle()
+	attack_telegraph.modulate.a = 0.25
+
+
+func _show_instant_forward_oval_attack_flash(
+	attack_range: float,
+	telegraph_color: Color,
+	telegraph_direction: Vector2 = Vector2.ZERO
+) -> void:
+	var half_extents := _get_counter_strike_oval_half_extents_for_range(attack_range)
+	var forward_offset := _get_counter_strike_oval_forward_offset(half_extents)
+	attack_telegraph.visible = true
+	attack_telegraph.color = telegraph_color
+	attack_telegraph.polygon = _build_forward_oval_polygon(forward_offset, half_extents, 18)
+	attack_telegraph.position = Vector2.ZERO
+	var direction := telegraph_direction
+	if direction.length_squared() <= 0.0001:
+		direction = facing_direction
+	attack_telegraph.rotation = direction.angle()
+	attack_telegraph.modulate.a = 0.7
+	var tween := create_tween()
+	tween.tween_property(attack_telegraph, "modulate:a", 0.0, 0.08)
+	tween.finished.connect(func() -> void:
+		if queued_attack == QueuedAttack.NONE and attack_windup_left <= 0.0:
+			attack_telegraph.visible = false
+			attack_telegraph.modulate.a = 1.0
+	)
+
+
 func _update_attack_telegraph_progress() -> void:
 	if not attack_telegraph.visible:
 		return
@@ -2904,6 +3034,29 @@ func _build_arc_polygon(attack_range: float, arc_degrees: float, segments: int) 
 		var angle := lerpf(-half_arc, half_arc, t)
 		points.append(Vector2.RIGHT.rotated(angle) * attack_range)
 	return points
+
+
+func _build_forward_oval_polygon(forward_offset: float, half_extents: Vector2, segments: int) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	var safe_segments := maxi(10, segments)
+	var center := Vector2(maxf(0.0, forward_offset), 0.0)
+	var half_width := maxf(1.0, half_extents.x)
+	var half_height := maxf(1.0, half_extents.y)
+	for i in range(safe_segments):
+		var angle := (TAU * float(i)) / float(safe_segments)
+		points.append(center + Vector2(cos(angle) * half_width, sin(angle) * half_height))
+	return points
+
+
+func _get_counter_strike_oval_half_extents_for_range(attack_range: float) -> Vector2:
+	return Vector2(
+		maxf(8.0, minf(counter_strike_oval_half_width, maxf(8.0, attack_range))),
+		maxf(6.0, counter_strike_oval_half_height)
+	)
+
+
+func _get_counter_strike_oval_forward_offset(half_extents: Vector2) -> float:
+	return maxf(maxf(4.0, half_extents.x) + 2.0, counter_strike_oval_forward_offset)
 
 
 func _show_harpoon_charge_telegraph(telegraph_length: float) -> void:
@@ -3279,9 +3432,6 @@ func _update_facing_direction() -> void:
 	if stun_left > 0.0 or is_blocking or charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0:
 		return
 	if is_charging_attack:
-		var charge_move_vector := _get_movement_vector()
-		if absf(charge_move_vector.x) > 0.08:
-			facing_direction = Vector2.RIGHT if charge_move_vector.x > 0.0 else Vector2.LEFT
 		return
 	var movement_vector := _get_movement_vector()
 	if absf(movement_vector.x) > 0.08:
@@ -3300,7 +3450,8 @@ func _apply_melee_strike(
 	hitstop_duration: float = 0.05,
 	vfx_scale: float = 1.0,
 	strike_direction: Vector2 = Vector2.ZERO,
-	apply_sword_effect: bool = false
+	apply_sword_effect: bool = false,
+	use_forward_oval_hitbox: bool = false
 ) -> bool:
 	var facing := strike_direction.normalized()
 	if facing == Vector2.ZERO:
@@ -3312,6 +3463,8 @@ func _apply_melee_strike(
 	var impact_vfx_scale := maxf(0.5, impact_vfx_scale_multiplier)
 	var half_arc_radians := deg_to_rad(arc_degrees * 0.5)
 	var arc_edge_tolerance_radians := deg_to_rad(3.0)
+	var oval_half_extents := _get_counter_strike_oval_half_extents_for_range(attack_range)
+	var oval_forward_offset := _get_counter_strike_oval_forward_offset(oval_half_extents)
 	var hit_ids: Dictionary = {}
 	var hit_confirmed := false
 	var strongest_hitstop := 0.0
@@ -3328,18 +3481,32 @@ func _apply_melee_strike(
 		var to_enemy: Vector2 = target_point - global_position
 		var is_air_boss := enemy.monster_visual_profile == EnemyBase.MonsterVisualProfile.CACODEMON \
 			or enemy.monster_visual_profile == EnemyBase.MonsterVisualProfile.SHARDSOUL
-		var effective_depth_tolerance := attack_depth_tolerance + (18.0 if is_air_boss else 0.0) + target_radius
-		var effective_attack_range := attack_range + (14.0 if is_air_boss else 0.0) + target_radius
-		if absf(to_enemy.y) > effective_depth_tolerance:
-			continue
-		if to_enemy.length_squared() > effective_attack_range * effective_attack_range:
-			continue
-		if to_enemy.length_squared() > 0.0001:
-			var distance_to_target := to_enemy.length()
-			var radius_arc_allowance := asin(clampf(target_radius / maxf(1.0, distance_to_target), 0.0, 0.99))
-			var alignment_threshold := cos(half_arc_radians + radius_arc_allowance + arc_edge_tolerance_radians)
-			if facing.dot(to_enemy / distance_to_target) < alignment_threshold:
+		if use_forward_oval_hitbox:
+			var adjusted_half_extents := oval_half_extents
+			if is_air_boss:
+				adjusted_half_extents.y += 6.0
+			if not _is_target_inside_forward_oval_hitbox(
+				target_point,
+				target_radius,
+				global_position,
+				facing,
+				oval_forward_offset,
+				adjusted_half_extents
+			):
 				continue
+		else:
+			var effective_depth_tolerance := attack_depth_tolerance + (18.0 if is_air_boss else 0.0) + target_radius
+			var effective_attack_range := attack_range + (14.0 if is_air_boss else 0.0) + target_radius
+			if absf(to_enemy.y) > effective_depth_tolerance:
+				continue
+			if to_enemy.length_squared() > effective_attack_range * effective_attack_range:
+				continue
+			if to_enemy.length_squared() > 0.0001:
+				var distance_to_target := to_enemy.length()
+				var radius_arc_allowance := asin(clampf(target_radius / maxf(1.0, distance_to_target), 0.0, 0.99))
+				var alignment_threshold := cos(half_arc_radians + radius_arc_allowance + arc_edge_tolerance_radians)
+				if facing.dot(to_enemy / distance_to_target) < alignment_threshold:
+					continue
 
 		hit_ids[enemy_id] = true
 		var enemy_health_before := enemy.current_health
@@ -3366,6 +3533,30 @@ func _apply_melee_strike(
 		_start_hitstop(strongest_hitstop)
 		_start_camera_shake(camera_shake_duration * shake_scale, (camera_shake_strength * shake_scale) * maxf(0.7, strongest_vfx_scale))
 	return hit_confirmed
+
+
+func _is_target_inside_forward_oval_hitbox(
+	target_point: Vector2,
+	target_radius: float,
+	strike_origin: Vector2,
+	strike_facing: Vector2,
+	forward_offset: float,
+	half_extents: Vector2
+) -> bool:
+	var forward := strike_facing.normalized()
+	if forward.length_squared() <= 0.0001:
+		forward = Vector2.RIGHT
+	var side := Vector2(-forward.y, forward.x)
+	var center := strike_origin + (forward * maxf(0.0, forward_offset))
+	var local := target_point - center
+	var forward_distance := local.dot(forward)
+	var side_distance := local.dot(side)
+	var radius_padding := maxf(0.0, target_radius)
+	var half_width := maxf(4.0, half_extents.x + radius_padding)
+	var half_height := maxf(4.0, half_extents.y + radius_padding)
+	var normalized_forward := forward_distance / half_width
+	var normalized_side := side_distance / half_height
+	return (normalized_forward * normalized_forward) + (normalized_side * normalized_side) <= 1.0
 
 
 func _apply_equipped_sword_on_basic_hit(enemy: EnemyBase) -> void:
@@ -4019,7 +4210,7 @@ func _draw_attack_debug() -> void:
 		var charge_ratio := _get_scaled_charge_ratio()
 		attack_range = basic_attack_range + (charge_range_bonus * charge_ratio)
 		attack_arc = basic_attack_arc_degrees + (charge_arc_bonus * charge_ratio)
-		direction = _resolve_charge_release_direction()
+		direction = charge_release_direction if charge_release_direction.length_squared() > 0.0001 else direction
 		fill_color = Color(1.0, 0.42, 0.22, 0.18)
 		outline_color = Color(1.0, 0.52, 0.32, 0.96)
 	elif charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0 or charge_attack_recovery_left > 0.0:
@@ -4419,6 +4610,60 @@ func _die() -> void:
 	died.emit()
 
 
+func revive_at_full_health() -> void:
+	is_dead = false
+	current_health = maxf(1.0, max_health)
+	is_blocking = false
+	perfect_block_window_left = 0.0
+	counter_strike_available = false
+	counter_strike_window_left = 0.0
+	is_rolling = false
+	is_invulnerable = false
+	ring_shield_block_active_left = 0.0
+	ring_shield_pending_cooldown_reduction = 0.0
+	ring_shield_cooldown_pending = false
+	hit_flash_left = 0.0
+	heal_flash_left = maxf(0.08, heal_flash_duration)
+	hurt_anim_left = 0.0
+	stun_left = 0.0
+	_cancel_harpoon_state()
+	_cancel_charge_attack()
+	_cancel_charge_attack_recovery()
+	_reset_basic_combo_state()
+	attack_windup_left = 0.0
+	knockback_velocity = Vector2.ZERO
+	lunge_time_left = 0.0
+	lunge_total_duration = 0.0
+	lunge_strike_applied = false
+	ally_dash_block_grace_left = 0.0
+	instant_dash_block_latched = false
+	charge_lunge_velocity = Vector2.ZERO
+	hitstop_left = 0.0
+	velocity = Vector2.ZERO
+	weapon_trail.visible = false
+	slash_effect.visible = false
+	block_indicator.visible = false
+	if block_shield_effect_sprite != null and is_instance_valid(block_shield_effect_sprite):
+		block_shield_effect_sprite.visible = false
+		block_shield_effect_sprite.stop()
+	gem_visual.scale = gem_base_scale
+	blade_rune_visual.scale = blade_rune_base_scale
+	blade_pommel_visual.scale = Vector2.ONE
+	if using_external_player_sprite:
+		_update_player_sprite(0.0, 0.0)
+	_set_model_palette(
+		Color(0.28, 0.33, 0.44, 1.0),
+		Color(0.84, 0.76, 0.66, 1.0),
+		Color(0.38, 0.44, 0.56, 1.0),
+		Color(0.76, 0.79, 0.84, 1.0),
+		Color(0.14, 0.12, 0.16, 1.0)
+	)
+	_set_combat_state(CombatState.IDLE_MOVE)
+	_update_health_bar()
+	health_changed.emit(current_health, max_health)
+	_emit_cooldown_state()
+
+
 func _start_attack_animation(duration: float, strength: float) -> void:
 	attack_anim_total = maxf(0.01, duration)
 	attack_anim_left = attack_anim_total
@@ -4782,10 +5027,10 @@ func _spawn_damage_popup(world_position: Vector2, damage_amount: float) -> void:
 	)
 
 
-func _spawn_combat_text_popup(world_position: Vector2, text: String, text_color: Color, duration: float = 0.45) -> void:
+func _spawn_combat_text_popup(world_position: Vector2, text: String, text_color: Color, duration: float = 0.45, force_visible: bool = false) -> void:
 	if text.is_empty():
 		return
-	if not _is_debug_text_visible():
+	if not force_visible and not _is_debug_text_visible():
 		return
 	var scene_root := get_tree().current_scene
 	if scene_root == null:
