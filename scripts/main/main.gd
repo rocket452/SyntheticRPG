@@ -42,6 +42,7 @@ const CHEST_PICKUP_TO_RING_ID: Dictionary = {
 	"ring_shield": RING_DEFINITIONS.SHIELD_RING
 }
 const CHEST_POPUP_MIN_CLOSE_DELAY_MS: int = 120
+const ADVENTURE_DEATH_POPUP_MIN_CLOSE_DELAY_MS: int = 120
 
 @onready var arena: Arena = $Arena
 @onready var hud: HUD = $HUD
@@ -50,6 +51,8 @@ var encounter_picker_layer: CanvasLayer = null
 var inventory_menu_layer: CanvasLayer = null
 var chest_item_popup_layer: CanvasLayer = null
 var chest_item_popup_opened_at_ms: int = 0
+var adventure_death_popup_layer: CanvasLayer = null
+var adventure_death_popup_opened_at_ms: int = 0
 
 
 func _ready() -> void:
@@ -65,6 +68,14 @@ func _ready() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if _has_active_adventure_death_popup():
+		var death_key_event := event as InputEventKey
+		if death_key_event != null and death_key_event.pressed and not death_key_event.echo:
+			var elapsed := Time.get_ticks_msec() - adventure_death_popup_opened_at_ms
+			if elapsed >= ADVENTURE_DEATH_POPUP_MIN_CLOSE_DELAY_MS:
+				_confirm_adventure_death_popup()
+			get_viewport().set_input_as_handled()
+		return
 	if _has_active_chest_item_popup():
 		var key_event := event as InputEventKey
 		if key_event != null and key_event.pressed and not key_event.echo:
@@ -107,6 +118,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 		return
+	var debug_room_jump_target := _get_debug_adventure_room_jump_target(key_event)
+	if debug_room_jump_target > 0:
+		if is_instance_valid(arena) and arena.has_method("debug_jump_to_adventure_room"):
+			var jumped := bool(arena.call("debug_jump_to_adventure_room", debug_room_jump_target))
+			if jumped:
+				hud.show_status_message("Debug jump -> Adventure Room %d" % debug_room_jump_target, 0.95)
+			get_viewport().set_input_as_handled()
+		return
 	if key_event.keycode == KEY_F6:
 		if is_instance_valid(arena):
 			arena.force_debug_boss_breath()
@@ -141,6 +160,28 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
+func _get_debug_adventure_room_jump_target(key_event: InputEventKey) -> int:
+	if key_event == null:
+		return 0
+	if not key_event.ctrl_pressed:
+		return 0
+	match key_event.keycode:
+		KEY_1, KEY_KP_1:
+			return 1
+		KEY_2, KEY_KP_2:
+			return 2
+		KEY_3, KEY_KP_3:
+			return 3
+		KEY_4, KEY_KP_4:
+			return 4
+		KEY_5, KEY_KP_5:
+			return 5
+		KEY_6, KEY_KP_6:
+			return 6
+		_:
+			return 0
+
+
 func _connect_signals() -> void:
 	arena.player_health_changed.connect(hud.update_health)
 	arena.player_xp_changed.connect(hud.update_xp)
@@ -148,7 +189,7 @@ func _connect_signals() -> void:
 	arena.objective_changed.connect(hud.update_objective)
 	arena.item_collected.connect(hud.show_item_pickup)
 	arena.status_message.connect(hud.show_status_message)
-	arena.player_died.connect(hud.show_defeat)
+	arena.player_died.connect(_on_arena_player_died)
 	arena.demo_won.connect(hud.show_victory)
 	arena.combat_debug_changed.connect(hud.update_combat_debug)
 	if arena.has_signal("two_room_chest_item_received"):
@@ -255,6 +296,7 @@ func _start_selected_encounter(encounter_type: int) -> void:
 	if not is_instance_valid(arena):
 		return
 	_close_chest_item_popup()
+	_close_adventure_death_popup()
 	_close_inventory_menu()
 	if _has_active_encounter_picker():
 		encounter_picker_layer.queue_free()
@@ -299,7 +341,9 @@ func _open_inventory_menu() -> void:
 			arena.player.call("get_available_ring_entries"),
 			arena.player.call("get_equipped_ring_id"),
 			arena.player.call("get_gold_total"),
-			arena.player.call("get_store_entries")
+			arena.player.call("get_store_entries"),
+			arena.call("get_party_member_entries"),
+			arena.player.call("get_equipped_boot_entries")
 		)
 	if menu_layer.has_signal("sword_selected"):
 		menu_layer.connect("sword_selected", Callable(self, "_on_inventory_sword_selected"))
@@ -309,6 +353,8 @@ func _open_inventory_menu() -> void:
 		menu_layer.connect("ring_selected", Callable(self, "_on_inventory_ring_selected"))
 	if menu_layer.has_signal("store_purchase_requested"):
 		menu_layer.connect("store_purchase_requested", Callable(self, "_on_inventory_store_purchase_requested"))
+	if menu_layer.has_signal("party_member_toggled"):
+		menu_layer.connect("party_member_toggled", Callable(self, "_on_inventory_party_member_toggled"))
 	if menu_layer.has_signal("menu_closed"):
 		menu_layer.connect("menu_closed", Callable(self, "_on_inventory_menu_closed"))
 	if arena.player.has_method("set_gameplay_input_blocked"):
@@ -387,6 +433,36 @@ func _on_inventory_store_purchase_requested(item_id: String) -> void:
 	_refresh_inventory_menu_contents()
 
 
+func _on_inventory_party_member_toggled(member_id: String, enabled: bool) -> void:
+	if not is_instance_valid(arena):
+		return
+	if not arena.has_method("set_party_member_enabled"):
+		return
+	var changed := bool(arena.call("set_party_member_enabled", member_id, enabled))
+	if changed:
+		var member_name := member_id
+		if arena.has_method("get_party_member_entries"):
+			var entries_variant: Variant = arena.call("get_party_member_entries")
+			if entries_variant is Array:
+				for entry_variant in (entries_variant as Array):
+					if not (entry_variant is Dictionary):
+						continue
+					var entry := entry_variant as Dictionary
+					if String(entry.get("id", "")) != member_id:
+						continue
+					member_name = String(entry.get("name", member_id))
+					break
+		hud.show_status_message("%s %s" % [member_name, "enabled" if enabled else "disabled"], 1.0)
+	elif enabled and arena.has_method("get_party_member_toggle_failure_reason"):
+		var reason := String(arena.call("get_party_member_toggle_failure_reason"))
+		if not reason.is_empty():
+			if reason.to_lower().find("party is full") != -1 and hud.has_method("show_warning_status_message"):
+				hud.call("show_warning_status_message", reason, 1.8)
+			else:
+				hud.show_status_message(reason, 1.2)
+	_refresh_inventory_menu_contents()
+
+
 func _on_inventory_menu_closed() -> void:
 	_close_inventory_menu()
 
@@ -401,6 +477,26 @@ func _on_player_equipped_shield_changed(_shield_id: String, shield_name: String)
 
 func _on_player_equipped_ring_changed(_ring_id: String, ring_name: String) -> void:
 	hud.show_status_message("Ring: %s" % ring_name, 1.2)
+
+
+func _on_arena_player_died() -> void:
+	var adventure_active := false
+	if is_instance_valid(arena) and arena.has_method("is_adventure_mode_active"):
+		adventure_active = bool(arena.call("is_adventure_mode_active"))
+	if not adventure_active:
+		hud.show_defeat()
+		return
+	_close_inventory_menu()
+	_close_chest_item_popup()
+	var gold_lost := 0
+	var gold_remaining := 0
+	if is_instance_valid(arena) and arena.has_method("apply_adventure_death_penalty"):
+		var penalty_variant: Variant = arena.call("apply_adventure_death_penalty")
+		if penalty_variant is Dictionary:
+			var penalty := penalty_variant as Dictionary
+			gold_lost = maxi(0, int(penalty.get("gold_lost", 0)))
+			gold_remaining = maxi(0, int(penalty.get("gold_remaining", 0)))
+	_show_adventure_death_popup(gold_lost, gold_remaining)
 
 
 func _refresh_inventory_menu_contents() -> void:
@@ -419,7 +515,9 @@ func _refresh_inventory_menu_contents() -> void:
 		arena.player.call("get_available_ring_entries"),
 		arena.player.call("get_equipped_ring_id"),
 		arena.player.call("get_gold_total"),
-		arena.player.call("get_store_entries")
+		arena.player.call("get_store_entries"),
+		arena.call("get_party_member_entries"),
+		arena.player.call("get_equipped_boot_entries")
 	)
 
 
@@ -433,6 +531,95 @@ func _on_two_room_chest_item_received(item_id: String) -> void:
 
 func _has_active_chest_item_popup() -> bool:
 	return is_instance_valid(chest_item_popup_layer)
+
+
+func _has_active_adventure_death_popup() -> bool:
+	return is_instance_valid(adventure_death_popup_layer)
+
+
+func _show_adventure_death_popup(gold_lost: int, gold_remaining: int) -> void:
+	_close_adventure_death_popup(false)
+	var layer := CanvasLayer.new()
+	layer.name = "AdventureDeathPopup"
+	add_child(layer)
+	adventure_death_popup_layer = layer
+	adventure_death_popup_opened_at_ms = Time.get_ticks_msec()
+
+	var backdrop := ColorRect.new()
+	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
+	backdrop.color = Color(0.02, 0.01, 0.01, 0.86)
+	layer.add_child(backdrop)
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(center)
+
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(660.0, 0.0)
+	center.add_child(panel)
+
+	var content := VBoxContainer.new()
+	content.custom_minimum_size = Vector2(0.0, 244.0)
+	content.add_theme_constant_override("separation", 10)
+	panel.add_child(content)
+
+	var title := Label.new()
+	title.text = "You Were Slain"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 34)
+	title.modulate = Color(1.0, 0.78, 0.76, 1.0)
+	content.add_child(title)
+
+	var summary := Label.new()
+	summary.text = "You lost %d gold (50%%)." % maxi(0, gold_lost)
+	summary.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	summary.add_theme_font_size_override("font_size", 22)
+	content.add_child(summary)
+
+	var remaining := Label.new()
+	remaining.text = "Gold remaining: %d" % maxi(0, gold_remaining)
+	remaining.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	remaining.add_theme_font_size_override("font_size", 20)
+	remaining.modulate = Color(0.96, 0.9, 0.66, 1.0)
+	content.add_child(remaining)
+
+	var instruction := Label.new()
+	instruction.text = "Press any key to return to Room 1"
+	instruction.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	instruction.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	instruction.custom_minimum_size = Vector2(560.0, 74.0)
+	instruction.add_theme_font_size_override("font_size", 18)
+	instruction.modulate = Color(0.82, 0.92, 1.0, 0.96)
+	content.add_child(instruction)
+
+	if is_instance_valid(arena) and is_instance_valid(arena.player) and arena.player.has_method("set_gameplay_input_blocked"):
+		arena.player.call("set_gameplay_input_blocked", true)
+
+
+func _confirm_adventure_death_popup() -> void:
+	_close_adventure_death_popup(false)
+	var recovered := false
+	if is_instance_valid(arena) and arena.has_method("recover_from_adventure_death"):
+		recovered = bool(arena.call("recover_from_adventure_death"))
+	if recovered:
+		return
+	if is_instance_valid(arena) and is_instance_valid(arena.player) and arena.player.has_method("set_gameplay_input_blocked"):
+		arena.player.call("set_gameplay_input_blocked", false)
+
+
+func _close_adventure_death_popup(release_input: bool = true) -> void:
+	if not _has_active_adventure_death_popup():
+		return
+	if is_instance_valid(adventure_death_popup_layer):
+		adventure_death_popup_layer.queue_free()
+	adventure_death_popup_layer = null
+	adventure_death_popup_opened_at_ms = 0
+	if not release_input:
+		return
+	if is_instance_valid(arena) and is_instance_valid(arena.player) and arena.player.has_method("set_gameplay_input_blocked"):
+		if not _has_active_inventory_menu() and not _has_active_chest_item_popup():
+			arena.player.call("set_gameplay_input_blocked", false)
 
 
 func _show_chest_item_popup(item_name: String, item_description: String) -> void:

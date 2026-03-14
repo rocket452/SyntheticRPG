@@ -151,11 +151,15 @@ const THREAT_EPSILON: float = 0.001
 @export var boss_charge_shockwave_basic_attacks_required: int = 3
 @export var boss_charge_shockwave_block_push_resistance: float = 0.45
 @export var boss_charge_shockwave_block_stamina_drain: float = 18.0
-@export var boss_charge_post_shockwave_delay: float = 0.12
+@export var boss_charge_post_shockwave_delay: float = 1.0
 @export var boss_charge_shockwave_attack_anim_duration: float = 0.18
-@export var boss_charge_shockwave_fill_duration: float = 0.24
+@export var boss_charge_shockwave_fill_duration: float = 0.48
 @export var boss_charge_shockwave_fill_peak_alpha: float = 0.82
-@export var boss_charge_shockwave_fill_end_alpha: float = 0.08
+@export var boss_charge_shockwave_fill_end_alpha: float = 0.18
+@export var boss_charge_shockwave_ground_fx_duration: float = 0.52
+@export var boss_charge_shockwave_ground_fx_fill_alpha: float = 0.26
+@export var boss_charge_shockwave_ground_fx_ring_width: float = 5.0
+@export var boss_charge_shockwave_ground_fx_shard_count: int = 10
 @export var boss_charge_opening_leap_enabled: bool = true
 @export var boss_charge_opening_leap_distance: float = 132.0
 @export var boss_charge_opening_leap_diagonal_offset: float = 56.0
@@ -323,7 +327,7 @@ const THREAT_EPSILON: float = 0.001
 @export var fire_elemental_hurtbox_radius: float = 19.0
 @export var fire_elemental_hurtbox_y_offset: float = -6.0
 @export var cobra_visual_scale_multiplier: float = 1.0
-@export var cobra_hurtbox_radius: float = 18.0
+@export var cobra_hurtbox_radius: float = 8.4
 @export var cobra_hurtbox_y_offset: float = -8.0
 
 const MONSTER_HD_HFRAMES: int = 10
@@ -433,8 +437,8 @@ const IMP_ACTION_ROWS: Dictionary = {
 	"death": 4
 }
 const FIRE_ELEMENTAL_ACTION_ROWS: Dictionary = {
-	"idle": 1,
-	"run": 0,
+	"idle": 0,
+	"run": 1,
 	"attack": 2,
 	"spin": 2,
 	"hurt": 3,
@@ -2866,6 +2870,7 @@ func _trigger_boss_shockwave_execution_visuals() -> void:
 	boss_charge_shockwave_fill_left = boss_charge_shockwave_fill_total
 	_rebuild_spin_warning_polygon()
 	_update_spin_warning_transform()
+	_spawn_boss_shockwave_ground_effect()
 
 
 func _can_emit_boss_charge_shockwave() -> bool:
@@ -4959,6 +4964,85 @@ func _get_attackable_friendly_targets() -> Array[Node2D]:
 	return _get_friendly_threat_candidates()
 
 
+func _spawn_boss_shockwave_ground_effect() -> void:
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		return
+	var shockwave_radii := _get_boss_shockwave_radii()
+	var radius_x := maxf(28.0, shockwave_radii.x)
+	var radius_y := maxf(16.0, shockwave_radii.y)
+	var duration := clampf(boss_charge_shockwave_ground_fx_duration, 0.18, 1.2)
+
+	var root := Node2D.new()
+	root.top_level = true
+	root.global_position = global_position + Vector2(0.0, 2.0)
+	root.z_index = 228
+	root.scale = Vector2(0.2, 0.24)
+	root.rotation = randf_range(-0.04, 0.04)
+	scene_root.add_child(root)
+
+	var fill := Polygon2D.new()
+	fill.color = Color(1.0, 0.42, 0.2, clampf(boss_charge_shockwave_ground_fx_fill_alpha, 0.04, 0.95))
+	fill.polygon = _build_ellipse_polygon(radius_x, radius_y, 44)
+	var fill_material := CanvasItemMaterial.new()
+	fill_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	fill.material = fill_material
+	root.add_child(fill)
+
+	var outer_ring := Line2D.new()
+	outer_ring.closed = true
+	outer_ring.width = maxf(1.8, boss_charge_shockwave_ground_fx_ring_width)
+	outer_ring.default_color = Color(1.0, 0.58, 0.26, 0.96)
+	outer_ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	outer_ring.end_cap_mode = Line2D.LINE_CAP_ROUND
+	outer_ring.points = _build_ellipse_polygon(radius_x, radius_y, 44)
+	root.add_child(outer_ring)
+
+	var inner_ring := Line2D.new()
+	inner_ring.closed = true
+	inner_ring.width = maxf(1.2, outer_ring.width * 0.56)
+	inner_ring.default_color = Color(1.0, 0.84, 0.58, 0.92)
+	inner_ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	inner_ring.end_cap_mode = Line2D.LINE_CAP_ROUND
+	inner_ring.points = _build_ellipse_polygon(radius_x * 0.74, radius_y * 0.74, 36)
+	root.add_child(inner_ring)
+
+	var shard_count := maxi(4, boss_charge_shockwave_ground_fx_shard_count)
+	for shard_index in range(shard_count):
+		var shard := Polygon2D.new()
+		var shard_length := randf_range(6.0, 14.0)
+		var shard_half_width := randf_range(1.0, 2.2)
+		shard.polygon = PackedVector2Array([
+			Vector2(shard_length, 0.0),
+			Vector2(-shard_length * 0.35, shard_half_width),
+			Vector2(-shard_length * 0.62, 0.0),
+			Vector2(-shard_length * 0.35, -shard_half_width)
+		])
+		shard.color = Color(1.0, randf_range(0.42, 0.66), randf_range(0.16, 0.28), randf_range(0.72, 0.9))
+		var base_angle := (TAU * float(shard_index)) / float(shard_count)
+		var radial_dir := Vector2.RIGHT.rotated(base_angle + randf_range(-0.18, 0.18))
+		shard.rotation = radial_dir.angle()
+		shard.position = radial_dir * (radius_x * randf_range(0.14, 0.22))
+		root.add_child(shard)
+		var shard_tween := create_tween()
+		var shard_duration := duration * randf_range(0.62, 0.9)
+		var end_distance := radius_x * randf_range(0.76, 1.08)
+		shard_tween.tween_property(shard, "position", radial_dir * end_distance, shard_duration).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		shard_tween.parallel().tween_property(shard, "modulate:a", 0.0, shard_duration)
+
+	var tween := create_tween()
+	tween.tween_property(root, "scale", Vector2(1.06, 1.04), duration).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(fill, "modulate:a", 0.0, duration * 0.72)
+	tween.parallel().tween_property(outer_ring, "width", maxf(0.8, outer_ring.width * 0.24), duration)
+	tween.parallel().tween_property(outer_ring, "modulate:a", 0.0, duration)
+	tween.parallel().tween_property(inner_ring, "width", maxf(0.6, inner_ring.width * 0.24), duration * 0.88)
+	tween.parallel().tween_property(inner_ring, "modulate:a", 0.0, duration * 0.88)
+	tween.finished.connect(func() -> void:
+		if is_instance_valid(root):
+			root.queue_free()
+	)
+
+
 func _spawn_hit_effect(world_position: Vector2, effect_color: Color, effect_size: float) -> void:
 	var scene_root := get_tree().current_scene
 	if scene_root == null:
@@ -5501,7 +5585,7 @@ func _apply_profile_hurtbox() -> void:
 				frame_width = float(monster_sprite.texture.get_width()) / float(max(1, monster_sprite.hframes))
 				frame_height = float(monster_sprite.texture.get_height()) / float(max(1, monster_sprite.vframes))
 			var sprite_scale := maxf(absf(monster_sprite.scale.x), absf(monster_sprite.scale.y))
-			var visual_radius := minf(frame_width, frame_height) * sprite_scale * 0.36
+			var visual_radius := minf(frame_width, frame_height) * sprite_scale * 0.144
 			resolved_radius = maxf(resolved_radius, visual_radius)
 			resolved_y_offset = monster_sprite.position.y + (frame_height * sprite_scale * 0.03)
 		collision_shape.position = collision_shape_base_position + Vector2(0.0, resolved_y_offset)
@@ -5631,6 +5715,16 @@ func _get_shardsoul_sheet() -> Texture2D:
 		return null
 	_cached_shardsoul_sheet = ImageTexture.create_from_image(image)
 	return _cached_shardsoul_sheet
+
+
+static func warm_fire_elemental_visual_cache() -> void:
+	if _cached_fire_elemental_sheet != null:
+		return
+	var global_path := ProjectSettings.globalize_path(FIRE_ELEMENTAL_SHEET_PATH)
+	var image := Image.new()
+	if image.load(global_path) != OK:
+		return
+	_cached_fire_elemental_sheet = ImageTexture.create_from_image(image)
 
 
 func _get_fire_elemental_sheet() -> Texture2D:
@@ -6028,10 +6122,11 @@ func _update_spin_warning_visual(delta: float) -> void:
 		if fill_active:
 			var safe_fill_duration := maxf(0.01, boss_charge_shockwave_fill_total)
 			var fill_progress := clampf(1.0 - (boss_charge_shockwave_fill_left / safe_fill_duration), 0.0, 1.0)
+			var fade_progress := clampf(pow(fill_progress, 1.45), 0.0, 1.0)
 			var peak_alpha := clampf(boss_charge_shockwave_fill_peak_alpha, 0.0, 1.0)
 			var end_alpha := clampf(boss_charge_shockwave_fill_end_alpha, 0.0, peak_alpha)
 			spin_warning_area.visible = true
-			spin_warning_area.color = Color(1.0, 0.38, 0.18, lerpf(peak_alpha, end_alpha, fill_progress))
+			spin_warning_area.color = Color(1.0, 0.38, 0.18, lerpf(peak_alpha, end_alpha, fade_progress))
 			spin_warning_area.scale = spin_warning_area.scale.lerp(Vector2.ONE * lerpf(1.0, 1.06, fill_progress), clampf(delta * 16.0, 0.0, 1.0))
 			return
 		var safe_duration := maxf(0.01, boss_windup_duration)

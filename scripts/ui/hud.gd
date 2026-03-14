@@ -7,7 +7,7 @@ const ABILITY_BAR_SLOTS: Array[Dictionary] = [
 	{"id": "counter", "icon": "CTR", "name": "Counter", "key": "O", "accent": Color(0.86, 0.98, 1.0, 1.0), "uses_cooldown": false},
 	{"id": "ability_2", "icon": "DSH", "name": "Dash", "key": "L", "accent": Color(0.42, 0.88, 1.0, 1.0), "uses_cooldown": true},
 	{"id": "roll", "icon": "RLL", "name": "Roll", "key": "Space", "accent": Color(0.78, 0.93, 1.0, 1.0), "uses_cooldown": true},
-	{"id": "block", "icon": "BLK", "name": "Block", "key": "I", "accent": Color(0.56, 0.88, 1.0, 1.0), "uses_cooldown": false}
+	{"id": "block", "icon": "BLK", "name": "Block", "key": "I", "accent": Color(0.56, 0.88, 1.0, 1.0), "uses_cooldown": true}
 ]
 
 @onready var health_label: Label = $HealthLabel
@@ -123,7 +123,7 @@ func update_cooldowns(values: Dictionary) -> void:
 	_update_counter_slot(counter_ready, counter_window_left, counter_unlocked)
 	_update_ability_slot("ability_2", ability_2_left, false, ability_2_unlocked)
 	_update_ability_slot("roll", float(values.get("roll", 0.0)), false)
-	_update_ability_slot("block", 0.0, bool(values.get("block_active", false)))
+	_update_ability_slot("block", block_cooldown_left, bool(values.get("block_active", false)))
 
 
 func update_objective(text: String) -> void:
@@ -309,7 +309,7 @@ func _build_ability_bar() -> void:
 
 func _create_ability_slot(slot_def: Dictionary) -> Dictionary:
 	var root := PanelContainer.new()
-	root.custom_minimum_size = Vector2(78.0, 78.0)
+	root.custom_minimum_size = Vector2(84.0, 84.0)
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_theme_stylebox_override("panel", _make_slot_stylebox(Color(0.08, 0.1, 0.14, 0.92), Color(0.3, 0.4, 0.5, 0.95), 2))
 
@@ -328,7 +328,7 @@ func _create_ability_slot(slot_def: Dictionary) -> Dictionary:
 	icon_label.anchor_bottom = 0.0
 	icon_label.offset_top = 8.0
 	icon_label.offset_bottom = 32.0
-	icon_label.add_theme_font_size_override("font_size", 14)
+	icon_label.add_theme_font_size_override("font_size", 17)
 	icon_label.modulate = Color(0.95, 0.97, 1.0, 0.98)
 	content.add_child(icon_label)
 
@@ -342,7 +342,7 @@ func _create_ability_slot(slot_def: Dictionary) -> Dictionary:
 	name_label.anchor_bottom = 0.0
 	name_label.offset_top = 30.0
 	name_label.offset_bottom = 50.0
-	name_label.add_theme_font_size_override("font_size", 11)
+	name_label.add_theme_font_size_override("font_size", 13)
 	name_label.modulate = Color(0.8, 0.88, 0.98, 0.9)
 	content.add_child(name_label)
 
@@ -356,7 +356,7 @@ func _create_ability_slot(slot_def: Dictionary) -> Dictionary:
 	key_label.anchor_bottom = 1.0
 	key_label.offset_top = -20.0
 	key_label.offset_bottom = -4.0
-	key_label.add_theme_font_size_override("font_size", 10)
+	key_label.add_theme_font_size_override("font_size", 12)
 	key_label.modulate = Color(0.73, 0.85, 0.94, 0.96)
 	content.add_child(key_label)
 
@@ -372,7 +372,7 @@ func _create_ability_slot(slot_def: Dictionary) -> Dictionary:
 	cooldown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	cooldown_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	cooldown_label.set_anchors_preset(Control.PRESET_FULL_RECT)
-	cooldown_label.add_theme_font_size_override("font_size", 15)
+	cooldown_label.add_theme_font_size_override("font_size", 17)
 	cooldown_label.modulate = Color(1.0, 0.95, 0.84, 0.98)
 	cooldown_label.visible = false
 	content.add_child(cooldown_label)

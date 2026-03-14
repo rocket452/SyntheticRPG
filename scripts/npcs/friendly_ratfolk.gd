@@ -55,6 +55,10 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var hit_knockback_decay: float = 980.0
 @export var follow_player_distance: float = 138.0
 @export var follow_player_min_distance: float = 62.0
+@export var idle_follow_lateral_offset: float = 20.0
+@export var idle_follow_anchor_smoothing: float = 520.0
+@export var idle_follow_stop_distance: float = 10.0
+@export var idle_follow_resume_distance: float = 18.0
 @export var max_chase_distance_from_player: float = 460.0
 @export var facing_flip_deadzone: float = 8.0
 @export var arena_padding: float = 24.0
@@ -203,13 +207,19 @@ var breath_was_safe: bool = false
 var marked_lunge_panic_left: float = 0.0
 var marked_lunge_enemy_id: int = -1
 var hitbox_debug_enabled: bool = false
+var idle_follow_anchor_world: Vector2 = Vector2.ZERO
+var idle_follow_anchor_initialized: bool = false
+var idle_follow_active: bool = false
 var rng := RandomNumberGenerator.new()
 
 @onready var sprite: Sprite2D = $Sprite2D
+@onready var shadow_visual: Polygon2D = get_node_or_null("Shadow") as Polygon2D
 @onready var collision_shape: CollisionShape2D = get_node_or_null("CollisionShape2D") as CollisionShape2D
 
 
 func _ready() -> void:
+	if is_instance_valid(shadow_visual):
+		shadow_visual.visible = true
 	if is_shadow_clone:
 		add_to_group("shadow_clones")
 	else:
@@ -261,6 +271,8 @@ func _exit_tree() -> void:
 
 func set_player(target_player: Player) -> void:
 	player = target_player
+	idle_follow_anchor_initialized = false
+	idle_follow_active = false
 
 
 func setup_as_shadow_clone(owner_player: Player = null) -> void:
@@ -369,10 +381,26 @@ func _apply_player_like_movement_velocity(raw_velocity: Vector2) -> Vector2:
 		return raw_velocity
 	if raw_velocity.length() <= speed_cap * clampf(player_like_move_deadzone_ratio, 0.0, 0.95):
 		return Vector2.ZERO
+	if _is_idle_following_state():
+		return raw_velocity.normalized() * speed_cap
 	var quantized_direction := _quantize_player_like_direction(raw_velocity, player_like_direction_steps)
 	if quantized_direction.length_squared() <= 0.0001:
 		return Vector2.ZERO
 	return quantized_direction * speed_cap
+
+
+func _is_idle_following_state() -> bool:
+	if dps_ai_state != DPSAIState.FOLLOWING:
+		return false
+	if target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead:
+		return false
+	if attack_windup_left > 0.0 or attack_recovery_left > 0.0:
+		return false
+	if shadow_fear_cast_active or shadow_clone_cast_active:
+		return false
+	if backstab_dash_left > 0.0:
+		return false
+	return true
 
 
 func _quantize_player_like_direction(direction: Vector2, steps: int) -> Vector2:
@@ -598,7 +626,7 @@ func _tick_combat_logic(delta: float) -> void:
 	target_enemy = _find_target_enemy()
 	if target_enemy == null:
 		_set_dps_ai_state(DPSAIState.FOLLOWING, player)
-		_follow_player_when_idle()
+		_follow_player_when_idle(delta)
 		return
 
 	var to_enemy := target_enemy.global_position - global_position
@@ -736,7 +764,7 @@ func _tick_combat_logic(delta: float) -> void:
 				return
 			velocity = _compute_reposition_velocity(target_enemy, to_enemy, distance_to_enemy)
 		_:
-			_follow_player_when_idle()
+			_follow_player_when_idle(delta)
 
 
 func _update_dps_ai_state(delta: float, distance_to_enemy: float, depth_aligned: bool) -> void:
@@ -957,22 +985,98 @@ func _is_attack_spacing_ready(distance_to_enemy: float) -> bool:
 	return distance_to_enemy >= _get_attack_spacing_min()
 
 
-func _follow_player_when_idle() -> void:
+func _get_idle_follow_reference_direction() -> Vector2:
+	if not is_instance_valid(player):
+		return Vector2.RIGHT
+	var player_velocity := player.velocity
+	if player_velocity.length_squared() > 36.0:
+		return player_velocity.normalized()
+	var player_facing := player.facing_direction
+	if player_facing.length_squared() > 0.0001:
+		return player_facing.normalized()
+	return Vector2.LEFT if facing_left else Vector2.RIGHT
+
+
+func _compute_idle_follow_anchor() -> Vector2:
+	if not is_instance_valid(player):
+		return global_position
+	var follow_direction := _get_idle_follow_reference_direction()
+	if follow_direction.length_squared() <= 0.0001:
+		follow_direction = Vector2.RIGHT
+	var back_direction := -follow_direction.normalized()
+	var lateral := Vector2(-follow_direction.y, follow_direction.x)
+	var slot_sign := 1.0 if (int(get_instance_id()) % 2) == 0 else -1.0
+	var anchor_distance := maxf(follow_player_min_distance + 8.0, follow_player_distance)
+	var available_back_distance := _distance_to_bounds_along_direction(player.global_position, back_direction)
+	if available_back_distance < INF:
+		anchor_distance = minf(anchor_distance, maxf(20.0, available_back_distance - 10.0))
+	var anchor := player.global_position \
+		+ (back_direction * anchor_distance) \
+		+ (lateral * maxf(0.0, idle_follow_lateral_offset) * slot_sign)
+	return _clamp_world_position_to_bounds(anchor)
+
+
+func _distance_to_bounds_along_direction(origin_world: Vector2, direction: Vector2) -> float:
+	if direction.length_squared() <= 0.0001:
+		return INF
+	var normalized_direction := direction.normalized()
+	var min_bound_x := minf(lane_min_x, lane_max_x) + arena_padding
+	var max_bound_x := maxf(lane_min_x, lane_max_x) - arena_padding
+	var min_bound_y := minf(lane_min_y, lane_max_y) + arena_padding
+	var max_bound_y := maxf(lane_min_y, lane_max_y) - arena_padding
+	var best_t := INF
+	if absf(normalized_direction.x) > 0.0001:
+		var target_x := max_bound_x if normalized_direction.x > 0.0 else min_bound_x
+		var t_x := (target_x - origin_world.x) / normalized_direction.x
+		if t_x >= 0.0:
+			best_t = minf(best_t, t_x)
+	if absf(normalized_direction.y) > 0.0001:
+		var target_y := max_bound_y if normalized_direction.y > 0.0 else min_bound_y
+		var t_y := (target_y - origin_world.y) / normalized_direction.y
+		if t_y >= 0.0:
+			best_t = minf(best_t, t_y)
+	return best_t
+
+
+func _follow_player_when_idle(delta: float) -> void:
 	if not is_instance_valid(player):
 		velocity = Vector2.ZERO
+		idle_follow_anchor_initialized = false
+		idle_follow_active = false
 		return
-	var to_player := player.global_position - global_position
-	var distance_to_player := to_player.length()
-	if distance_to_player <= 0.0001:
-		velocity = Vector2.ZERO
-		return
-	_update_facing(to_player)
-	if distance_to_player > follow_player_distance:
-		velocity = to_player.normalized() * move_speed * 0.9
-	elif distance_to_player < follow_player_min_distance:
-		velocity = -to_player.normalized() * move_speed * 0.7
+	var desired_anchor := _compute_idle_follow_anchor()
+	if not idle_follow_anchor_initialized:
+		idle_follow_anchor_world = desired_anchor
+		idle_follow_anchor_initialized = true
 	else:
+		idle_follow_anchor_world = idle_follow_anchor_world.move_toward(
+			desired_anchor,
+			maxf(0.0, idle_follow_anchor_smoothing) * maxf(0.0, delta)
+		)
+	var to_anchor := idle_follow_anchor_world - global_position
+	var distance_to_anchor := to_anchor.length()
+	var stop_distance := maxf(2.0, idle_follow_stop_distance)
+	var resume_distance := maxf(stop_distance + 1.0, idle_follow_resume_distance)
+	if idle_follow_active:
+		if distance_to_anchor <= stop_distance:
+			idle_follow_active = false
+	else:
+		if distance_to_anchor >= resume_distance:
+			idle_follow_active = true
+	if not idle_follow_active:
 		velocity = Vector2.ZERO
+		var player_velocity := player.velocity
+		if player_velocity.length_squared() > 9.0:
+			_update_facing(player_velocity)
+		else:
+			_update_facing(player.global_position - global_position)
+		return
+	if distance_to_anchor <= 0.0001:
+		velocity = Vector2.ZERO
+		return
+	var move_direction := to_anchor / maxf(0.0001, distance_to_anchor)
+	velocity = move_direction * maxf(1.0, move_speed)
+	_update_facing(move_direction)
 
 
 func _find_target_enemy() -> EnemyBase:
@@ -1739,6 +1843,42 @@ func receive_heal(amount: float) -> bool:
 	return true
 
 
+func revive_at_full_health() -> void:
+	dead = false
+	current_health = maxf(1.0, max_health)
+	stun_left = 0.0
+	hurt_anim_left = 0.0
+	hit_flash_left = 0.0
+	heal_flash_left = 0.0
+	attack_windup_left = 0.0
+	attack_recovery_left = 0.0
+	attack_cooldown_left = maxf(0.0, attack_cooldown * 0.35)
+	shadow_fear_cast_active = false
+	shadow_fear_cast_left = 0.0
+	shadow_fear_pending_left = -1.0
+	shadow_fear_pending_total = 0.0
+	shadow_fear_cast_target = null
+	shadow_clone_cast_active = false
+	shadow_clone_cast_left = 0.0
+	shadow_fear_focus_target = null
+	shadow_fear_resume_target = null
+	backstab_dash_left = 0.0
+	backstab_dash_target_enemy = null
+	target_enemy = null
+	velocity = Vector2.ZERO
+	knockback_velocity = Vector2.ZERO
+	visual_motion_velocity = Vector2.ZERO
+	visually_running = false
+	death_anim_time = 0.0
+	if not is_shadow_clone and not is_instance_valid(health_bar_root):
+		_setup_health_bar()
+	if is_instance_valid(sprite):
+		sprite.modulate = Color(1.0, 1.0, 1.0, 1.0)
+		_set_sprite_frame("idle", 0)
+	_update_health_bar()
+	health_changed.emit(current_health, max_health)
+
+
 func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = false, stun_duration: float = 0.0, knockback_scale: float = 1.0) -> bool:
 	if dead:
 		return false
@@ -1902,7 +2042,7 @@ func _get_hurt_animation_duration() -> float:
 
 
 func _acquire_player() -> void:
-	player = get_tree().get_first_node_in_group("player") as Player
+	set_player(get_tree().get_first_node_in_group("player") as Player)
 
 
 func _get_ratfolk_sheet_texture() -> Texture2D:
