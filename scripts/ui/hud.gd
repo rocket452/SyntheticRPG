@@ -1,14 +1,26 @@
 extends CanvasLayer
 class_name HUD
 
-const ABILITY_BAR_SLOTS: Array[Dictionary] = [
-	{"id": "basic", "icon": "ATK", "name": "Swing", "key": "J", "accent": Color(0.94, 0.64, 0.33, 1.0), "uses_cooldown": true},
-	{"id": "ability_1", "icon": "HPN", "name": "Hook", "key": "K", "accent": Color(0.46, 0.94, 1.0, 1.0), "uses_cooldown": true},
-	{"id": "counter", "icon": "CTR", "name": "Counter", "key": "O", "accent": Color(0.86, 0.98, 1.0, 1.0), "uses_cooldown": false},
-	{"id": "ability_2", "icon": "DSH", "name": "Dash", "key": "L", "accent": Color(0.42, 0.88, 1.0, 1.0), "uses_cooldown": true},
-	{"id": "roll", "icon": "RLL", "name": "Roll", "key": "Space", "accent": Color(0.78, 0.93, 1.0, 1.0), "uses_cooldown": true},
-	{"id": "block", "icon": "BLK", "name": "Block", "key": "I", "accent": Color(0.56, 0.88, 1.0, 1.0), "uses_cooldown": true}
-]
+const ABILITY_LAYOUT_TANK: String = "tank"
+const ABILITY_LAYOUT_HEALER: String = "healer"
+const ABILITY_BAR_LAYOUTS: Dictionary = {
+	ABILITY_LAYOUT_TANK: [
+		{"id": "basic", "icon": "ATK", "name": "Swing", "key": "J", "accent": Color(0.94, 0.64, 0.33, 1.0), "uses_cooldown": true},
+		{"id": "ability_1", "icon": "HPN", "name": "Hook", "key": "K", "accent": Color(0.46, 0.94, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "counter", "icon": "CTR", "name": "Counter", "key": "O", "accent": Color(0.86, 0.98, 1.0, 1.0), "uses_cooldown": false},
+		{"id": "ability_2", "icon": "DSH", "name": "Dash", "key": "L", "accent": Color(0.42, 0.88, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "roll", "icon": "RLL", "name": "Roll", "key": "Space", "accent": Color(0.78, 0.93, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "block", "icon": "BLK", "name": "Block", "key": "I", "accent": Color(0.56, 0.88, 1.0, 1.0), "uses_cooldown": true}
+	],
+	ABILITY_LAYOUT_HEALER: [
+		{"id": "basic", "icon": "ATK", "name": "Bolt", "key": "J", "accent": Color(0.62, 0.9, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "ability_1", "icon": "HPN", "name": "Hook", "key": "K", "accent": Color(0.46, 0.94, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "counter", "icon": "QHL", "name": "Quick", "key": "O", "accent": Color(0.84, 0.96, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "ability_2", "icon": "WAVE", "name": "Tidal", "key": "L", "accent": Color(0.52, 0.94, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "roll", "icon": "RLL", "name": "Roll", "key": "Space", "accent": Color(0.78, 0.93, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "block", "icon": "BHL", "name": "Big Heal", "key": "I", "accent": Color(0.66, 0.98, 0.84, 1.0), "uses_cooldown": true}
+	]
+}
 
 @onready var health_label: Label = $HealthLabel
 @onready var xp_label: Label = $XPLabel
@@ -24,6 +36,7 @@ var ability_slot_views: Dictionary = {}
 var ability_slot_ready_flags: Dictionary = {}
 var ready_pulse_time: float = 0.0
 var text_debug_visible: bool = false
+var current_ability_layout: String = ABILITY_LAYOUT_TANK
 
 
 func _ready() -> void:
@@ -51,8 +64,8 @@ func _process(delta: float) -> void:
 		return
 	ready_pulse_time += maxf(0.0, delta)
 	var pulse := 0.68 + (0.22 * (0.5 + (0.5 * sin(ready_pulse_time * 4.2))))
-	for slot_def in ABILITY_BAR_SLOTS:
-		var slot_id := String(slot_def.get("id", ""))
+	for slot_id_variant in ability_slot_views.keys():
+		var slot_id := String(slot_id_variant)
 		if slot_id.is_empty():
 			continue
 		var slot := ability_slot_views.get(slot_id, {}) as Dictionary
@@ -67,7 +80,7 @@ func _process(delta: float) -> void:
 		if slot_id == "block" and bool(slot.get("block_active", false)):
 			border_color = Color(0.48, 0.92, 1.0, pulse)
 		elif slot_id == "counter":
-			border_color = Color(0.52, 0.97, 1.0, pulse)
+			border_color = Color(0.88, 0.82, 1.0, pulse) if current_ability_layout == ABILITY_LAYOUT_HEALER else Color(0.52, 0.97, 1.0, pulse)
 		ready_border.self_modulate = border_color
 
 
@@ -80,43 +93,27 @@ func update_xp(current: int, needed: int, level: int) -> void:
 
 
 func update_cooldowns(values: Dictionary) -> void:
-	var basic_text := _format_cooldown(float(values.get("basic", 0.0)))
+	var requested_layout := String(values.get("ability_layout", ABILITY_LAYOUT_TANK)).strip_edges().to_lower()
+	_apply_ability_layout(requested_layout)
+	if is_instance_valid(cooldown_label):
+		cooldown_label.text = ""
+	if current_ability_layout == ABILITY_LAYOUT_HEALER:
+		_update_healer_control_slots(values)
+		return
+	_update_tank_control_slots(values)
+
+
+func _update_tank_control_slots(values: Dictionary) -> void:
 	var ability_1_left := float(values.get("ability_1", 0.0))
-	var ability_1_text := _format_cooldown(ability_1_left)
 	var harpoon_charging := bool(values.get("harpoon_charging", false))
 	var harpoon_charge_ratio := clampf(float(values.get("harpoon_charge_ratio", 0.0)), 0.0, 1.0)
 	var counter_unlocked := bool(values.get("counter_unlocked", false))
 	var counter_ready := bool(values.get("counter_ready", false))
 	var counter_window_left := maxf(0.0, float(values.get("counter_window_left", 0.0)))
-	var counter_text := "Need Shield"
-	if counter_unlocked:
-		counter_text = "Ready %.1fs" % counter_window_left if counter_ready else "Locked"
 	var ability_2_left := float(values.get("ability_2", 0.0))
 	var ability_2_unlocked := bool(values.get("ability_2_unlocked", true))
-	var ability_2_text := "Locked"
-	if ability_2_unlocked:
-		ability_2_text = _format_cooldown(ability_2_left)
-	var roll_text := _format_cooldown(float(values.get("roll", 0.0)))
-	var blocking_text := " | Blocking" if bool(values.get("block_active", false)) else ""
 	var block_cooldown_left := maxf(0.0, float(values.get("block_cooldown_left", 0.0)))
-	var block_cooldown_text := ""
-	if block_cooldown_left > 0.0:
-		block_cooldown_text = " | BlockCD %.1fs" % block_cooldown_left
-	var fortify_stacks := maxi(0, int(values.get("fortify_stacks", 0)))
-	var fortify_text := ""
-	if fortify_stacks > 0:
-		fortify_text = " | Fortify %d" % fortify_stacks
-	var berserker_active := bool(values.get("berserker_active", false))
-	var berserker_text := " | Berserker!" if berserker_active else ""
 	var sword_id := String(values.get("equipped_sword_id", ""))
-	var sword_name := String(values.get("equipped_sword_name", ""))
-	var sword_suffix := " | Sword: %s" % sword_name if not sword_name.is_empty() else ""
-	var shield_name := String(values.get("equipped_shield_name", ""))
-	var shield_suffix := " | Shield: %s" % shield_name if not shield_name.is_empty() else ""
-	var ring_name := String(values.get("equipped_ring_name", ""))
-	var ring_suffix := " | Ring: %s" % ring_name if not ring_name.is_empty() else ""
-	if is_instance_valid(cooldown_label):
-		cooldown_label.text = ""
 	_apply_charge_sword_indicator(sword_id)
 	_update_ability_slot("basic", float(values.get("basic", 0.0)), false)
 	_update_harpoon_slot(ability_1_left, harpoon_charging, harpoon_charge_ratio)
@@ -124,6 +121,30 @@ func update_cooldowns(values: Dictionary) -> void:
 	_update_ability_slot("ability_2", ability_2_left, false, ability_2_unlocked)
 	_update_ability_slot("roll", float(values.get("roll", 0.0)), false)
 	_update_ability_slot("block", block_cooldown_left, bool(values.get("block_active", false)))
+
+
+func _update_healer_control_slots(values: Dictionary) -> void:
+	var basic_left := float(values.get("basic", 0.0))
+	var basic_unlocked := bool(values.get("basic_unlocked", true))
+	var quick_heal_left := maxf(0.0, float(values.get("quick_heal", values.get("counter_window_left", 0.0))))
+	var quick_heal_unlocked := bool(values.get("quick_heal_unlocked", values.get("counter_unlocked", true)))
+	var ability_1_left := float(values.get("ability_1", 0.0))
+	var ability_1_unlocked := bool(values.get("ability_1_unlocked", true))
+	var harpoon_charging := bool(values.get("harpoon_charging", false))
+	var harpoon_charge_ratio := clampf(float(values.get("harpoon_charge_ratio", 0.0)), 0.0, 1.0)
+	var wave_left := float(values.get("ability_2", 0.0))
+	var wave_unlocked := bool(values.get("ability_2_unlocked", false))
+	var roll_unlocked := bool(values.get("roll_unlocked", false))
+	var shield_left := maxf(0.0, float(values.get("block_cooldown_left", 0.0)))
+	_update_ability_slot("basic", basic_left, false, basic_unlocked)
+	if ability_1_unlocked:
+		_update_harpoon_slot(ability_1_left, harpoon_charging, harpoon_charge_ratio)
+	else:
+		_update_ability_slot("ability_1", ability_1_left, false, false)
+	_update_ability_slot("counter", quick_heal_left, false, quick_heal_unlocked)
+	_update_ability_slot("ability_2", wave_left, false, wave_unlocked)
+	_update_ability_slot("roll", float(values.get("roll", 0.0)), false, roll_unlocked)
+	_update_ability_slot("block", shield_left, false, true)
 
 
 func update_objective(text: String) -> void:
@@ -232,6 +253,8 @@ func _format_cooldown(value: float) -> String:
 
 
 func _apply_charge_sword_indicator(sword_id: String) -> void:
+	if current_ability_layout != ABILITY_LAYOUT_TANK:
+		return
 	var slot := ability_slot_views.get("basic", {}) as Dictionary
 	if slot.is_empty():
 		return
@@ -289,7 +312,8 @@ func _build_ability_bar() -> void:
 	row.add_theme_constant_override("separation", 10)
 	center_container.add_child(row)
 
-	for slot_def in ABILITY_BAR_SLOTS:
+	var slot_defs := _get_layout_slot_defs(current_ability_layout)
+	for slot_def in slot_defs:
 		var slot_view := _create_ability_slot(slot_def)
 		var slot_id := String(slot_def.get("id", ""))
 		if slot_id.is_empty():
@@ -297,7 +321,7 @@ func _build_ability_bar() -> void:
 		row.add_child(slot_view.get("root") as Control)
 		ability_slot_views[slot_id] = slot_view
 		ability_slot_ready_flags[slot_id] = false
-	for slot_def in ABILITY_BAR_SLOTS:
+	for slot_def in slot_defs:
 		var slot_id := String(slot_def.get("id", ""))
 		if slot_id.is_empty():
 			continue
@@ -305,6 +329,58 @@ func _build_ability_bar() -> void:
 			_update_counter_slot(false, 0.0, false)
 		else:
 			_update_ability_slot(slot_id, 0.0, false)
+	_apply_ability_layout(current_ability_layout)
+
+
+func _get_layout_slot_defs(layout_id: String) -> Array[Dictionary]:
+	var normalized_layout := layout_id.strip_edges().to_lower()
+	var layout_variant: Variant = ABILITY_BAR_LAYOUTS.get(normalized_layout, null)
+	var slot_defs: Array[Dictionary] = []
+	if layout_variant is Array:
+		for entry_variant in (layout_variant as Array):
+			if entry_variant is Dictionary:
+				slot_defs.append((entry_variant as Dictionary).duplicate(true))
+	if not slot_defs.is_empty():
+		return slot_defs
+	var fallback_variant: Variant = ABILITY_BAR_LAYOUTS.get(ABILITY_LAYOUT_TANK, [])
+	if fallback_variant is Array:
+		for entry_variant in (fallback_variant as Array):
+			if entry_variant is Dictionary:
+				slot_defs.append((entry_variant as Dictionary).duplicate(true))
+	return slot_defs
+
+
+func _apply_ability_layout(layout_id: String) -> void:
+	var normalized_layout := layout_id.strip_edges().to_lower()
+	if normalized_layout.is_empty():
+		normalized_layout = ABILITY_LAYOUT_TANK
+	if not ABILITY_BAR_LAYOUTS.has(normalized_layout):
+		normalized_layout = ABILITY_LAYOUT_TANK
+	current_ability_layout = normalized_layout
+	if ability_slot_views.is_empty():
+		return
+	var slot_defs := _get_layout_slot_defs(normalized_layout)
+	for slot_def in slot_defs:
+		var slot_id := String(slot_def.get("id", ""))
+		if slot_id.is_empty():
+			continue
+		var slot := ability_slot_views.get(slot_id, {}) as Dictionary
+		if slot.is_empty():
+			continue
+		var icon_label := slot.get("icon_label") as Label
+		var name_label := slot.get("name_label") as Label
+		var key_label := slot.get("key_label") as Label
+		if is_instance_valid(icon_label):
+			icon_label.text = String(slot_def.get("icon", "?"))
+		if is_instance_valid(name_label):
+			name_label.text = String(slot_def.get("name", "-"))
+		if is_instance_valid(key_label):
+			key_label.text = String(slot_def.get("key", ""))
+		slot["accent"] = slot_def.get("accent", Color(0.9, 0.9, 0.9, 1.0))
+		slot["uses_cooldown"] = bool(slot_def.get("uses_cooldown", true))
+		slot["block_active"] = false
+		ability_slot_ready_flags[slot_id] = false
+		ability_slot_views[slot_id] = slot
 
 
 func _create_ability_slot(slot_def: Dictionary) -> Dictionary:
@@ -513,6 +589,46 @@ func _update_counter_slot(counter_ready: bool, counter_window_left: float, count
 		icon_label.modulate = Color(0.76, 0.84, 0.92, 0.9)
 		key_label.modulate = Color(0.64, 0.72, 0.82, 0.95)
 	ability_slot_ready_flags[slot_id] = counter_ready
+	slot["block_active"] = false
+	ability_slot_views[slot_id] = slot
+
+
+func _update_healer_special_meter_slot(fill_ratio: float, special_ready: bool) -> void:
+	var slot_id := "counter"
+	var slot := ability_slot_views.get(slot_id, {}) as Dictionary
+	if slot.is_empty():
+		return
+	var icon_label := slot.get("icon_label") as Label
+	var key_label := slot.get("key_label") as Label
+	var cooldown_overlay := slot.get("cooldown_overlay") as ColorRect
+	var cooldown_label := slot.get("cooldown_label") as Label
+	var ready_border := slot.get("ready_border") as Panel
+	var root := slot.get("root") as PanelContainer
+	if icon_label == null or key_label == null or cooldown_overlay == null or cooldown_label == null or ready_border == null or root == null:
+		return
+	var ratio := clampf(fill_ratio, 0.0, 1.0)
+	var meter_percent := clampi(int(round(ratio * 100.0)), 0, 100)
+	if special_ready:
+		cooldown_overlay.visible = false
+		cooldown_label.visible = true
+		cooldown_label.text = "%d%%" % meter_percent
+		cooldown_label.modulate = Color(0.92, 0.88, 1.0, 0.98)
+		ready_border.visible = true
+		ready_border.self_modulate = Color(0.9, 0.82, 1.0, 0.96)
+		root.self_modulate = Color(1.0, 1.0, 1.0, 1.0)
+		icon_label.modulate = Color(0.96, 0.9, 1.0, 1.0)
+		key_label.modulate = Color(0.86, 0.96, 1.0, 0.98)
+	else:
+		cooldown_overlay.visible = true
+		cooldown_overlay.color = Color(0.03, 0.04, 0.08, 0.72)
+		cooldown_label.visible = true
+		cooldown_label.text = "%d%%" % meter_percent
+		cooldown_label.modulate = Color(0.78, 0.84, 0.98, 0.96)
+		ready_border.visible = false
+		root.self_modulate = Color(0.8, 0.82, 0.9, 1.0)
+		icon_label.modulate = Color(0.8, 0.86, 0.98, 0.95)
+		key_label.modulate = Color(0.76, 0.82, 0.94, 0.95)
+	ability_slot_ready_flags[slot_id] = special_ready
 	slot["block_active"] = false
 	ability_slot_views[slot_id] = slot
 

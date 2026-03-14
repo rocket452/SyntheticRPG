@@ -140,6 +140,8 @@ func _try_hit_specific_enemy(enemy: EnemyBase, segment_start: Vector2, segment_e
 		return false
 	var source := owner_actor if owner_actor != null else self
 	var landed := bool(enemy.call("receive_hit", damage_amount, global_position, stun_on_hit, true, knockback_on_hit, source))
+	if landed and owner_actor != null and is_instance_valid(owner_actor) and owner_actor.has_method("add_special_meter_from_damage"):
+		owner_actor.call("add_special_meter_from_damage", damage_amount)
 	if landed and enemy.has_method("apply_hitstop"):
 		enemy.call("apply_hitstop", 0.04)
 	return landed

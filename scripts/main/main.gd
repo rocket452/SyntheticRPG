@@ -71,9 +71,11 @@ func _unhandled_input(event: InputEvent) -> void:
 	if _has_active_adventure_death_popup():
 		var death_key_event := event as InputEventKey
 		if death_key_event != null and death_key_event.pressed and not death_key_event.echo:
-			var elapsed := Time.get_ticks_msec() - adventure_death_popup_opened_at_ms
-			if elapsed >= ADVENTURE_DEATH_POPUP_MIN_CLOSE_DELAY_MS:
-				_confirm_adventure_death_popup()
+			var is_enter_pressed := death_key_event.keycode == KEY_ENTER or death_key_event.keycode == KEY_KP_ENTER
+			if is_enter_pressed:
+				var elapsed := Time.get_ticks_msec() - adventure_death_popup_opened_at_ms
+				if elapsed >= ADVENTURE_DEATH_POPUP_MIN_CLOSE_DELAY_MS:
+					_confirm_adventure_death_popup()
 			get_viewport().set_input_as_handled()
 		return
 	if _has_active_chest_item_popup():
@@ -312,6 +314,62 @@ func _has_active_inventory_menu() -> bool:
 	return is_instance_valid(inventory_menu_layer)
 
 
+func _get_inventory_menu_owner() -> Object:
+	if not is_instance_valid(arena):
+		return null
+	if arena.has_method("get_controlled_inventory_actor"):
+		var owner_variant: Variant = arena.call("get_controlled_inventory_actor")
+		if owner_variant is Object:
+			var owner := owner_variant as Object
+			if owner != null and is_instance_valid(owner):
+				return owner
+	if is_instance_valid(arena.player):
+		return arena.player
+	return null
+
+
+func _get_inventory_owner_array_entries(owner: Object, method_name: String) -> Array[Dictionary]:
+	if owner == null or not is_instance_valid(owner) or not owner.has_method(method_name):
+		return []
+	var entries_variant: Variant = owner.call(method_name)
+	var entries: Array[Dictionary] = []
+	if entries_variant is Array:
+		for entry_variant in (entries_variant as Array):
+			if entry_variant is Dictionary:
+				entries.append((entry_variant as Dictionary).duplicate(true))
+	return entries
+
+
+func _get_inventory_owner_string(owner: Object, method_name: String, fallback: String = "") -> String:
+	if owner == null or not is_instance_valid(owner) or not owner.has_method(method_name):
+		return fallback
+	return String(owner.call(method_name))
+
+
+func _get_inventory_owner_int(owner: Object, method_name: String, fallback: int = 0) -> int:
+	if owner == null or not is_instance_valid(owner) or not owner.has_method(method_name):
+		return fallback
+	return int(owner.call(method_name))
+
+
+func _build_inventory_menu_payload() -> Dictionary:
+	var owner := _get_inventory_menu_owner()
+	return {
+		"sword_entries": _get_inventory_owner_array_entries(owner, "get_available_sword_entries"),
+		"equipped_sword_id": _get_inventory_owner_string(owner, "get_equipped_sword_id"),
+		"shield_entries": _get_inventory_owner_array_entries(owner, "get_available_shield_entries"),
+		"equipped_shield_id": _get_inventory_owner_string(owner, "get_equipped_shield_id"),
+		"shield_slot_title": _get_inventory_owner_string(owner, "get_shield_slot_display_name", "Shields"),
+		"shield_slot_empty_text": _get_inventory_owner_string(owner, "get_shield_slot_empty_text", "No shields found."),
+		"shield_slot_default_icon": _get_inventory_owner_string(owner, "get_shield_slot_default_icon", "SHD"),
+		"ring_entries": _get_inventory_owner_array_entries(owner, "get_available_ring_entries"),
+		"equipped_ring_id": _get_inventory_owner_string(owner, "get_equipped_ring_id"),
+		"gold_total": maxi(0, _get_inventory_owner_int(owner, "get_gold_total", 0)),
+		"store_entries": _get_inventory_owner_array_entries(owner, "get_store_entries"),
+		"boot_entries": _get_inventory_owner_array_entries(owner, "get_equipped_boot_entries")
+	}
+
+
 func _toggle_inventory_menu() -> void:
 	if _has_active_inventory_menu():
 		_close_inventory_menu()
@@ -331,19 +389,25 @@ func _open_inventory_menu() -> void:
 		return
 	add_child(menu_layer)
 	inventory_menu_layer = menu_layer
+	var payload := _build_inventory_menu_payload()
 	if menu_layer.has_method("configure"):
 		menu_layer.call(
 			"configure",
-			arena.player.call("get_available_sword_entries"),
-			arena.player.call("get_equipped_sword_id"),
-			arena.player.call("get_available_shield_entries"),
-			arena.player.call("get_equipped_shield_id"),
-			arena.player.call("get_available_ring_entries"),
-			arena.player.call("get_equipped_ring_id"),
-			arena.player.call("get_gold_total"),
-			arena.player.call("get_store_entries"),
+			payload.get("sword_entries", []),
+			String(payload.get("equipped_sword_id", "")),
+			payload.get("shield_entries", []),
+			String(payload.get("equipped_shield_id", "")),
+			payload.get("ring_entries", []),
+			String(payload.get("equipped_ring_id", "")),
+			int(payload.get("gold_total", 0)),
+			payload.get("store_entries", []),
 			arena.call("get_party_member_entries"),
-			arena.player.call("get_equipped_boot_entries")
+			payload.get("boot_entries", []),
+			arena.call("get_control_target_entries"),
+			arena.call("get_controlled_character_id"),
+			String(payload.get("shield_slot_title", "Shields")),
+			String(payload.get("shield_slot_empty_text", "No shields found.")),
+			String(payload.get("shield_slot_default_icon", "SHD"))
 		)
 	if menu_layer.has_signal("sword_selected"):
 		menu_layer.connect("sword_selected", Callable(self, "_on_inventory_sword_selected"))
@@ -355,6 +419,8 @@ func _open_inventory_menu() -> void:
 		menu_layer.connect("store_purchase_requested", Callable(self, "_on_inventory_store_purchase_requested"))
 	if menu_layer.has_signal("party_member_toggled"):
 		menu_layer.connect("party_member_toggled", Callable(self, "_on_inventory_party_member_toggled"))
+	if menu_layer.has_signal("controlled_character_selected"):
+		menu_layer.connect("controlled_character_selected", Callable(self, "_on_inventory_controlled_character_selected"))
 	if menu_layer.has_signal("menu_closed"):
 		menu_layer.connect("menu_closed", Callable(self, "_on_inventory_menu_closed"))
 	if arena.player.has_method("set_gameplay_input_blocked"):
@@ -376,47 +442,61 @@ func _close_inventory_menu() -> void:
 
 
 func _on_inventory_sword_selected(sword_id: String) -> void:
-	if not is_instance_valid(arena) or not is_instance_valid(arena.player):
+	if not is_instance_valid(arena):
 		return
-	if not arena.player.has_method("equip_sword"):
+	var owner := _get_inventory_menu_owner()
+	if owner == null or not is_instance_valid(owner):
 		return
-	var changed := bool(arena.player.call("equip_sword", sword_id))
+	if not owner.has_method("equip_sword"):
+		return
+	var changed := bool(owner.call("equip_sword", sword_id))
 	if changed:
-		var sword_name := String(arena.player.call("get_equipped_sword_name"))
+		var sword_name := _get_inventory_owner_string(owner, "get_equipped_sword_name", sword_id)
 		hud.show_status_message("Equipped: %s" % sword_name, 1.2)
 	_refresh_inventory_menu_contents()
 
 
 func _on_inventory_shield_selected(shield_id: String) -> void:
-	if not is_instance_valid(arena) or not is_instance_valid(arena.player):
+	if not is_instance_valid(arena):
 		return
-	if not arena.player.has_method("equip_shield"):
+	var owner := _get_inventory_menu_owner()
+	if owner == null or not is_instance_valid(owner):
 		return
-	var changed := bool(arena.player.call("equip_shield", shield_id))
+	if not owner.has_method("equip_shield"):
+		return
+	var changed := bool(owner.call("equip_shield", shield_id))
 	if changed:
-		var shield_name := String(arena.player.call("get_equipped_shield_name"))
-		hud.show_status_message("Equipped: %s" % shield_name, 1.2)
+		var shield_name := _get_inventory_owner_string(owner, "get_equipped_shield_name", shield_id)
+		var slot_name := _get_inventory_owner_string(owner, "get_shield_slot_singular_display_name", "Shield")
+		hud.show_status_message("Equipped %s: %s" % [slot_name, shield_name], 1.2)
 	_refresh_inventory_menu_contents()
 
 
 func _on_inventory_ring_selected(ring_id: String) -> void:
-	if not is_instance_valid(arena) or not is_instance_valid(arena.player):
+	if not is_instance_valid(arena):
 		return
-	if not arena.player.has_method("equip_ring"):
+	var owner := _get_inventory_menu_owner()
+	if owner == null or not is_instance_valid(owner):
 		return
-	var changed := bool(arena.player.call("equip_ring", ring_id))
+	if not owner.has_method("equip_ring"):
+		return
+	var changed := bool(owner.call("equip_ring", ring_id))
 	if changed:
-		var ring_name := String(arena.player.call("get_equipped_ring_name"))
+		var ring_name := _get_inventory_owner_string(owner, "get_equipped_ring_name", ring_id)
 		hud.show_status_message("Equipped: %s" % ring_name, 1.2)
 	_refresh_inventory_menu_contents()
 
 
 func _on_inventory_store_purchase_requested(item_id: String) -> void:
-	if not is_instance_valid(arena) or not is_instance_valid(arena.player):
+	if not is_instance_valid(arena):
 		return
-	if not arena.player.has_method("purchase_store_item"):
+	var owner := _get_inventory_menu_owner()
+	if owner == null or not is_instance_valid(owner):
 		return
-	var result_variant: Variant = arena.player.call("purchase_store_item", item_id)
+	if not owner.has_method("purchase_store_item"):
+		hud.show_status_message("Store unavailable for this character.", 1.0)
+		return
+	var result_variant: Variant = owner.call("purchase_store_item", item_id)
 	if result_variant is Dictionary:
 		var result := result_variant as Dictionary
 		var purchase_succeeded := bool(result.get("success", false))
@@ -463,6 +543,25 @@ func _on_inventory_party_member_toggled(member_id: String, enabled: bool) -> voi
 	_refresh_inventory_menu_contents()
 
 
+func _on_inventory_controlled_character_selected(control_id: String) -> void:
+	if not is_instance_valid(arena):
+		return
+	if not arena.has_method("set_controlled_character"):
+		return
+	var changed := bool(arena.call("set_controlled_character", control_id))
+	if changed:
+		if arena.has_method("get_controlled_character_display_name"):
+			var display_name := String(arena.call("get_controlled_character_display_name"))
+			hud.show_status_message("Control switched: %s" % display_name, 1.1)
+		else:
+			hud.show_status_message("Control switched.", 1.0)
+	elif arena.has_method("get_control_target_failure_reason"):
+		var reason := String(arena.call("get_control_target_failure_reason"))
+		if not reason.is_empty():
+			hud.show_status_message(reason, 1.2)
+	_refresh_inventory_menu_contents()
+
+
 func _on_inventory_menu_closed() -> void:
 	_close_inventory_menu()
 
@@ -502,22 +601,28 @@ func _on_arena_player_died() -> void:
 func _refresh_inventory_menu_contents() -> void:
 	if not _has_active_inventory_menu():
 		return
-	if not is_instance_valid(arena) or not is_instance_valid(arena.player):
+	if not is_instance_valid(arena):
 		return
 	if not inventory_menu_layer.has_method("configure"):
 		return
+	var payload := _build_inventory_menu_payload()
 	inventory_menu_layer.call(
 		"configure",
-		arena.player.call("get_available_sword_entries"),
-		arena.player.call("get_equipped_sword_id"),
-		arena.player.call("get_available_shield_entries"),
-		arena.player.call("get_equipped_shield_id"),
-		arena.player.call("get_available_ring_entries"),
-		arena.player.call("get_equipped_ring_id"),
-		arena.player.call("get_gold_total"),
-		arena.player.call("get_store_entries"),
+		payload.get("sword_entries", []),
+		String(payload.get("equipped_sword_id", "")),
+		payload.get("shield_entries", []),
+		String(payload.get("equipped_shield_id", "")),
+		payload.get("ring_entries", []),
+		String(payload.get("equipped_ring_id", "")),
+		int(payload.get("gold_total", 0)),
+		payload.get("store_entries", []),
 		arena.call("get_party_member_entries"),
-		arena.player.call("get_equipped_boot_entries")
+		payload.get("boot_entries", []),
+		arena.call("get_control_target_entries"),
+		arena.call("get_controlled_character_id"),
+		String(payload.get("shield_slot_title", "Shields")),
+		String(payload.get("shield_slot_empty_text", "No shields found.")),
+		String(payload.get("shield_slot_default_icon", "SHD"))
 	)
 
 
@@ -585,7 +690,7 @@ func _show_adventure_death_popup(gold_lost: int, gold_remaining: int) -> void:
 	content.add_child(remaining)
 
 	var instruction := Label.new()
-	instruction.text = "Press any key to return to Room 1"
+	instruction.text = "Press Enter to return to Room 1"
 	instruction.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	instruction.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	instruction.custom_minimum_size = Vector2(560.0, 74.0)

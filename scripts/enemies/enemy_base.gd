@@ -241,7 +241,16 @@ const THREAT_EPSILON: float = 0.001
 @export var cacodemon_basic_attack_hold_frame: int = 1
 @export var cacodemon_basic_attack_bite_duration: float = 0.18
 @export var cacodemon_basic_attack_bite_hit_delay: float = 0.08
+@export var cacodemon_basic_attack_timing_multiplier: float = 1.4
 @export var cacodemon_basic_attack_lunge_speed_scale: float = 0.92
+@export var cacodemon_player_bite_priority_range: float = 120.0
+@export var cacodemon_bite_telegraph_width: float = 6.0
+@export var cacodemon_bite_telegraph_open_degrees: float = 56.0
+@export var cacodemon_bite_telegraph_start_offset: float = 0.0
+@export var cacodemon_bite_telegraph_fill_start_alpha: float = 0.24
+@export var cacodemon_bite_telegraph_fill_peak_alpha: float = 0.84
+@export var cacodemon_bite_telegraph_outline_alpha: float = 0.38
+@export var cacodemon_bite_telegraph_color: Color = Color(1.0, 0.34, 0.18, 0.94)
 @export var boss_mark_warning_radius_x: float = 72.0
 @export var boss_mark_warning_radius_y: float = 40.0
 @export var prioritize_companion_targets: bool = false
@@ -1875,10 +1884,6 @@ func _collect_cacodemon_companion_fireball_targets() -> Array[Node2D]:
 			continue
 		if candidate.has_method("is_shadow_clone_actor") and bool(candidate.call("is_shadow_clone_actor")):
 			continue
-		var healer_target := candidate as FriendlyHealer
-		var rat_target := candidate as FriendlyRatfolk
-		if healer_target == null and rat_target == null:
-			continue
 		if not _is_valid_cacodemon_fireball_target(candidate):
 			continue
 		targets.append(candidate)
@@ -2147,7 +2152,35 @@ func _tick_cacodemon_fireball_loop(delta: float, to_player: Vector2) -> void:
 		attack_telegraph.visible = false
 	if breath_attack != null and breath_attack.is_threat_active():
 		_end_cacodemon_breath_attack()
-	var fallback_target := _get_tank_player_target()
+	if boss_loop_state == BossLoopState.SUMMON:
+		_tick_cacodemon_summon_cast_state(delta)
+		return
+	if _tick_cacodemon_basic_attack_state(delta):
+		return
+
+	var tank_target := _get_tank_player_target()
+	var to_tank := to_player
+	if tank_target != null and is_instance_valid(tank_target):
+		to_tank = tank_target.global_position - global_position
+	var player_close_for_bite := _is_player_close_for_cacodemon_bite(to_tank)
+	var can_begin_summon := _can_trigger_cacodemon_health_summon() \
+		and not pending_attack \
+		and attack_anim_left <= 0.0 \
+		and attack_recovery_hold_left <= 0.0 \
+		and not cacodemon_fireball_pending
+	if can_begin_summon:
+		var summon_direction_sign := _get_cacodemon_breath_direction_sign(to_tank)
+		_begin_cacodemon_summon_cast(summon_direction_sign)
+		return
+	if player_close_for_bite:
+		_cancel_cacodemon_fireball_cast_for_bite()
+		if to_tank.length_squared() > 0.0001:
+			committed_attack_facing_direction = to_tank.normalized()
+			external_sprite_facing_direction = committed_attack_facing_direction
+		_tick_cacodemon_basic_pressure(to_tank)
+		return
+
+	var fallback_target := tank_target
 	var target_node := _choose_cacodemon_fireball_target(false)
 	if target_node == null:
 		target_node = fallback_target
@@ -2168,9 +2201,6 @@ func _tick_cacodemon_fireball_loop(delta: float, to_player: Vector2) -> void:
 	direction_sign = _resolve_cacodemon_stable_horizontal_sign(direction_sign, aim_to_target.x)
 	committed_attack_facing_direction = Vector2(direction_sign, 0.0)
 	external_sprite_facing_direction = committed_attack_facing_direction
-	if boss_loop_state == BossLoopState.SUMMON:
-		_tick_cacodemon_summon_cast_state(delta)
-		return
 	if cacodemon_fireball_pending:
 		velocity = Vector2.ZERO
 		var cast_release_timeout := maxf(0.3, cacodemon_fireball_cast_duration * 1.35)
@@ -2188,19 +2218,9 @@ func _tick_cacodemon_fireball_loop(delta: float, to_player: Vector2) -> void:
 			cacodemon_fireball_cast_target = null
 			attack_recovery_hold_left = maxf(attack_recovery_hold_left, 0.12)
 		return
-	if _tick_cacodemon_basic_attack_state(delta):
-		return
 	var distance_to_target := aim_to_target.length()
 	var fireball_effective_range := maxf(cacodemon_fireball_range, cacodemon_fireball_max_distance - 16.0)
 	var in_range := distance_to_target <= fireball_effective_range
-	var can_begin_summon := _can_trigger_cacodemon_health_summon() \
-		and not pending_attack \
-		and attack_anim_left <= 0.0 \
-		and attack_recovery_hold_left <= 0.0 \
-		and not cacodemon_fireball_pending
-	if can_begin_summon:
-		_begin_cacodemon_summon_cast(direction_sign)
-		return
 	var can_begin_fireball := cacodemon_fireball_enabled \
 		and (cacodemon_fireball_first_use_left <= 0.0 or cacodemon_runtime_elapsed >= maxf(0.0, cacodemon_fireball_first_use_delay)) \
 		and cacodemon_fireball_cooldown_left <= 0.0 \
@@ -2332,6 +2352,30 @@ func _spawn_cacodemon_fireball(projectile_direction: Vector2, fireball_target: N
 	projectile.set("collision_radius", maxf(6.0, cacodemon_fireball_hit_radius))
 	_spawn_hit_effect(spawn_position, Color(1.0, 0.56, 0.18, 0.9), 6.5)
 	cacodemon_fireball_cast_target = null
+
+
+func _is_player_close_for_cacodemon_bite(to_tank: Vector2) -> bool:
+	if to_tank.length_squared() <= 0.0001:
+		return true
+	var bite_priority_range := maxf(
+		maxf(attack_range + basic_attack_hit_end_bonus + 18.0, attack_range * 1.65),
+		maxf(8.0, cacodemon_player_bite_priority_range)
+	)
+	return to_tank.length() <= bite_priority_range
+
+
+func _cancel_cacodemon_fireball_cast_for_bite() -> void:
+	if not cacodemon_fireball_pending and cacodemon_fireball_cast_left <= 0.0:
+		return
+	cacodemon_fireball_pending = false
+	cacodemon_fireball_pending_elapsed = 0.0
+	cacodemon_fireball_cast_left = 0.0
+	cacodemon_fireball_cast_direction = Vector2.ZERO
+	cacodemon_fireball_cast_target = null
+	cacodemon_fireball_cooldown_left = maxf(
+		cacodemon_fireball_cooldown_left,
+		maxf(0.1, cacodemon_fireball_cooldown * 0.35)
+	)
 
 
 func _end_cacodemon_breath_attack() -> void:
@@ -2720,6 +2764,12 @@ func _tick_boss_windup_state(delta: float) -> void:
 			return
 
 	var mark_target := _select_mark_target()
+	if mark_target == null:
+		# Ensure the shockwave sequence always flows into a charge attempt, even
+		# when no ally is currently inside the strict mark-start range.
+		mark_target = _select_random_mark_target_for_charge()
+		if mark_target != null:
+			_log_boss_lunge("MARK_FALLBACK target=%s (random ally)" % [mark_target.name])
 	if mark_target == null:
 		_set_boss_loop_state(BossLoopState.IDLE, 0.0)
 		return
@@ -3574,6 +3624,21 @@ func _select_mark_target() -> Node2D:
 	return best_target if best_score > 0.0 else null
 
 
+func _select_random_mark_target_for_charge() -> Node2D:
+	var candidates: Array[Node2D] = []
+	for node in get_tree().get_nodes_in_group("friendly_npcs"):
+		var candidate := node as Node2D
+		if candidate == null:
+			continue
+		if not _is_valid_mark_target(candidate):
+			continue
+		candidates.append(candidate)
+	if candidates.is_empty():
+		return null
+	var random_index := randi() % candidates.size()
+	return candidates[random_index]
+
+
 func _score_mark_target_for_charge(candidate: Node2D, tank_target: Player) -> float:
 	if candidate == null or not is_instance_valid(candidate):
 		return -INF
@@ -4153,7 +4218,8 @@ func _is_valid_threat_target(target: Node2D) -> bool:
 	var target_player := target as Player
 	var target_healer := target as FriendlyHealer
 	var target_ratfolk := target as FriendlyRatfolk
-	return target_player != null or target_healer != null or target_ratfolk != null
+	var target_lizard := target as FriendlyLizardfolk
+	return target_player != null or target_healer != null or target_ratfolk != null or target_lizard != null
 
 
 func _is_friendly_npc_temporarily_unavailable(target: Node2D) -> bool:
@@ -4790,17 +4856,7 @@ func _attempt_friendly_hit(target: Node2D, damage: float, guard_break: bool = fa
 
 
 func _get_protective_shield_damage_multiplier(target: Node2D) -> float:
-	var multiplier := 1.0
-	for node in get_tree().get_nodes_in_group("friendly_npcs"):
-		var healer := node as FriendlyHealer
-		if healer == null or not is_instance_valid(healer):
-			continue
-		if not healer.has_method("get_shield_damage_multiplier_for"):
-			continue
-		var shield_multiplier_variant: Variant = healer.call("get_shield_damage_multiplier_for", target)
-		if shield_multiplier_variant is float:
-			multiplier = minf(multiplier, clampf(float(shield_multiplier_variant), 0.0, 1.0))
-	return multiplier
+	return 1.0
 
 
 func _is_target_blocking_attack(target: Node2D) -> bool:
@@ -5981,7 +6037,9 @@ func _draw_segment_hitbox_debug(segment_start: Vector2, segment_end: Vector2, ha
 
 
 func _update_attack_telegraph(to_player: Vector2) -> void:
+	attack_telegraph.position = Vector2.ZERO
 	if is_instance_valid(cobra_tongue_telegraph_area):
+		cobra_tongue_telegraph_area.position = Vector2.ZERO
 		cobra_tongue_telegraph_area.visible = false
 	if _is_exact_cacodemon_visual_profile() and cacodemon_fireball_pending:
 		_update_cacodemon_fireball_telegraph(to_player)
@@ -6047,6 +6105,10 @@ func _update_attack_telegraph(to_player: Vector2) -> void:
 			cobra_tongue_telegraph_area.polygon = PackedVector2Array([cone_origin, fill_left_tip, fill_tip, fill_right_tip])
 		return
 
+	if _is_cacodemon_visual_profile():
+		_update_cacodemon_bite_telegraph(to_player)
+		return
+
 	attack_telegraph.visible = true
 	var aim_direction := to_player
 	if committed_attack_facing_direction.length_squared() > 0.0001:
@@ -6088,6 +6150,63 @@ func _update_cacodemon_fireball_telegraph(to_player: Vector2) -> void:
 	var local_start := to_local(origin_world)
 	var local_end := local_start + (aim_direction * travel_distance)
 	attack_telegraph.points = PackedVector2Array([local_start, local_end])
+
+
+func _update_cacodemon_bite_telegraph(to_player: Vector2) -> void:
+	attack_telegraph.visible = true
+	attack_telegraph.z_index = 246
+	attack_telegraph.begin_cap_mode = Line2D.LINE_CAP_BOX
+	attack_telegraph.end_cap_mode = Line2D.LINE_CAP_BOX
+
+	var aim_direction := to_player
+	if committed_attack_facing_direction.length_squared() > 0.0001:
+		aim_direction = committed_attack_facing_direction
+	if aim_direction.length_squared() <= 0.0001:
+		aim_direction = Vector2.RIGHT
+	attack_telegraph.rotation = aim_direction.angle()
+
+	var telegraph_total := maxf(0.01, _get_cacodemon_basic_attack_windup() + _get_cacodemon_basic_attack_hold_duration())
+	var telegraph_remaining := maxf(0.0, attack_windup_left + attack_prestrike_hold_left)
+	var progress := clampf(1.0 - (telegraph_remaining / telegraph_total), 0.0, 1.0)
+
+	var bite_origin := to_local(_get_cacodemon_breath_origin())
+	attack_telegraph.position = bite_origin
+	var mouth_start := Vector2(maxf(0.0, cacodemon_bite_telegraph_start_offset), 0.0)
+	var mouth_range := maxf(24.0, attack_range + basic_attack_hit_end_bonus)
+	var mouth_length := maxf(10.0, mouth_range - maxf(2.0, cacodemon_bite_telegraph_start_offset))
+	var half_open_radians := deg_to_rad(clampf(cacodemon_bite_telegraph_open_degrees, 14.0, 140.0) * 0.5)
+	var tip_offset := Vector2(mouth_length, 0.0)
+	var top_tip := mouth_start + tip_offset.rotated(-half_open_radians)
+	var center_tip := mouth_start + tip_offset
+	var bottom_tip := mouth_start + tip_offset.rotated(half_open_radians)
+
+	attack_telegraph.width = maxf(2.0, cacodemon_bite_telegraph_width)
+	var base_color := cacodemon_bite_telegraph_color
+	var outline_alpha := clampf(cacodemon_bite_telegraph_outline_alpha, 0.08, 0.92)
+	var outline_pulse := lerpf(0.86, 1.08, 0.5 + (sin(Time.get_ticks_msec() * 0.02) * 0.5))
+	attack_telegraph.default_color = Color(base_color.r, base_color.g, base_color.b, clampf(outline_alpha * outline_pulse, 0.08, 0.98))
+	attack_telegraph.points = PackedVector2Array([mouth_start, top_tip, center_tip, bottom_tip, mouth_start])
+
+	if not is_instance_valid(cobra_tongue_telegraph_area):
+		return
+	cobra_tongue_telegraph_area.position = bite_origin
+	cobra_tongue_telegraph_area.visible = true
+	cobra_tongue_telegraph_area.rotation = attack_telegraph.rotation
+	var fill_length := maxf(2.0, mouth_length * progress)
+	var fill_offset := Vector2(fill_length, 0.0)
+	var fill_tip := mouth_start + fill_offset
+	var fill_top := mouth_start + fill_offset.rotated(-half_open_radians)
+	var fill_bottom := mouth_start + fill_offset.rotated(half_open_radians)
+	var fill_start_alpha := clampf(cacodemon_bite_telegraph_fill_start_alpha, 0.08, 0.85)
+	var fill_peak_alpha := clampf(maxf(cacodemon_bite_telegraph_fill_peak_alpha, fill_start_alpha + 0.06), fill_start_alpha + 0.06, 1.0)
+	var fill_alpha := clampf(lerpf(fill_start_alpha, fill_peak_alpha, progress), fill_start_alpha, fill_peak_alpha)
+	cobra_tongue_telegraph_area.color = Color(
+		minf(1.0, base_color.r + 0.08),
+		minf(1.0, base_color.g + 0.06),
+		minf(1.0, base_color.b + 0.02),
+		fill_alpha
+	)
+	cobra_tongue_telegraph_area.polygon = PackedVector2Array([mouth_start, fill_top, fill_tip, fill_bottom])
 
 
 func _show_spin_warning() -> void:
@@ -6291,9 +6410,10 @@ func _start_attack_animation(duration: float, strength: float) -> void:
 
 func _begin_cacodemon_bite_strike() -> void:
 	attack_flash_left = maxf(attack_flash_left, 0.1)
-	_start_attack_animation(maxf(0.08, cacodemon_basic_attack_bite_duration), 0.96)
+	var timing_multiplier := _get_cacodemon_bite_timing_multiplier()
+	_start_attack_animation(maxf(0.08, cacodemon_basic_attack_bite_duration * timing_multiplier), 0.96)
 	cacodemon_bite_hit_pending = true
-	cacodemon_bite_hit_left = clampf(cacodemon_basic_attack_bite_hit_delay, 0.01, maxf(0.02, attack_anim_total * 0.9))
+	cacodemon_bite_hit_left = clampf(cacodemon_basic_attack_bite_hit_delay * timing_multiplier, 0.01, maxf(0.02, attack_anim_total * 0.9))
 
 
 func _perform_cacodemon_bite_hit() -> void:
@@ -6316,11 +6436,15 @@ func _get_active_attack_hold_frame(frame_count: int) -> int:
 
 
 func _get_cacodemon_basic_attack_windup() -> float:
-	return maxf(0.08, cacodemon_basic_attack_windup)
+	return maxf(0.08, cacodemon_basic_attack_windup * _get_cacodemon_bite_timing_multiplier())
 
 
 func _get_cacodemon_basic_attack_hold_duration() -> float:
-	return maxf(0.0, cacodemon_basic_attack_hold_duration)
+	return maxf(0.0, cacodemon_basic_attack_hold_duration * _get_cacodemon_bite_timing_multiplier())
+
+
+func _get_cacodemon_bite_timing_multiplier() -> float:
+	return clampf(cacodemon_basic_attack_timing_multiplier, 0.5, 3.0)
 
 
 func _update_model_animation(delta: float, movement_ratio: float, to_player: Vector2) -> void:

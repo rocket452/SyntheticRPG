@@ -8,7 +8,6 @@ enum HealerAIState {
 	IDLE_SUPPORT,
 	REPOSITIONING,
 	HEALING,
-	SHIELDING,
 	ATTACKING,
 	BREATH_STACK
 }
@@ -17,7 +16,6 @@ const HEALER_AI_STATE_NAMES: Dictionary = {
 	HealerAIState.IDLE_SUPPORT: "IDLE_SUPPORT",
 	HealerAIState.REPOSITIONING: "REPOSITIONING",
 	HealerAIState.HEALING: "HEALING",
-	HealerAIState.SHIELDING: "SHIELDING",
 	HealerAIState.ATTACKING: "ATTACKING",
 	HealerAIState.BREATH_STACK: "BREATH_STACK"
 }
@@ -25,7 +23,7 @@ const HEALER_AI_STATE_NAMES: Dictionary = {
 enum CastAction {
 	NONE,
 	QUICK_HEAL,
-	PROTECTIVE_SHIELD,
+	BIG_HEAL,
 	TIDAL_WAVE,
 	LIGHT_BOLT
 }
@@ -42,11 +40,11 @@ enum CastAction {
 @export var reacquire_retry_interval: float = 0.3
 @export var react_heal_delay: float = 0.18
 @export var emergency_cast_on_damage: bool = true
-@export var shield_cooldown: float = 7.5
-@export var shield_duration: float = 2.1
-@export var shield_damage_multiplier: float = 0.35
-@export var shield_cast_range: float = 164.0
 @export var move_speed: float = 100.3
+@export var roll_speed: float = 210.0
+@export var roll_duration: float = 0.24
+@export var roll_cooldown: float = 4.0
+@export var roll_depth_speed_multiplier: float = 0.62
 @export var use_player_like_movement: bool = true
 @export_range(4, 16, 1) var player_like_direction_steps: int = 8
 @export_range(0.0, 1.0, 0.01) var player_like_move_deadzone_ratio: float = 0.24
@@ -83,16 +81,41 @@ enum CastAction {
 @export var pixel_snap_movement: bool = false
 @export var arena_padding: float = 26.0
 @export var tidal_wave_enabled: bool = true
-@export var basic_heal_cooldown: float = 1.5
+@export var basic_heal_cooldown: float = 0.0
 @export var basic_heal_range: float = 171.6
 @export var basic_heal_range_buffer: float = 10.0
 @export var quick_heal_cast_time_multiplier: float = 2.0
+@export var big_heal_cooldown: float = 7.5
+@export var big_heal_amount_multiplier: float = 3.0
+@export var big_heal_cast_time_multiplier: float = 2.0
 @export var light_bolt_enabled: bool = true
 @export var light_bolt_damage: float = 7.5
 @export var light_bolt_cooldown: float = 1.9
 @export var light_bolt_range: float = 208.0
 @export var light_bolt_stun_duration: float = 0.1
 @export var light_bolt_hitstop_duration: float = 0.045
+@export var light_bolt_projectile_speed: float = 520.0
+@export var light_bolt_projectile_hit_radius: float = 12.0
+@export var light_bolt_projectile_knockback_scale: float = 0.88
+@export var light_bolt_projectile_max_lifetime: float = 1.2
+@export var harpoon_enabled: bool = true
+@export var harpoon_cooldown: float = 6.75
+@export var harpoon_min_charge_time: float = 0.12
+@export var harpoon_max_charge_time: float = 0.9
+@export var harpoon_min_range: float = 120.0
+@export var harpoon_max_range: float = 280.0
+@export var harpoon_min_projectile_speed: float = 520.0
+@export var harpoon_max_projectile_speed: float = 840.0
+@export var harpoon_min_reel_speed: float = 120.0
+@export var harpoon_max_reel_speed: float = 220.0
+@export var harpoon_ally_reel_speed_multiplier: float = 2.0
+@export var harpoon_stop_distance: float = 0.0
+@export var harpoon_contact_distance_scale: float = 0.45
+@export var harpoon_enemy_damage: float = 8.0
+@export var harpoon_arrival_stagger_duration: float = 0.36
+@export var harpoon_heavy_tug_distance: float = 56.0
+@export var harpoon_projectile_hit_radius: float = 14.0
+@export var harpoon_reel_max_duration: float = 2.6
 @export var tidal_wave_cooldown: float = 9.0
 @export var tidal_wave_speed: float = 310.0
 @export var tidal_wave_duration: float = 1.5
@@ -110,9 +133,29 @@ enum CastAction {
 @export var health_bar_width: float = 54.0
 @export var health_bar_thickness: float = 5.0
 @export var health_bar_y_offset: float = -62.0
+@export var combat_number_popups_enabled: bool = true
+@export var combat_number_popup_duration: float = 0.42
+@export var combat_number_popup_rise_distance: float = 26.0
+@export var combat_number_popup_x_spread: float = 8.0
+@export var combat_number_popup_scale: float = 1.0
+@export var combat_number_popup_font_size: int = 17
+@export var combat_number_popup_outline_size: int = 3
+@export var combat_number_popup_head_offset_y: float = -44.0
 @export var cast_bar_width: float = 52.0
 @export var cast_bar_thickness: float = 3.0
 @export var cast_bar_vertical_offset: float = 8.0
+@export var heal_range_indicator_enabled: bool = true
+@export var heal_range_indicator_width: float = 1.6
+@export_range(16, 96, 1) var heal_range_indicator_segments: int = 64
+@export var heal_range_indicator_alpha: float = 0.12
+@export var heal_range_indicator_radius_scale: float = 1.0
+@export var heal_range_indicator_y_offset: float = 0.0
+@export var special_bar_width: float = 52.0
+@export var special_bar_thickness: float = 3.0
+@export var special_bar_vertical_offset: float = 8.0
+@export var special_meter_max: float = 100.0
+@export var special_meter_gain_per_damage: float = 2.0
+@export var special_meter_gain_per_heal: float = 2.0
 @export var hit_stun_duration: float = 0.18
 @export var hit_knockback_speed: float = 170.0
 @export var hit_knockback_decay: float = 960.0
@@ -125,6 +168,7 @@ const HEALER_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/fish
 const TIDAL_WAVE_STARTUP_SHEET_PATH: String = "res://assets/external/Water Blast - Spritesheet/Water Blast - Startup and Infinite.png"
 const TIDAL_WAVE_END_SHEET_PATH: String = "res://assets/external/Water Blast - Spritesheet/Water Blast - End.png"
 const COMPANION_BREATH_RESPONSE_SCRIPT := preload("res://ai/CompanionBreathResponse.gd")
+const HEALER_LIGHT_BOLT_PROJECTILE_SCRIPT := preload("res://scripts/projectiles/healer_light_bolt_projectile.gd")
 const TIDAL_WAVE_FRAME_SIZE: Vector2i = Vector2i(128, 128)
 const TIDAL_WAVE_STARTUP_FRAME_COUNT: int = 12
 const TIDAL_WAVE_LOOP_FRAME_START: int = 8
@@ -152,6 +196,107 @@ const ANIM_FPS: Dictionary = {
 	"cast": 10.0,
 	"death": 8.0
 }
+const HEALER_ITEM_PRICE: int = 15
+const HEALER_WEAPON_DEFINITIONS: Dictionary = {
+	"riverlight_rod": {
+		"id": "riverlight_rod",
+		"name": "Riverlight Rod",
+		"icon": "WPN",
+		"description": "Healing shaves 0.6s off Light Bolt cooldown.",
+		"bolt_cooldown_refund_on_heal": 0.6
+	},
+	"chain_mender_focus": {
+		"id": "chain_mender_focus",
+		"name": "Chainmender Focus",
+		"icon": "WPN",
+		"description": "Quick/Big Heal chains to a second ally for 45% power.",
+		"chain_heal_ratio": 0.45
+	},
+	"stormcall_codex": {
+		"id": "stormcall_codex",
+		"name": "Stormcall Codex",
+		"icon": "WPN",
+		"description": "Light Bolt arcs to another nearby enemy for 65% damage.",
+		"bolt_arc_ratio": 0.65
+	}
+}
+const HEALER_TRINKET_DEFINITIONS: Dictionary = {
+	"restoration_talisman": {
+		"id": "restoration_talisman",
+		"name": "Restoration Talisman",
+		"icon": "TRK",
+		"description": "Healing and damage grant 25% more Special meter.",
+		"special_gain_multiplier": 1.25
+	},
+	"anchor_relic": {
+		"id": "anchor_relic",
+		"name": "Anchor Relic",
+		"icon": "TRK",
+		"description": "While casting, take 35% less damage and casts are not interrupted.",
+		"cast_damage_multiplier": 0.65,
+		"cast_uninterruptible": true
+	},
+	"echo_prism": {
+		"id": "echo_prism",
+		"name": "Echo Prism",
+		"icon": "TRK",
+		"description": "Harpoon impact triggers a healing pulse and refunds 1.0s cooldown.",
+		"harpoon_refund": 1.0,
+		"harpoon_pulse_radius": 96.0,
+		"harpoon_pulse_heal": 6.0
+	}
+}
+const HEALER_BOOT_DEFINITIONS: Dictionary = {
+	"foamstep_boots": {
+		"id": "foamstep_boots",
+		"name": "Foamstep Boots",
+		"icon": "BTS",
+		"description": "Increases movement speed by 15%.",
+		"move_speed_multiplier": 1.15
+	},
+	"blinkstep_boots": {
+		"id": "blinkstep_boots",
+		"name": "Blinkstep Boots",
+		"icon": "BTS",
+		"description": "Roll cooldown -40% and roll speed +20%.",
+		"roll_cooldown_multiplier": 0.6,
+		"roll_speed_multiplier": 1.2
+	},
+	"tidegrip_boots": {
+		"id": "tidegrip_boots",
+		"name": "Tidegrip Boots",
+		"icon": "BTS",
+		"description": "Harpoon cooldown -35% and reel speed +25%.",
+		"harpoon_cooldown_multiplier": 0.65,
+		"harpoon_reel_speed_multiplier": 1.25
+	}
+}
+const HEALER_WEAPON_ORDER: Array[String] = [
+	"riverlight_rod",
+	"chain_mender_focus",
+	"stormcall_codex"
+]
+const HEALER_TRINKET_ORDER: Array[String] = [
+	"restoration_talisman",
+	"anchor_relic",
+	"echo_prism"
+]
+const HEALER_BOOT_ORDER: Array[String] = [
+	"foamstep_boots",
+	"blinkstep_boots",
+	"tidegrip_boots"
+]
+const HEALER_STORE_ITEM_ORDER: Array[String] = [
+	"riverlight_rod",
+	"chain_mender_focus",
+	"stormcall_codex",
+	"restoration_talisman",
+	"anchor_relic",
+	"echo_prism",
+	"foamstep_boots",
+	"blinkstep_boots",
+	"tidegrip_boots"
+]
 
 var player: Player = null
 var heal_timer_left: float = 0.0
@@ -161,13 +306,31 @@ var cast_anim_time: float = 0.0
 var is_casting: bool = false
 var heal_applied_this_cast: bool = false
 var basic_heal_cooldown_left: float = 0.0
+var big_heal_cooldown_left: float = 0.0
 var tidal_wave_cooldown_left: float = 0.0
-var shield_cooldown_left: float = 0.0
 var light_bolt_cooldown_left: float = 0.0
 var cast_debug_logging_enabled: bool = false
-var active_shield_target_id: int = -1
-var active_shield_left: float = 0.0
 var reacquire_left: float = 0.0
+var harpoon_cooldown_left: float = 0.0
+var harpoon_charge_active: bool = false
+var harpoon_charge_time: float = 0.0
+var harpoon_charge_ratio: float = 0.0
+var harpoon_throw_direction_sign: float = 1.0
+var harpoon_projectile_active: bool = false
+var harpoon_projectile_position: Vector2 = Vector2.ZERO
+var harpoon_projectile_travel_left: float = 0.0
+var harpoon_projectile_speed: float = 0.0
+var harpoon_reel_active: bool = false
+var harpoon_reel_left: float = 0.0
+var harpoon_reel_speed: float = 0.0
+var harpoon_reel_charge_ratio: float = 0.0
+var harpoon_hooked_target: Node2D = null
+var harpoon_hooked_target_is_enemy: bool = false
+var harpoon_hooked_target_is_heavy: bool = false
+var harpoon_hooked_has_velocity: bool = false
+var harpoon_hooked_has_move_velocity: bool = false
+var harpoon_hooked_has_knockback_velocity: bool = false
+var harpoon_hooked_has_stun_left: bool = false
 var tracked_player_health: float = -1.0
 var sprite_base_position: Vector2 = Vector2.ZERO
 var frame_pixel_size: Vector2 = Vector2.ZERO
@@ -196,11 +359,27 @@ var health_bar_background: Line2D = null
 var health_bar_fill: Line2D = null
 var cast_bar_background: Line2D = null
 var cast_bar_fill: Line2D = null
+var special_bar_background: Line2D = null
+var special_bar_fill: Line2D = null
+var heal_range_indicator: Line2D = null
+var special_meter: float = 0.0
 var stun_left: float = 0.0
 var hit_flash_left: float = 0.0
 var heal_flash_left: float = 0.0
+var combat_number_popup_sequence: int = 0
 var knockback_velocity: Vector2 = Vector2.ZERO
 var dead: bool = false
+var manual_control_enabled: bool = false
+var is_rolling: bool = false
+var roll_invulnerable: bool = false
+var roll_time_left: float = 0.0
+var roll_cooldown_left: float = 0.0
+var roll_vector: Vector2 = Vector2.ZERO
+var available_weapon_ids: Array[String] = []
+var equipped_weapon_id: String = ""
+var available_trinket_ids: Array[String] = []
+var equipped_trinket_id: String = ""
+var available_boot_ids: Array[String] = []
 var death_anim_time: float = 0.0
 var death_cleanup_started: bool = false
 var marked_lunge_panic_left: float = 0.0
@@ -208,6 +387,10 @@ var marked_lunge_enemy_id: int = -1
 var breath_threat_snapshot: Dictionary = {}
 var breath_safe_indicator_left: float = 0.0
 var breath_safe_indicator: Line2D = null
+var harpoon_charge_telegraph: Polygon2D = null
+var harpoon_tether_line: Line2D = null
+var harpoon_tether_glow_line: Line2D = null
+var harpoon_projectile_visual: Node2D = null
 var breath_was_safe: bool = false
 var hitbox_debug_enabled: bool = false
 
@@ -231,11 +414,16 @@ func _ready() -> void:
 	orbit_phase = 0.0
 	heal_timer_left = _next_heal_interval() * 0.45
 	basic_heal_cooldown_left = 0.0
+	big_heal_cooldown_left = 0.0
 	tidal_wave_cooldown_left = 0.0
-	shield_cooldown_left = 0.0
 	light_bolt_cooldown_left = 0.0
-	active_shield_target_id = -1
-	active_shield_left = 0.0
+	harpoon_cooldown_left = 0.0
+	roll_cooldown_left = 0.0
+	roll_time_left = 0.0
+	is_rolling = false
+	roll_invulnerable = false
+	roll_vector = Vector2.ZERO
+	_initialize_default_equipment_inventory()
 	reacquire_left = 0.0
 	_acquire_player()
 	_configure_sprite()
@@ -253,10 +441,13 @@ func _ready() -> void:
 	pending_cast_target = null
 	marked_lunge_panic_left = 0.0
 	marked_lunge_enemy_id = -1
+	_setup_heal_range_indicator()
 	_setup_breath_safe_indicator()
+	_setup_harpoon_visuals()
 	_prepare_frame_alignment()
 	_set_anim_frame("idle", 0)
 	current_health = maxf(1.0, max_health)
+	special_meter = 0.0
 	_setup_health_bar()
 	_update_health_bar()
 	health_changed.emit(current_health, max_health)
@@ -265,6 +456,7 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	_unbind_player_signal()
 	_clear_tidal_waves()
+	_teardown_harpoon_visuals()
 	if is_instance_valid(health_bar_root):
 		health_bar_root.queue_free()
 
@@ -273,6 +465,9 @@ func _physics_process(delta: float) -> void:
 	if hitbox_debug_enabled:
 		queue_redraw()
 	if dead:
+		_cancel_harpoon_state()
+		if is_instance_valid(heal_range_indicator):
+			heal_range_indicator.visible = false
 		_tick_death(delta)
 		return
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
@@ -301,29 +496,48 @@ func _physics_process(delta: float) -> void:
 	if _is_breath_threat_active() and is_casting:
 		_cancel_cast_for_breath()
 	var marked_lunge_active := false
-	if not _is_breath_threat_active():
+	if not manual_control_enabled and not _is_breath_threat_active():
 		marked_lunge_active = _handle_marked_lunge_threat(delta)
 		if marked_lunge_active and is_casting:
 			_cancel_cast_for_lunge_mark()
 	var primary_enemy := _find_primary_enemy()
-	if not marked_lunge_active:
+	if manual_control_enabled:
+		healer_ai_state_name = "PLAYER_CONTROLLED"
+		_update_manual_control_movement(delta, primary_enemy)
+	elif not marked_lunge_active:
 		_update_healer_ai_state(delta, primary_enemy)
 		_update_tactical_positioning(delta)
 	_apply_miniboss_soft_separation(delta)
 	_update_facing()
+	_update_heal_range_indicator()
 	_update_breath_safe_indicator()
 	_update_health_bar()
 	basic_heal_cooldown_left = maxf(0.0, basic_heal_cooldown_left - delta)
+	big_heal_cooldown_left = maxf(0.0, big_heal_cooldown_left - delta)
 	tidal_wave_cooldown_left = maxf(0.0, tidal_wave_cooldown_left - delta)
-	shield_cooldown_left = maxf(0.0, shield_cooldown_left - delta)
 	light_bolt_cooldown_left = maxf(0.0, light_bolt_cooldown_left - delta)
-	active_shield_left = maxf(0.0, active_shield_left - delta)
-	if active_shield_left <= 0.0:
-		active_shield_target_id = -1
+	harpoon_cooldown_left = maxf(0.0, harpoon_cooldown_left - delta)
+	roll_cooldown_left = maxf(0.0, roll_cooldown_left - delta)
+	if is_rolling:
+		roll_time_left = maxf(0.0, roll_time_left - delta)
+		if roll_time_left <= 0.0:
+			is_rolling = false
+			roll_invulnerable = false
+			roll_vector = Vector2.ZERO
+	_tick_harpoon_state(delta)
+	_update_harpoon_visuals()
 	_update_tidal_waves(delta)
 
 	if is_casting:
 		_tick_cast(delta)
+		return
+	if manual_control_enabled:
+		if not _is_breath_threat_active():
+			_handle_manual_control_actions()
+		if _is_tactically_moving():
+			_tick_run(delta)
+		else:
+			_tick_idle(delta)
 		return
 	if _is_breath_threat_active() or marked_lunge_active:
 		return
@@ -332,12 +546,128 @@ func _physics_process(delta: float) -> void:
 		_tick_run(delta)
 	else:
 		_tick_idle(delta)
-	if _find_best_heal_target() != null:
+	if _find_best_heal_target(false) != null:
 		heal_timer_left = minf(heal_timer_left, react_heal_delay)
 	heal_timer_left = maxf(0.0, heal_timer_left - delta)
 	if heal_timer_left > 0.0:
 		return
 	_try_begin_ai_cast()
+
+
+func _update_manual_control_movement(delta: float, attack_target: EnemyBase) -> void:
+	if stun_left > 0.0:
+		move_velocity = move_velocity.move_toward(Vector2.ZERO, maxf(0.0, movement_deceleration) * delta)
+		return
+	if is_rolling:
+		var lane_roll := Vector2(roll_vector.x, roll_vector.y * maxf(0.1, roll_depth_speed_multiplier))
+		if lane_roll.length_squared() > 1.0:
+			lane_roll = lane_roll.normalized()
+		move_velocity = lane_roll * maxf(1.0, roll_speed * _get_healer_roll_speed_multiplier())
+		position += move_velocity * maxf(0.0, delta)
+		position = _clamp_to_bounds(position)
+		if pixel_snap_movement:
+			position = position.round()
+		if absf(move_velocity.x) > 2.0:
+			facing_left = move_velocity.x < 0.0
+		return
+	if is_casting:
+		move_velocity = Vector2.ZERO
+		return
+	var move_input := Vector2(
+		Input.get_action_strength("move_right") - Input.get_action_strength("move_left"),
+		Input.get_action_strength("move_down") - Input.get_action_strength("move_up")
+	)
+	if move_input.length_squared() > 1.0:
+		move_input = move_input.normalized()
+	move_velocity = move_input * maxf(1.0, move_speed * _get_healer_move_speed_multiplier())
+	position += move_velocity * maxf(0.0, delta)
+	position = _clamp_to_bounds(position)
+	if pixel_snap_movement:
+		position = position.round()
+	if absf(move_velocity.x) > 2.0:
+		facing_left = move_velocity.x < 0.0
+	elif attack_target != null and is_instance_valid(attack_target):
+		var to_target_x := attack_target.global_position.x - global_position.x
+		if absf(to_target_x) > 2.0:
+			facing_left = to_target_x < 0.0
+
+
+func _handle_manual_control_actions() -> void:
+	if harpoon_charge_active or harpoon_projectile_active or harpoon_reel_active:
+		return
+	if is_rolling:
+		return
+	if Input.is_action_just_pressed("roll"):
+		if _try_start_manual_roll():
+			return
+	var allow_full_health_heal_targets := _should_allow_full_health_heal_targets()
+	if Input.is_action_just_pressed("basic_attack"):
+		var attack_target := _find_healer_attack_target()
+		if light_bolt_enabled and light_bolt_cooldown_left <= 0.0 and _can_cast_light_bolt_on_target(attack_target):
+			_queue_cast_action(CastAction.LIGHT_BOLT, attack_target, 0.1)
+			return
+	if Input.is_action_just_pressed("ability_1"):
+		if _try_start_harpoon_charge():
+			return
+	if Input.is_action_just_pressed("counter_strike"):
+		var quick_heal_target := _resolve_heal_target(_find_best_heal_target(allow_full_health_heal_targets), allow_full_health_heal_targets)
+		if basic_heal_cooldown_left <= 0.0 and _can_cast_basic_heal_on_target(quick_heal_target, allow_full_health_heal_targets):
+			_queue_cast_action(CastAction.QUICK_HEAL, quick_heal_target, 0.1)
+			return
+	if Input.is_action_just_pressed("block"):
+		var big_heal_target := _resolve_heal_target(_find_best_heal_target(allow_full_health_heal_targets), allow_full_health_heal_targets)
+		if big_heal_cooldown_left <= 0.0 and _can_cast_basic_heal_on_target(big_heal_target, allow_full_health_heal_targets):
+			_queue_cast_action(CastAction.BIG_HEAL, big_heal_target, 0.1)
+			return
+	if Input.is_action_just_pressed("ability_2"):
+		var wave_target := _find_healer_attack_target()
+		if _can_cast_tidal_wave_on_target(wave_target):
+			_queue_cast_action(CastAction.TIDAL_WAVE, wave_target, 0.1)
+
+
+func _can_start_manual_roll() -> bool:
+	if not manual_control_enabled:
+		return false
+	if dead:
+		return false
+	if roll_cooldown_left > 0.0:
+		return false
+	if is_rolling:
+		return false
+	if stun_left > 0.0:
+		return false
+	if is_casting:
+		return false
+	if harpoon_charge_active or harpoon_projectile_active or harpoon_reel_active:
+		return false
+	return true
+
+
+func _try_start_manual_roll() -> bool:
+	if not _can_start_manual_roll():
+		return false
+	var movement_vector := Vector2(
+		Input.get_action_strength("move_right") - Input.get_action_strength("move_left"),
+		Input.get_action_strength("move_down") - Input.get_action_strength("move_up")
+	)
+	if movement_vector.length_squared() > 1.0:
+		movement_vector = movement_vector.normalized()
+	if movement_vector == Vector2.ZERO:
+		movement_vector = Vector2.LEFT if facing_left else Vector2.RIGHT
+	roll_vector = movement_vector.normalized()
+	is_rolling = true
+	roll_invulnerable = true
+	roll_time_left = maxf(0.05, roll_duration)
+	roll_cooldown_left = maxf(0.05, roll_cooldown * _get_healer_roll_cooldown_multiplier())
+	move_velocity = Vector2.ZERO
+	is_casting = false
+	cast_anim_time = 0.0
+	heal_applied_this_cast = false
+	pending_cast_action = CastAction.NONE
+	pending_cast_target = null
+	_set_anim_frame("idle", 0)
+	_cancel_harpoon_state()
+	return true
 
 
 func _acquire_player() -> void:
@@ -348,6 +678,405 @@ func set_player(target_player: Player) -> void:
 	_bind_player(target_player)
 	if _player_needs_healing():
 		heal_timer_left = minf(heal_timer_left, react_heal_delay)
+
+
+func set_manual_control_enabled(enabled: bool) -> void:
+	manual_control_enabled = enabled
+	move_velocity = Vector2.ZERO
+	_update_heal_range_indicator()
+	if not manual_control_enabled:
+		is_rolling = false
+		roll_invulnerable = false
+		roll_time_left = 0.0
+		roll_vector = Vector2.ZERO
+		_cancel_harpoon_state()
+		healer_ai_decision_left = 0.0
+		return
+	healer_ai_state_name = "PLAYER_CONTROLLED"
+	pending_cast_action = CastAction.NONE
+	pending_cast_target = null
+
+
+func is_manual_control_enabled() -> bool:
+	return manual_control_enabled
+
+
+func get_shield_slot_display_name() -> String:
+	return "Trinkets"
+
+
+func get_shield_slot_singular_display_name() -> String:
+	return "Trinket"
+
+
+func get_shield_slot_empty_text() -> String:
+	return "No trinkets found."
+
+
+func get_shield_slot_default_icon() -> String:
+	return "TRK"
+
+
+func get_available_sword_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	for weapon_id in available_weapon_ids:
+		if not HEALER_WEAPON_DEFINITIONS.has(weapon_id):
+			continue
+		var weapon_data_variant: Variant = HEALER_WEAPON_DEFINITIONS[weapon_id]
+		if weapon_data_variant is Dictionary:
+			entries.append((weapon_data_variant as Dictionary).duplicate(true))
+	return entries
+
+
+func get_equipped_sword_id() -> String:
+	return equipped_weapon_id
+
+
+func get_equipped_sword_name() -> String:
+	if equipped_weapon_id.is_empty():
+		return "No Weapon"
+	if not HEALER_WEAPON_DEFINITIONS.has(equipped_weapon_id):
+		return equipped_weapon_id
+	var weapon_data_variant: Variant = HEALER_WEAPON_DEFINITIONS[equipped_weapon_id]
+	if weapon_data_variant is Dictionary:
+		return String((weapon_data_variant as Dictionary).get("name", equipped_weapon_id))
+	return equipped_weapon_id
+
+
+func equip_sword(sword_id: String) -> bool:
+	var weapon_id := sword_id.strip_edges().to_lower()
+	if weapon_id.is_empty():
+		return false
+	if available_weapon_ids.find(weapon_id) == -1:
+		return false
+	if equipped_weapon_id == weapon_id:
+		return false
+	equipped_weapon_id = weapon_id
+	return true
+
+
+func get_available_shield_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	for trinket_id in available_trinket_ids:
+		if not HEALER_TRINKET_DEFINITIONS.has(trinket_id):
+			continue
+		var trinket_data_variant: Variant = HEALER_TRINKET_DEFINITIONS[trinket_id]
+		if trinket_data_variant is Dictionary:
+			entries.append((trinket_data_variant as Dictionary).duplicate(true))
+	return entries
+
+
+func get_equipped_shield_id() -> String:
+	return equipped_trinket_id
+
+
+func get_equipped_shield_name() -> String:
+	if equipped_trinket_id.is_empty():
+		return "No Trinket"
+	if not HEALER_TRINKET_DEFINITIONS.has(equipped_trinket_id):
+		return equipped_trinket_id
+	var trinket_data_variant: Variant = HEALER_TRINKET_DEFINITIONS[equipped_trinket_id]
+	if trinket_data_variant is Dictionary:
+		return String((trinket_data_variant as Dictionary).get("name", equipped_trinket_id))
+	return equipped_trinket_id
+
+
+func equip_shield(shield_id: String) -> bool:
+	var trinket_id := shield_id.strip_edges().to_lower()
+	if trinket_id.is_empty():
+		return false
+	if available_trinket_ids.find(trinket_id) == -1:
+		return false
+	if equipped_trinket_id == trinket_id:
+		return false
+	equipped_trinket_id = trinket_id
+	return true
+
+
+func get_available_ring_entries() -> Array[Dictionary]:
+	return []
+
+
+func get_equipped_ring_id() -> String:
+	return ""
+
+
+func get_equipped_ring_name() -> String:
+	return "No Ring"
+
+
+func equip_ring(_ring_id: String) -> bool:
+	return false
+
+
+func get_equipped_boot_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	for boot_id in available_boot_ids:
+		if not HEALER_BOOT_DEFINITIONS.has(boot_id):
+			continue
+		var boot_data_variant: Variant = HEALER_BOOT_DEFINITIONS[boot_id]
+		if not (boot_data_variant is Dictionary):
+			continue
+		var boot_data := (boot_data_variant as Dictionary).duplicate(true)
+		boot_data["equipped"] = true
+		entries.append(boot_data)
+	return entries
+
+
+func get_gold_total() -> int:
+	if not is_instance_valid(player):
+		return 0
+	if not player.has_method("get_gold_total"):
+		return 0
+	return maxi(0, int(player.call("get_gold_total")))
+
+
+func get_store_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	for item_id_variant in HEALER_STORE_ITEM_ORDER:
+		var item_id := String(item_id_variant).strip_edges().to_lower()
+		if item_id.is_empty():
+			continue
+		var item_data := _get_healer_store_definition(item_id)
+		if item_data.is_empty():
+			continue
+		entries.append({
+			"item_id": item_id,
+			"name": String(item_data.get("name", item_id)),
+			"description": String(item_data.get("description", "Healer upgrade.")),
+			"price": HEALER_ITEM_PRICE,
+			"owned": _is_store_item_owned(item_id)
+		})
+	return entries
+
+
+func purchase_store_item(item_id: String) -> Dictionary:
+	var normalized_item_id := item_id.strip_edges().to_lower()
+	if normalized_item_id.is_empty() or _get_healer_store_definition(normalized_item_id).is_empty():
+		return {
+			"success": false,
+			"reason": "Item unavailable.",
+			"gold_total": get_gold_total()
+		}
+	if _is_store_item_owned(normalized_item_id):
+		return {
+			"success": false,
+			"reason": "Already owned.",
+			"gold_total": get_gold_total()
+		}
+	if get_gold_total() < HEALER_ITEM_PRICE:
+		return {
+			"success": false,
+			"reason": "Not enough gold.",
+			"gold_total": get_gold_total()
+		}
+	if not _spend_shared_gold(HEALER_ITEM_PRICE):
+		return {
+			"success": false,
+			"reason": "Unable to spend gold.",
+			"gold_total": get_gold_total()
+		}
+	var granted := _grant_store_item(normalized_item_id)
+	if not granted:
+		return {
+			"success": false,
+			"reason": "Grant failed.",
+			"gold_total": get_gold_total()
+		}
+	var item_data := _get_healer_store_definition(normalized_item_id)
+	return {
+		"success": true,
+		"item_id": normalized_item_id,
+		"item_name": String(item_data.get("name", normalized_item_id)),
+		"price": HEALER_ITEM_PRICE,
+		"gold_total": get_gold_total()
+	}
+
+
+func _is_store_item_owned(item_id: String) -> bool:
+	if HEALER_WEAPON_DEFINITIONS.has(item_id):
+		return available_weapon_ids.find(item_id) != -1
+	if HEALER_TRINKET_DEFINITIONS.has(item_id):
+		return available_trinket_ids.find(item_id) != -1
+	if HEALER_BOOT_DEFINITIONS.has(item_id):
+		return available_boot_ids.find(item_id) != -1
+	return false
+
+
+func _get_healer_store_definition(item_id: String) -> Dictionary:
+	if HEALER_WEAPON_DEFINITIONS.has(item_id):
+		return (HEALER_WEAPON_DEFINITIONS[item_id] as Dictionary).duplicate(true)
+	if HEALER_TRINKET_DEFINITIONS.has(item_id):
+		return (HEALER_TRINKET_DEFINITIONS[item_id] as Dictionary).duplicate(true)
+	if HEALER_BOOT_DEFINITIONS.has(item_id):
+		return (HEALER_BOOT_DEFINITIONS[item_id] as Dictionary).duplicate(true)
+	return {}
+
+
+func _spend_shared_gold(amount: int) -> bool:
+	if amount <= 0:
+		return true
+	if not is_instance_valid(player):
+		return false
+	var current_gold := maxi(0, int(player.gold_total))
+	if current_gold < amount:
+		return false
+	player.gold_total = maxi(0, current_gold - amount)
+	return true
+
+
+func _grant_store_item(item_id: String) -> bool:
+	if HEALER_WEAPON_DEFINITIONS.has(item_id):
+		if available_weapon_ids.find(item_id) == -1:
+			available_weapon_ids.append(item_id)
+		if equipped_weapon_id.is_empty():
+			equipped_weapon_id = item_id
+		_sort_healer_owned_items()
+		return true
+	if HEALER_TRINKET_DEFINITIONS.has(item_id):
+		if available_trinket_ids.find(item_id) == -1:
+			available_trinket_ids.append(item_id)
+		if equipped_trinket_id.is_empty():
+			equipped_trinket_id = item_id
+		_sort_healer_owned_items()
+		return true
+	if HEALER_BOOT_DEFINITIONS.has(item_id):
+		if available_boot_ids.find(item_id) == -1:
+			available_boot_ids.append(item_id)
+		_sort_healer_owned_items()
+		return true
+	return false
+
+
+func get_manual_control_cooldown_state() -> Dictionary:
+	var special_ratio := _get_special_meter_ratio()
+	var special_ready := special_ratio >= 0.999
+	return {
+		"ability_layout": "healer",
+		"basic": light_bolt_cooldown_left,
+		"basic_unlocked": light_bolt_enabled,
+		"quick_heal": basic_heal_cooldown_left,
+		"quick_heal_unlocked": true,
+		"ability_1": harpoon_cooldown_left,
+		"ability_1_unlocked": harpoon_enabled,
+		"harpoon_charging": harpoon_charge_active,
+		"harpoon_charge_ratio": _get_harpoon_charge_ratio_from_time(harpoon_charge_time) if harpoon_charge_active else 0.0,
+		"ability_2": tidal_wave_cooldown_left,
+		"ability_2_unlocked": tidal_wave_enabled and special_ready,
+		"roll": roll_cooldown_left,
+		"roll_unlocked": true,
+		"block_active": false,
+		"block_cooldown_left": big_heal_cooldown_left,
+		"counter_unlocked": true,
+		"counter_ready": special_ready,
+		"counter_window_left": 0.0,
+		"special_meter_ratio": special_ratio
+	}
+
+
+func _initialize_default_equipment_inventory() -> void:
+	available_weapon_ids.clear()
+	equipped_weapon_id = ""
+	available_trinket_ids.clear()
+	equipped_trinket_id = ""
+	available_boot_ids.clear()
+
+
+func _is_equipped_healer_weapon(weapon_id: String) -> bool:
+	return not weapon_id.is_empty() and equipped_weapon_id == weapon_id
+
+
+func _is_equipped_healer_trinket(trinket_id: String) -> bool:
+	return not trinket_id.is_empty() and equipped_trinket_id == trinket_id
+
+
+func _has_healer_boot(boot_id: String) -> bool:
+	return not boot_id.is_empty() and available_boot_ids.find(boot_id) != -1
+
+
+func _get_equipped_healer_weapon_data() -> Dictionary:
+	if equipped_weapon_id.is_empty() or not HEALER_WEAPON_DEFINITIONS.has(equipped_weapon_id):
+		return {}
+	return (HEALER_WEAPON_DEFINITIONS[equipped_weapon_id] as Dictionary).duplicate(true)
+
+
+func _get_equipped_healer_trinket_data() -> Dictionary:
+	if equipped_trinket_id.is_empty() or not HEALER_TRINKET_DEFINITIONS.has(equipped_trinket_id):
+		return {}
+	return (HEALER_TRINKET_DEFINITIONS[equipped_trinket_id] as Dictionary).duplicate(true)
+
+
+func _get_healer_move_speed_multiplier() -> float:
+	if not _has_healer_boot("foamstep_boots"):
+		return 1.0
+	var boot_data := HEALER_BOOT_DEFINITIONS.get("foamstep_boots", {}) as Dictionary
+	return maxf(1.0, float(boot_data.get("move_speed_multiplier", 1.0)))
+
+
+func _get_healer_roll_cooldown_multiplier() -> float:
+	if not _has_healer_boot("blinkstep_boots"):
+		return 1.0
+	var boot_data := HEALER_BOOT_DEFINITIONS.get("blinkstep_boots", {}) as Dictionary
+	return clampf(float(boot_data.get("roll_cooldown_multiplier", 1.0)), 0.1, 1.0)
+
+
+func _get_healer_roll_speed_multiplier() -> float:
+	if not _has_healer_boot("blinkstep_boots"):
+		return 1.0
+	var boot_data := HEALER_BOOT_DEFINITIONS.get("blinkstep_boots", {}) as Dictionary
+	return maxf(1.0, float(boot_data.get("roll_speed_multiplier", 1.0)))
+
+
+func _get_healer_harpoon_cooldown_multiplier() -> float:
+	if not _has_healer_boot("tidegrip_boots"):
+		return 1.0
+	var boot_data := HEALER_BOOT_DEFINITIONS.get("tidegrip_boots", {}) as Dictionary
+	return clampf(float(boot_data.get("harpoon_cooldown_multiplier", 1.0)), 0.1, 1.0)
+
+
+func _get_healer_harpoon_reel_speed_multiplier() -> float:
+	if not _has_healer_boot("tidegrip_boots"):
+		return 1.0
+	var boot_data := HEALER_BOOT_DEFINITIONS.get("tidegrip_boots", {}) as Dictionary
+	return maxf(1.0, float(boot_data.get("harpoon_reel_speed_multiplier", 1.0)))
+
+
+func _get_healer_special_meter_gain_multiplier() -> float:
+	var trinket_data := _get_equipped_healer_trinket_data()
+	if trinket_data.is_empty():
+		return 1.0
+	return maxf(0.1, float(trinket_data.get("special_gain_multiplier", 1.0)))
+
+
+func _is_cast_uninterruptible_from_trinket() -> bool:
+	var trinket_data := _get_equipped_healer_trinket_data()
+	if trinket_data.is_empty():
+		return false
+	return bool(trinket_data.get("cast_uninterruptible", false))
+
+
+func _get_cast_damage_multiplier_from_trinket() -> float:
+	var trinket_data := _get_equipped_healer_trinket_data()
+	if trinket_data.is_empty():
+		return 1.0
+	return clampf(float(trinket_data.get("cast_damage_multiplier", 1.0)), 0.1, 1.0)
+
+
+func _sort_healer_owned_items() -> void:
+	available_weapon_ids = _sort_ids_by_order(available_weapon_ids, HEALER_WEAPON_ORDER)
+	available_trinket_ids = _sort_ids_by_order(available_trinket_ids, HEALER_TRINKET_ORDER)
+	available_boot_ids = _sort_ids_by_order(available_boot_ids, HEALER_BOOT_ORDER)
+
+
+func _sort_ids_by_order(ids: Array[String], ordered_ids: Array[String]) -> Array[String]:
+	var sorted: Array[String] = []
+	for ordered_id in ordered_ids:
+		if ids.find(ordered_id) != -1:
+			sorted.append(ordered_id)
+	for id in ids:
+		if sorted.find(id) == -1:
+			sorted.append(id)
+	return sorted
 
 
 func _bind_player(target_player: Player) -> void:
@@ -475,7 +1204,7 @@ func _handle_marked_lunge_threat(delta: float) -> bool:
 		position = _clamp_to_bounds(position)
 		return true
 
-	var speed := maxf(18.0, move_speed * maxf(0.1, marked_lunge_move_speed_multiplier))
+	var speed := maxf(18.0, move_speed * _get_healer_move_speed_multiplier() * maxf(0.1, marked_lunge_move_speed_multiplier))
 	var move_dir := to_safe.normalized()
 	if use_player_like_movement:
 		move_dir = _quantize_player_like_direction(move_dir)
@@ -495,12 +1224,8 @@ func _update_healer_ai_state(delta: float, primary_enemy: EnemyBase) -> void:
 	if _is_breath_threat_active():
 		_set_healer_ai_state(HealerAIState.BREATH_STACK, primary_enemy if primary_enemy != null else player)
 		return
-	var marked_target := _find_marked_ally_under_threat()
-	if marked_target != null:
-		_set_healer_ai_state(HealerAIState.SHIELDING, marked_target)
-		return
 
-	var heal_target := _find_best_heal_target()
+	var heal_target := _find_best_heal_target(false)
 	if heal_target != null:
 		_set_healer_ai_state(HealerAIState.HEALING, heal_target)
 		return
@@ -523,35 +1248,6 @@ func _set_healer_ai_state(next_state: HealerAIState, next_target: Node2D) -> voi
 	healer_ai_state = next_state
 	healer_ai_state_name = String(HEALER_AI_STATE_NAMES.get(next_state, "IDLE_SUPPORT"))
 	healer_ai_target = next_target
-
-
-func _find_marked_ally_under_threat() -> Node2D:
-	var best_target: Node2D = null
-	var best_distance_sq := INF
-	var best_enemy_id := INF
-	var missing_health_threshold := maxf(0.01, min_missing_health_to_heal)
-	for enemy_node in get_tree().get_nodes_in_group("enemies"):
-		var enemy := enemy_node as EnemyBase
-		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
-			continue
-		if not enemy.has_method("is_lunge_threatening_marked_ally"):
-			continue
-		if not bool(enemy.call("is_lunge_threatening_marked_ally")):
-			continue
-		if not enemy.has_method("get_marked_ally_node"):
-			continue
-		var marked_target := enemy.call("get_marked_ally_node") as Node2D
-		if not _is_valid_support_target(marked_target):
-			continue
-		if _get_missing_health(marked_target) < missing_health_threshold:
-			continue
-		var distance_sq := global_position.distance_squared_to(marked_target.global_position)
-		var enemy_id := enemy.get_instance_id()
-		if best_target == null or distance_sq < best_distance_sq or (is_equal_approx(distance_sq, best_distance_sq) and enemy_id < best_enemy_id):
-			best_target = marked_target
-			best_distance_sq = distance_sq
-			best_enemy_id = enemy_id
-	return best_target
 
 
 func _is_valid_support_target(target: Node2D) -> bool:
@@ -630,29 +1326,18 @@ func _try_begin_ai_cast() -> void:
 	pending_cast_target = null
 	match healer_ai_state:
 		HealerAIState.HEALING:
-			var heal_target := _resolve_heal_target(healer_ai_target)
+			var heal_target := _resolve_heal_target(healer_ai_target, false)
 			var wave_attack_target := _find_healer_attack_target()
 			if _should_cast_tidal_wave(wave_attack_target):
 				_queue_cast_action(CastAction.TIDAL_WAVE, wave_attack_target, 0.08)
 				return
 			if basic_heal_cooldown_left <= 0.0:
-				if _can_cast_basic_heal_on_target(heal_target):
+				if _can_cast_basic_heal_on_target(heal_target, false):
 					_queue_cast_action(CastAction.QUICK_HEAL, heal_target, 0.08)
 				else:
 					heal_timer_left = 0.08
 				return
 			heal_timer_left = maxf(0.08, basic_heal_cooldown_left)
-			return
-		HealerAIState.SHIELDING:
-			var shield_target := _resolve_support_target(healer_ai_target)
-			var missing_health_threshold := maxf(0.01, min_missing_health_to_heal)
-			if _get_missing_health(shield_target) < missing_health_threshold:
-				heal_timer_left = 0.08
-				return
-			if shield_cooldown_left <= 0.0 and _can_cast_shield_on_target(shield_target):
-				_queue_cast_action(CastAction.PROTECTIVE_SHIELD, shield_target, 0.08)
-				return
-			heal_timer_left = maxf(0.08, shield_cooldown_left)
 			return
 		HealerAIState.ATTACKING:
 			var attack_target := _resolve_attack_target(healer_ai_target)
@@ -666,8 +1351,8 @@ func _try_begin_ai_cast() -> void:
 			return
 		_:
 			pass
-	var fallback_heal_target := _find_best_heal_target()
-	if basic_heal_cooldown_left <= 0.0 and _can_cast_basic_heal_on_target(fallback_heal_target):
+	var fallback_heal_target := _find_best_heal_target(false)
+	if basic_heal_cooldown_left <= 0.0 and _can_cast_basic_heal_on_target(fallback_heal_target, false):
 		_queue_cast_action(CastAction.QUICK_HEAL, fallback_heal_target, 0.14)
 		return
 	if _is_healing_ability_ready():
@@ -677,13 +1362,23 @@ func _try_begin_ai_cast() -> void:
 
 
 func _queue_cast_action(action: CastAction, target: Node2D, next_timer: float) -> void:
+	var selected_target := target
+	if action == CastAction.QUICK_HEAL or action == CastAction.BIG_HEAL:
+		var allow_full_health_heal_targets := _should_allow_full_health_heal_targets()
+		var nearest_heal_target := _find_best_heal_target(allow_full_health_heal_targets)
+		if nearest_heal_target != null:
+			selected_target = nearest_heal_target
+		else:
+			selected_target = _resolve_heal_target(target, allow_full_health_heal_targets)
 	pending_cast_action = action
-	pending_cast_target = target
-	_log_cast_event("QUEUE", action, target)
+	pending_cast_target = selected_target
+	if action == CastAction.LIGHT_BOLT or action == CastAction.TIDAL_WAVE:
+		_face_target(selected_target)
+	_log_cast_event("QUEUE", action, selected_target)
 	if cast_debug_logging_enabled and action == CastAction.TIDAL_WAVE:
-		var evaluation := _evaluate_tidal_wave_targets(target)
+		var evaluation := _evaluate_tidal_wave_targets(selected_target)
 		print("[HEALER_CAST] TIDAL_WAVE_EVAL target=%s enemies=%d allies=%d injured_allies=%d target_in_lane=%s dir=%.0f" % [
-			target.name if target != null and is_instance_valid(target) else "None",
+			selected_target.name if selected_target != null and is_instance_valid(selected_target) else "None",
 			int(evaluation.get("enemy_hits", 0)),
 			int(evaluation.get("ally_hits", 0)),
 			int(evaluation.get("injured_allies", 0)),
@@ -723,6 +1418,8 @@ func _begin_cast() -> void:
 	cast_anim_time = 0.0
 	heal_applied_this_cast = false
 	move_velocity = Vector2.ZERO
+	if pending_cast_action == CastAction.LIGHT_BOLT or pending_cast_action == CastAction.TIDAL_WAVE:
+		_face_target(pending_cast_target)
 	_set_anim_frame("cast", 0)
 	_spawn_cast_flash(global_position + Vector2(0.0, -18.0))
 
@@ -756,6 +1453,8 @@ func _tick_cast(delta: float) -> void:
 func _get_cast_time_multiplier_for_action(action: CastAction) -> float:
 	if action == CastAction.QUICK_HEAL:
 		return maxf(0.1, quick_heal_cast_time_multiplier)
+	if action == CastAction.BIG_HEAL:
+		return maxf(0.1, quick_heal_cast_time_multiplier * maxf(0.1, big_heal_cast_time_multiplier))
 	return 1.0
 
 
@@ -763,6 +1462,10 @@ func _player_needs_healing() -> bool:
 	if not is_instance_valid(player):
 		return false
 	return player.needs_healing(heal_threshold_ratio)
+
+
+func _should_allow_full_health_heal_targets() -> bool:
+	return manual_control_enabled
 
 
 func _is_valid_heal_target(target: Node2D) -> bool:
@@ -774,9 +1477,7 @@ func _is_valid_heal_target(target: Node2D) -> bool:
 		return false
 	if _is_marked_target_waiting_for_damage(target):
 		return false
-	if not bool(target.call("needs_healing", heal_threshold_ratio)):
-		return false
-	return _get_missing_health(target) >= maxf(0.01, min_missing_health_to_heal)
+	return true
 
 
 func _is_marked_target_waiting_for_damage(target: Node2D) -> bool:
@@ -815,40 +1516,59 @@ func _get_missing_health(target: Node2D) -> float:
 	return maxf(0.0, target_max_health - target_current_health)
 
 
-func _find_best_heal_target() -> Node2D:
+func _is_heal_target_injured(target: Node2D) -> bool:
+	return _get_missing_health(target) > 0.001
+
+
+func _find_best_heal_target(allow_full_health_targets: bool = true) -> Node2D:
+	# Healing casts lock to the nearest valid ally at cast start.
 	var best_target: Node2D = null
-	var best_health_ratio := INF
+	var best_distance_sq := INF
 	var best_id := INF
+	var candidates := _collect_heal_target_candidates(false, allow_full_health_targets)
+	for candidate in candidates:
+		if candidate == null or not is_instance_valid(candidate):
+			continue
+		var distance_sq := global_position.distance_squared_to(candidate.global_position)
+		var candidate_id := candidate.get_instance_id()
+		if best_target == null or distance_sq < best_distance_sq - 0.0001 or (is_equal_approx(distance_sq, best_distance_sq) and candidate_id < best_id):
+			best_target = candidate
+			best_distance_sq = distance_sq
+			best_id = candidate_id
+	if best_target != null:
+		return best_target
+	if _is_valid_heal_target(self) and (allow_full_health_targets or _is_heal_target_injured(self)):
+		return self
+	return null
+
+
+func _collect_heal_target_candidates(include_self: bool = false, allow_full_health_targets: bool = true) -> Array[Node2D]:
 	var candidates: Array[Node2D] = []
-	if player != null:
-		candidates.append(player)
+	if is_instance_valid(player) and _is_valid_heal_target(player):
+		if allow_full_health_targets or _is_heal_target_injured(player):
+			candidates.append(player)
 	for node in get_tree().get_nodes_in_group("friendly_npcs"):
 		var candidate := node as Node2D
+		if candidate == null or not is_instance_valid(candidate):
+			continue
+		if not include_self and candidate == self:
+			continue
 		if not _is_valid_heal_target(candidate):
+			continue
+		if not allow_full_health_targets and not _is_heal_target_injured(candidate):
 			continue
 		candidates.append(candidate)
-	for candidate in candidates:
-		if not _is_valid_heal_target(candidate):
-			continue
-		var candidate_max_health := maxf(1.0, float(candidate.get("max_health")))
-		var candidate_health := clampf(float(candidate.get("current_health")), 0.0, candidate_max_health)
-		var ratio := candidate_health / candidate_max_health
-		var candidate_id := candidate.get_instance_id()
-		if best_target == null or ratio < best_health_ratio - 0.0001 or (is_equal_approx(ratio, best_health_ratio) and candidate_id < best_id):
-			best_target = candidate
-			best_health_ratio = ratio
-			best_id = candidate_id
-	return best_target
+	return candidates
 
 
-func _resolve_heal_target(preferred_target: Node2D = null) -> Node2D:
-	if _is_valid_heal_target(preferred_target):
+func _resolve_heal_target(preferred_target: Node2D = null, allow_full_health_targets: bool = true) -> Node2D:
+	if _is_valid_heal_target(preferred_target) and (allow_full_health_targets or _is_heal_target_injured(preferred_target)):
 		return preferred_target
 	var state_target := healer_ai_target
-	if _is_valid_heal_target(state_target):
+	if _is_valid_heal_target(state_target) and (allow_full_health_targets or _is_heal_target_injured(state_target)):
 		return state_target
-	var fallback_target := _find_best_heal_target()
-	if _is_valid_heal_target(fallback_target):
+	var fallback_target := _find_best_heal_target(allow_full_health_targets)
+	if _is_valid_heal_target(fallback_target) and (allow_full_health_targets or _is_heal_target_injured(fallback_target)):
 		return fallback_target
 	return null
 
@@ -859,17 +1579,13 @@ func _is_in_basic_heal_range(target: Node2D) -> bool:
 	return global_position.distance_to(target.global_position) <= maxf(16.0, basic_heal_range)
 
 
-func _can_cast_basic_heal_on_target(target: Node2D) -> bool:
-	var resolved_target := _resolve_heal_target(target)
+func _can_cast_basic_heal_on_target(target: Node2D, allow_full_health_targets: bool = true) -> bool:
+	var resolved_target := _resolve_heal_target(target, allow_full_health_targets)
 	if resolved_target == null:
 		return false
+	if not allow_full_health_targets and not _is_heal_target_injured(resolved_target):
+		return false
 	return _is_in_basic_heal_range(resolved_target)
-
-
-func _resolve_support_target(preferred_target: Node2D = null) -> Node2D:
-	if _is_valid_support_target(preferred_target):
-		return preferred_target
-	return _find_marked_ally_under_threat()
 
 
 func _resolve_attack_target(preferred_target: Node2D = null) -> EnemyBase:
@@ -879,40 +1595,28 @@ func _resolve_attack_target(preferred_target: Node2D = null) -> EnemyBase:
 	return _find_healer_attack_target()
 
 
-func _can_cast_shield_on_target(target: Node2D) -> bool:
-	var resolved_target := _resolve_support_target(target)
-	if resolved_target == null:
-		return false
-	return global_position.distance_squared_to(resolved_target.global_position) <= shield_cast_range * shield_cast_range
-
-
 func _can_cast_light_bolt_on_target(target: Node2D) -> bool:
 	var resolved_target := _resolve_attack_target(target)
-	if resolved_target == null:
+	if resolved_target != null and _is_enemy_shadow_feared(resolved_target):
 		return false
-	if _is_enemy_shadow_feared(resolved_target):
-		return false
-	return global_position.distance_squared_to(resolved_target.global_position) <= light_bolt_range * light_bolt_range
+	return true
 
 
 func _can_cast_tidal_wave_on_target(target: Node2D) -> bool:
 	if not tidal_wave_enabled:
 		return false
+	if not _is_special_meter_full():
+		return false
 	var resolved_target := _resolve_attack_target(target)
 	if resolved_target == null:
-		return false
-	var evaluation := _evaluate_tidal_wave_targets(resolved_target)
-	if int(evaluation.get("enemy_hits", 0)) <= 0:
-		return false
-	if int(evaluation.get("injured_allies", 0)) <= 0:
-		return false
-	if not bool(evaluation.get("target_in_lane", false)):
 		return false
 	return true
 
 
 func _should_cast_tidal_wave(target: Node2D) -> bool:
-	if not tidal_wave_enabled or tidal_wave_cooldown_left > 0.0:
+	if not tidal_wave_enabled:
+		return false
+	if not _is_special_meter_full():
 		return false
 	var resolved_target := _resolve_attack_target(target)
 	if resolved_target == null:
@@ -930,15 +1634,19 @@ func _should_cast_tidal_wave(target: Node2D) -> bool:
 func _should_prepare_tidal_wave(target: Node2D) -> bool:
 	if not tidal_wave_enabled:
 		return false
-	if tidal_wave_cooldown_left > 0.3:
+	if not _is_special_meter_full():
 		return false
 	if _resolve_attack_target(target) == null:
 		return false
 	return _find_best_tidal_wave_heal_target(target) != null
 
 
-func _apply_heal(target: Node2D = null) -> bool:
-	var heal_target := _resolve_heal_target(target)
+func _apply_heal(target: Node2D = null, amount_multiplier: float = 1.0) -> bool:
+	var heal_target := _resolve_heal_target(target, _should_allow_full_health_heal_targets())
+	return _apply_heal_to_locked_target(heal_target, amount_multiplier)
+
+
+func _apply_heal_to_locked_target(heal_target: Node2D, amount_multiplier: float = 1.0) -> bool:
 	if heal_target == null:
 		return false
 	if not _is_valid_heal_target(heal_target):
@@ -946,14 +1654,87 @@ func _apply_heal(target: Node2D = null) -> bool:
 	if not _is_in_basic_heal_range(heal_target):
 		return false
 
-	var target_world := heal_target.global_position + Vector2(0.0, -16.0)
-	var healed := bool(heal_target.call("receive_heal", heal_amount))
-	if not healed:
+	var final_heal_amount := maxf(0.0, heal_amount * maxf(0.0, amount_multiplier))
+	if final_heal_amount <= 0.0:
 		return false
-	EnemyBase.add_healing_threat_to_active_enemies(self, heal_amount)
+	var weapon_data := _get_equipped_healer_weapon_data()
+	var target_world := heal_target.global_position + Vector2(0.0, -16.0)
+	var target_health_before := _get_target_current_health(heal_target)
+	var healed := bool(heal_target.call("receive_heal", final_heal_amount))
+	var target_health_after := _get_target_current_health(heal_target)
+	var recovered_health := maxf(0.0, target_health_after - target_health_before)
 	_spawn_heal_beam(global_position + Vector2(0.0, -18.0), target_world, healed)
 	_spawn_heal_burst(target_world, healed)
-	return healed
+	if recovered_health > 0.0:
+		_spawn_heal_number_popup(target_world + Vector2(0.0, combat_number_popup_head_offset_y * 0.28), recovered_health)
+	if healed:
+		EnemyBase.add_healing_threat_to_active_enemies(self, final_heal_amount)
+		add_special_meter_from_heal(final_heal_amount)
+		var bolt_refund := maxf(0.0, float(weapon_data.get("bolt_cooldown_refund_on_heal", 0.0)))
+		if bolt_refund > 0.0:
+			light_bolt_cooldown_left = maxf(0.0, light_bolt_cooldown_left - bolt_refund)
+		var chain_ratio := clampf(float(weapon_data.get("chain_heal_ratio", 0.0)), 0.0, 1.0)
+		if chain_ratio > 0.0:
+			_apply_chain_heal_from_target(heal_target, final_heal_amount * chain_ratio)
+	return true
+
+
+func _apply_chain_heal_from_target(primary_target: Node2D, chain_heal_amount: float) -> void:
+	if chain_heal_amount <= 0.0:
+		return
+	var secondary_target := _find_chain_heal_target(primary_target)
+	if secondary_target == null:
+		return
+	var source_position := primary_target.global_position + Vector2(0.0, -16.0)
+	var secondary_position := secondary_target.global_position + Vector2(0.0, -16.0)
+	var health_before := _get_target_current_health(secondary_target)
+	var healed := bool(secondary_target.call("receive_heal", chain_heal_amount))
+	var health_after := _get_target_current_health(secondary_target)
+	var healed_amount := maxf(0.0, health_after - health_before)
+	_spawn_heal_beam(source_position, secondary_position, true)
+	_spawn_heal_burst(secondary_position, healed)
+	if healed_amount > 0.0:
+		_spawn_heal_number_popup(secondary_position + Vector2(0.0, combat_number_popup_head_offset_y * 0.22), healed_amount)
+	if healed:
+		EnemyBase.add_healing_threat_to_active_enemies(self, chain_heal_amount)
+		add_special_meter_from_heal(chain_heal_amount)
+
+
+func _find_chain_heal_target(excluded_target: Node2D) -> Node2D:
+	var allow_full_health_targets := _should_allow_full_health_heal_targets()
+	var best_target: Node2D = null
+	var best_distance_sq := INF
+	var max_range_sq := maxf(16.0, basic_heal_range * 1.25)
+	max_range_sq *= max_range_sq
+	var candidates: Array[Node2D] = []
+	if is_instance_valid(player):
+		candidates.append(player)
+	for node in get_tree().get_nodes_in_group("friendly_npcs"):
+		var candidate := node as Node2D
+		if candidate == null or not is_instance_valid(candidate):
+			continue
+		if candidate == self:
+			candidates.append(candidate)
+			continue
+		if not _is_valid_support_target(candidate):
+			continue
+		candidates.append(candidate)
+	for candidate in candidates:
+		if candidate == null or not is_instance_valid(candidate):
+			continue
+		if excluded_target != null and is_instance_valid(excluded_target) and candidate.get_instance_id() == excluded_target.get_instance_id():
+			continue
+		if not _is_valid_heal_target(candidate):
+			continue
+		if not allow_full_health_targets and not _is_heal_target_injured(candidate):
+			continue
+		var distance_sq := candidate.global_position.distance_squared_to(global_position)
+		if distance_sq > max_range_sq:
+			continue
+		if best_target == null or distance_sq < best_distance_sq:
+			best_target = candidate
+			best_distance_sq = distance_sq
+	return best_target
 
 
 func needs_healing(threshold_ratio: float = 0.999) -> bool:
@@ -980,24 +1761,31 @@ func receive_heal(amount: float) -> bool:
 
 func revive_at_full_health() -> void:
 	dead = false
+	is_rolling = false
+	roll_invulnerable = false
+	roll_time_left = 0.0
+	roll_vector = Vector2.ZERO
 	is_casting = false
 	heal_applied_this_cast = false
 	pending_cast_action = CastAction.NONE
 	pending_cast_target = null
 	current_health = maxf(1.0, max_health)
+	special_meter = 0.0
 	stun_left = 0.0
 	hit_flash_left = 0.0
 	heal_flash_left = 0.0
 	knockback_velocity = Vector2.ZERO
 	death_anim_time = 0.0
 	death_cleanup_started = false
-	active_shield_target_id = -1
-	active_shield_left = 0.0
 	marked_lunge_panic_left = 0.0
 	marked_lunge_enemy_id = -1
 	breath_threat_snapshot = {}
 	breath_safe_indicator_left = 0.0
+	big_heal_cooldown_left = 0.0
+	harpoon_cooldown_left = 0.0
+	_cancel_harpoon_state()
 	_clear_tidal_waves()
+	_setup_harpoon_visuals()
 	if not is_instance_valid(health_bar_root):
 		_setup_health_bar()
 	if is_instance_valid(sprite):
@@ -1010,8 +1798,13 @@ func revive_at_full_health() -> void:
 func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = false, stun_duration: float = 0.0, knockback_scale: float = 1.0) -> bool:
 	if dead:
 		return false
+	if roll_invulnerable:
+		return false
 	if amount <= 0.0:
 		return false
+	var final_amount := amount
+	if is_casting:
+		final_amount *= _get_cast_damage_multiplier_from_trinket()
 	if is_instance_valid(player) and player.is_point_inside_block_shield(global_position):
 		_spawn_heal_burst(global_position + Vector2(0.0, -14.0), true)
 		return false
@@ -1022,10 +1815,10 @@ func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = f
 	knockback_velocity = knockback_direction * maxf(0.0, hit_knockback_speed) * maxf(0.1, knockback_scale)
 	stun_left = maxf(stun_left, maxf(hit_stun_duration, stun_duration))
 	hit_flash_left = 0.12
-	current_health = maxf(0.0, current_health - amount)
+	current_health = maxf(0.0, current_health - final_amount)
 	health_changed.emit(current_health, max_health)
 	_update_health_bar()
-	if is_casting:
+	if is_casting and not _is_cast_uninterruptible_from_trinket():
 		is_casting = false
 		cast_anim_time = 0.0
 		heal_applied_this_cast = false
@@ -1035,48 +1828,167 @@ func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = f
 	return true
 
 
-func get_shield_damage_multiplier_for(target: Node2D) -> float:
-	if active_shield_left <= 0.0:
-		return 1.0
-	if target == null or not is_instance_valid(target):
-		return 1.0
-	if target.get_instance_id() != active_shield_target_id:
-		return 1.0
-	return clampf(shield_damage_multiplier, 0.05, 1.0)
-
-
-func _apply_protective_shield(target: Node2D) -> bool:
-	var shield_target := _resolve_support_target(target)
-	if shield_target == null:
-		return false
-	if not _can_cast_shield_on_target(shield_target):
-		return false
-	active_shield_target_id = shield_target.get_instance_id()
-	active_shield_left = maxf(0.1, shield_duration)
-	shield_cooldown_left = maxf(0.0, shield_cooldown)
-	var burst_position := shield_target.global_position + Vector2(0.0, -14.0)
-	_spawn_heal_burst(burst_position, false)
-	_spawn_heal_beam(global_position + Vector2(0.0, -16.0), burst_position, false)
-	return true
-
-
 func _apply_light_bolt(target: Node2D) -> bool:
 	var bolt_target := _resolve_attack_target(target)
-	if bolt_target == null:
-		return false
-	if _is_enemy_shadow_feared(bolt_target):
+	if bolt_target != null and _is_enemy_shadow_feared(bolt_target):
 		return false
 	if not _can_cast_light_bolt_on_target(bolt_target):
 		return false
-	var hit_origin := global_position + Vector2(0.0, -16.0)
-	var hit_position := bolt_target.global_position + Vector2(0.0, -12.0)
-	_spawn_heal_beam(hit_origin, hit_position, false)
-	_spawn_heal_burst(hit_position, false)
-	var landed := bolt_target.receive_hit(light_bolt_damage, global_position, light_bolt_stun_duration, true, 0.88, self)
-	if landed and bolt_target.has_method("apply_hitstop"):
-		bolt_target.apply_hitstop(maxf(0.0, light_bolt_hitstop_duration))
+	var projectile_origin := global_position + Vector2(0.0, -16.0)
+	var direction_sign := _resolve_light_bolt_direction_sign(bolt_target)
+	if not _spawn_light_bolt_projectile(projectile_origin, direction_sign, bolt_target):
+		return false
+	_spawn_heal_burst(projectile_origin + Vector2(direction_sign * 6.0, 0.0), false)
 	light_bolt_cooldown_left = maxf(0.0, light_bolt_cooldown)
-	return landed
+	return true
+
+
+func _resolve_light_bolt_direction_sign(target: EnemyBase) -> float:
+	if target != null and is_instance_valid(target):
+		var delta_x := target.global_position.x - global_position.x
+		if absf(delta_x) > 2.0:
+			return 1.0 if delta_x >= 0.0 else -1.0
+	return -1.0 if facing_left else 1.0
+
+
+func _face_target(target: Node2D) -> void:
+	if target == null or not is_instance_valid(target):
+		return
+	var delta_x := target.global_position.x - global_position.x
+	if absf(delta_x) <= 2.0:
+		return
+	facing_left = delta_x < 0.0
+	if is_instance_valid(sprite):
+		sprite.flip_h = facing_left
+
+
+func _spawn_light_bolt_projectile(spawn_position: Vector2, direction_sign: float, locked_target: EnemyBase) -> bool:
+	if HEALER_LIGHT_BOLT_PROJECTILE_SCRIPT == null:
+		return false
+	var projectile := HEALER_LIGHT_BOLT_PROJECTILE_SCRIPT.new()
+	if projectile == null:
+		return false
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		scene_root = get_parent()
+	if scene_root == null:
+		return false
+	var lane_min_x := -INF
+	var lane_max_x := INF
+	var travel_distance := maxf(24.0, light_bolt_range)
+	if is_instance_valid(player):
+		var lane_space := player.get_parent() as Node2D
+		if lane_space != null:
+			lane_min_x = lane_space.to_global(Vector2(player.lane_min_x + arena_padding, 0.0)).x
+			lane_max_x = lane_space.to_global(Vector2(player.lane_max_x - arena_padding, 0.0)).x
+		else:
+			lane_min_x = player.lane_min_x + arena_padding
+			lane_max_x = player.lane_max_x - arena_padding
+		if lane_min_x < lane_max_x:
+			var lane_travel_distance := travel_distance
+			if direction_sign >= 0.0:
+				lane_travel_distance = maxf(8.0, lane_max_x - spawn_position.x)
+			else:
+				lane_travel_distance = maxf(8.0, spawn_position.x - lane_min_x)
+			travel_distance = minf(travel_distance, lane_travel_distance)
+	var projectile_lifetime := maxf(0.1, light_bolt_projectile_max_lifetime)
+	if maxf(1.0, light_bolt_projectile_speed) > 0.0:
+		projectile_lifetime = maxf(projectile_lifetime, (travel_distance / maxf(1.0, light_bolt_projectile_speed)) + 0.2)
+	scene_root.add_child(projectile)
+	if projectile.has_method("setup"):
+		projectile.call(
+			"setup",
+			self,
+			spawn_position,
+			direction_sign,
+			maxf(1.0, light_bolt_projectile_speed),
+			maxf(24.0, travel_distance),
+			maxf(0.1, light_bolt_damage),
+			maxf(0.0, light_bolt_stun_duration),
+			maxf(0.1, light_bolt_projectile_knockback_scale),
+			maxf(0.0, light_bolt_hitstop_duration),
+			maxf(6.0, light_bolt_projectile_hit_radius),
+			projectile_lifetime,
+			lane_min_x,
+			lane_max_x,
+			locked_target
+		)
+	if projectile.has_method("set_hitbox_debug_enabled"):
+		projectile.call("set_hitbox_debug_enabled", hitbox_debug_enabled)
+	return true
+
+
+func _on_healer_light_bolt_projectile_hit(hit_enemy: EnemyBase, damage_dealt: float, hit_world_position: Vector2) -> void:
+	if hit_enemy == null or not is_instance_valid(hit_enemy):
+		return
+	var impact_position := hit_world_position
+	if impact_position == Vector2.ZERO:
+		impact_position = hit_enemy.global_position + Vector2(0.0, -12.0)
+	_spawn_heal_beam(global_position + Vector2(0.0, -16.0), impact_position, false)
+	_spawn_heal_burst(impact_position, false)
+	if damage_dealt > 0.0:
+		_spawn_damage_number_popup(impact_position + Vector2(0.0, combat_number_popup_head_offset_y * 0.2), damage_dealt)
+		add_special_meter_from_damage(damage_dealt)
+	var weapon_data := _get_equipped_healer_weapon_data()
+	var bolt_arc_ratio := clampf(float(weapon_data.get("bolt_arc_ratio", 0.0)), 0.0, 1.0)
+	if bolt_arc_ratio > 0.0:
+		_apply_light_bolt_arc(hit_enemy, light_bolt_damage * bolt_arc_ratio)
+
+
+func _apply_light_bolt_arc(primary_target: EnemyBase, arc_damage: float) -> void:
+	if primary_target == null or not is_instance_valid(primary_target) or primary_target.dead:
+		return
+	if arc_damage <= 0.0:
+		return
+	var secondary_target := _find_light_bolt_arc_target(primary_target)
+	if secondary_target == null:
+		return
+	var start := primary_target.global_position + Vector2(0.0, -12.0)
+	var end := secondary_target.global_position + Vector2(0.0, -12.0)
+	var health_before := _get_target_current_health(secondary_target)
+	_spawn_heal_beam(start, end, false)
+	_spawn_heal_burst(end, false)
+	var landed := secondary_target.receive_hit(
+		arc_damage,
+		global_position,
+		light_bolt_stun_duration * 0.75,
+		true,
+		0.82,
+		self
+	)
+	if not landed:
+		return
+	var health_after := _get_target_current_health(secondary_target)
+	var damage_dealt := maxf(0.0, health_before - health_after)
+	if damage_dealt > 0.0:
+		_spawn_damage_number_popup(end + Vector2(0.0, combat_number_popup_head_offset_y * 0.2), damage_dealt)
+	add_special_meter_from_damage(arc_damage)
+	if secondary_target.has_method("apply_hitstop"):
+		secondary_target.apply_hitstop(maxf(0.0, light_bolt_hitstop_duration * 0.7))
+
+
+func _find_light_bolt_arc_target(primary_target: EnemyBase) -> EnemyBase:
+	if primary_target == null or not is_instance_valid(primary_target):
+		return null
+	var best_target: EnemyBase = null
+	var best_distance_sq := INF
+	var max_arc_range_sq := 132.0 * 132.0
+	var primary_id := primary_target.get_instance_id()
+	for enemy_node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := enemy_node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if enemy.get_instance_id() == primary_id:
+			continue
+		if _is_enemy_shadow_feared(enemy):
+			continue
+		var distance_sq := enemy.global_position.distance_squared_to(primary_target.global_position)
+		if distance_sq > max_arc_range_sq:
+			continue
+		if best_target == null or distance_sq < best_distance_sq:
+			best_target = enemy
+			best_distance_sq = distance_sq
+	return best_target
 
 
 func _trigger_healing_ability() -> void:
@@ -1084,13 +1996,14 @@ func _trigger_healing_ability() -> void:
 	_log_cast_event("RESOLVE", pending_cast_action, cast_target)
 	match pending_cast_action:
 		CastAction.QUICK_HEAL:
-			if basic_heal_cooldown_left <= 0.0 and _apply_heal(cast_target):
+			if basic_heal_cooldown_left <= 0.0 and _apply_heal_to_locked_target(cast_target):
 				basic_heal_cooldown_left = maxf(0.0, basic_heal_cooldown)
-		CastAction.PROTECTIVE_SHIELD:
-			if shield_cooldown_left <= 0.0:
-				_apply_protective_shield(cast_target)
+		CastAction.BIG_HEAL:
+			if big_heal_cooldown_left <= 0.0 and _apply_heal_to_locked_target(cast_target, maxf(0.0, big_heal_amount_multiplier)):
+				big_heal_cooldown_left = maxf(0.0, big_heal_cooldown)
 		CastAction.TIDAL_WAVE:
-			if tidal_wave_enabled and tidal_wave_cooldown_left <= 0.0:
+			if tidal_wave_enabled and _is_special_meter_full():
+				_consume_special_meter()
 				_spawn_tidal_wave(cast_target)
 				tidal_wave_cooldown_left = maxf(0.0, tidal_wave_cooldown)
 		CastAction.LIGHT_BOLT:
@@ -1105,9 +2018,7 @@ func _trigger_healing_ability() -> void:
 func _is_healing_ability_ready() -> bool:
 	if basic_heal_cooldown_left <= 0.0:
 		return true
-	if shield_cooldown_left <= 0.0:
-		return true
-	if tidal_wave_enabled and tidal_wave_cooldown_left <= 0.0:
+	if tidal_wave_enabled and _is_special_meter_full():
 		return true
 	if light_bolt_enabled and light_bolt_cooldown_left <= 0.0:
 		return true
@@ -1116,8 +2027,7 @@ func _is_healing_ability_ready() -> bool:
 
 func _time_until_next_healing_ability_ready() -> float:
 	var next_ready := maxf(0.0, basic_heal_cooldown_left)
-	next_ready = minf(next_ready, maxf(0.0, shield_cooldown_left))
-	if tidal_wave_enabled:
+	if tidal_wave_enabled and _is_special_meter_full():
 		next_ready = minf(next_ready, maxf(0.0, tidal_wave_cooldown_left))
 	if light_bolt_enabled:
 		next_ready = minf(next_ready, maxf(0.0, light_bolt_cooldown_left))
@@ -1127,11 +2037,20 @@ func _time_until_next_healing_ability_ready() -> float:
 func _update_facing() -> void:
 	if not is_instance_valid(sprite):
 		return
-	if not is_instance_valid(player):
+	if not is_instance_valid(player) and not manual_control_enabled:
 		return
 	var move_threshold := maxf(0.0, move_facing_threshold)
 	if absf(move_velocity.x) >= move_threshold:
 		facing_left = move_velocity.x < 0.0
+	elif manual_control_enabled:
+		var attack_target := _find_healer_attack_target()
+		if attack_target != null and is_instance_valid(attack_target):
+			var delta_x_to_target := attack_target.global_position.x - global_position.x
+			var deadzone_manual := maxf(0.0, facing_flip_deadzone)
+			if delta_x_to_target > deadzone_manual:
+				facing_left = false
+			elif delta_x_to_target < -deadzone_manual:
+				facing_left = true
 	else:
 		var delta_x := player.position.x - position.x
 		var deadzone := maxf(0.0, facing_flip_deadzone)
@@ -1155,7 +2074,7 @@ func _quantize_player_like_direction(direction: Vector2) -> Vector2:
 func _should_quantize_player_like_move(enemy: EnemyBase) -> bool:
 	if healer_ai_state == HealerAIState.BREATH_STACK:
 		return true
-	if healer_ai_state == HealerAIState.HEALING or healer_ai_state == HealerAIState.SHIELDING or healer_ai_state == HealerAIState.ATTACKING:
+	if healer_ai_state == HealerAIState.HEALING or healer_ai_state == HealerAIState.ATTACKING:
 		return true
 	return enemy != null and is_instance_valid(enemy)
 
@@ -1184,18 +2103,8 @@ func _update_tactical_positioning(delta: float) -> void:
 			var scatter_world_position := COMPANION_BREATH_RESPONSE_SCRIPT.compute_scatter_position(breath_threat_snapshot, global_position, 0)
 			var scatter_local_position := shared_parent.to_local(scatter_world_position) if shared_parent != null else scatter_world_position
 			desired_position = _clamp_to_bounds(scatter_local_position)
-	elif healer_ai_state == HealerAIState.SHIELDING:
-		var shield_target := _resolve_support_target(healer_ai_target)
-		if shield_target != null and is_instance_valid(shield_target):
-			var shield_target_position := _get_position_in_actor_space(shield_target)
-			var to_target := shield_target_position - position
-			var desired_cast_distance := clampf(maxf(18.0, shield_cast_range - 20.0), 18.0, maxf(28.0, shield_cast_range))
-			if to_target.length() > desired_cast_distance:
-				desired_position = _clamp_to_bounds(shield_target_position - (to_target.normalized() * desired_cast_distance))
-			else:
-				desired_position = _clamp_to_bounds(shield_target_position + Vector2(-14.0, 10.0))
 	elif healer_ai_state == HealerAIState.HEALING:
-		var heal_target := _resolve_heal_target(healer_ai_target)
+		var heal_target := _resolve_heal_target(healer_ai_target, false)
 		var wave_attack_target := _find_healer_attack_target()
 		if _should_prepare_tidal_wave(wave_attack_target):
 			desired_position = _compute_tidal_wave_attack_position(wave_attack_target)
@@ -1210,7 +2119,7 @@ func _update_tactical_positioning(delta: float) -> void:
 			if to_attack_target.length() > desired_attack_distance:
 				desired_position = _clamp_to_bounds(attack_target_position - (to_attack_target.normalized() * desired_attack_distance))
 	healer_ai_desired_position = desired_position
-	var effective_speed := move_speed
+	var effective_speed := move_speed * _get_healer_move_speed_multiplier()
 	if is_casting:
 		effective_speed *= clampf(cast_move_speed_multiplier, 0.0, 1.0)
 	if healer_ai_state == HealerAIState.BREATH_STACK:
@@ -1777,13 +2686,19 @@ func _process_tidal_wave_hits(wave_state: Dictionary, wave_center: Vector2, wave
 			continue
 		if not friendly_target.has_method("receive_heal"):
 			continue
+		var friendly_health_before := _get_target_current_health(friendly_target)
 		var healed := bool(friendly_target.call("receive_heal", tidal_wave_heal_amount))
+		var friendly_health_after := _get_target_current_health(friendly_target)
+		var healed_amount := maxf(0.0, friendly_health_after - friendly_health_before)
 		healed_ids[friendly_id] = true
 		if healed:
 			EnemyBase.add_healing_threat_to_active_enemies(self, tidal_wave_heal_amount)
+			add_special_meter_from_heal(tidal_wave_heal_amount)
 			var burst_position := friendly_target.global_position + Vector2(0.0, -16.0)
 			_spawn_heal_burst(burst_position, true)
 			_spawn_heal_beam(wave_center, burst_position, true)
+			if healed_amount > 0.0:
+				_spawn_heal_number_popup(burst_position + Vector2(0.0, combat_number_popup_head_offset_y * 0.2), healed_amount)
 
 	for enemy_node in get_tree().get_nodes_in_group("enemies"):
 		var enemy := enemy_node as EnemyBase
@@ -1798,8 +2713,14 @@ func _process_tidal_wave_hits(wave_state: Dictionary, wave_center: Vector2, wave
 		if enemy_distance > tidal_wave_hit_half_width:
 			continue
 		hit_ids[enemy_id] = true
+		var enemy_health_before := _get_target_current_health(enemy)
 		var landed := enemy.receive_hit(tidal_wave_damage, wave_center, tidal_wave_stun_duration, true, tidal_wave_knockback_scale, self)
 		if landed:
+			var enemy_health_after := _get_target_current_health(enemy)
+			var damage_dealt := maxf(0.0, enemy_health_before - enemy_health_after)
+			if damage_dealt > 0.0:
+				_spawn_damage_number_popup(enemy.global_position + Vector2(0.0, combat_number_popup_head_offset_y), damage_dealt)
+			add_special_meter_from_damage(tidal_wave_damage)
 			if enemy.has_method("apply_hitstop"):
 				enemy.apply_hitstop(maxf(0.0, tidal_wave_hitstop_duration))
 			_spawn_heal_burst(enemy.global_position + Vector2(0.0, -12.0), false)
@@ -2096,6 +3017,11 @@ func _die() -> void:
 	if dead:
 		return
 	dead = true
+	is_rolling = false
+	roll_invulnerable = false
+	roll_time_left = 0.0
+	roll_vector = Vector2.ZERO
+	_cancel_harpoon_state()
 	is_casting = false
 	stun_left = 0.0
 	heal_flash_left = 0.0
@@ -2169,6 +3095,20 @@ func _setup_health_bar() -> void:
 	cast_bar_fill.visible = false
 	health_bar_root.add_child(cast_bar_fill)
 
+	special_bar_background = Line2D.new()
+	special_bar_background.default_color = Color(0.08, 0.08, 0.08, 0.9)
+	special_bar_background.width = maxf(1.0, special_bar_thickness)
+	special_bar_background.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	special_bar_background.end_cap_mode = Line2D.LINE_CAP_ROUND
+	health_bar_root.add_child(special_bar_background)
+
+	special_bar_fill = Line2D.new()
+	special_bar_fill.default_color = Color(0.64, 0.94, 1.0, 0.95)
+	special_bar_fill.width = maxf(1.0, special_bar_thickness - 1.0)
+	special_bar_fill.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	special_bar_fill.end_cap_mode = Line2D.LINE_CAP_ROUND
+	health_bar_root.add_child(special_bar_fill)
+
 
 func _update_health_bar() -> void:
 	if not is_instance_valid(health_bar_root):
@@ -2199,6 +3139,17 @@ func _update_health_bar() -> void:
 	else:
 		cast_bar_fill.visible = false
 
+	if not is_instance_valid(special_bar_background) or not is_instance_valid(special_bar_fill):
+		return
+	var special_half_width := special_bar_width * 0.5
+	var special_start := Vector2(-special_half_width, special_bar_vertical_offset)
+	var special_end := Vector2(special_half_width, special_bar_vertical_offset)
+	special_bar_background.points = PackedVector2Array([special_start, special_end])
+	var special_ratio := _get_special_meter_ratio()
+	var special_fill_x := lerpf(special_start.x, special_end.x, special_ratio)
+	special_bar_fill.points = PackedVector2Array([special_start, Vector2(special_fill_x, special_start.y)])
+	special_bar_fill.visible = special_ratio > 0.0
+
 
 func _get_cast_progress_ratio() -> float:
 	if not is_casting:
@@ -2207,6 +3158,783 @@ func _get_cast_progress_ratio() -> float:
 	if frame_count <= 0.01:
 		return 1.0
 	return clampf(cast_anim_time / frame_count, 0.0, 1.0)
+
+
+func _get_special_meter_ratio() -> float:
+	return clampf(special_meter / maxf(1.0, special_meter_max), 0.0, 1.0)
+
+
+func _is_special_meter_full() -> bool:
+	return _get_special_meter_ratio() >= 0.999
+
+
+func _add_special_meter(raw_amount: float) -> void:
+	var amount := maxf(0.0, raw_amount)
+	if amount <= 0.0:
+		return
+	special_meter = clampf(special_meter + amount, 0.0, maxf(1.0, special_meter_max))
+	_update_health_bar()
+
+
+func _consume_special_meter() -> void:
+	special_meter = 0.0
+	_update_health_bar()
+
+
+func add_special_meter_from_damage(damage_amount: float) -> void:
+	var gain_multiplier := _get_healer_special_meter_gain_multiplier()
+	_add_special_meter(maxf(0.0, damage_amount) * maxf(0.0, special_meter_gain_per_damage) * gain_multiplier)
+
+
+func add_special_meter_from_heal(heal_amount: float) -> void:
+	var gain_multiplier := _get_healer_special_meter_gain_multiplier()
+	_add_special_meter(maxf(0.0, heal_amount) * maxf(0.0, special_meter_gain_per_heal) * gain_multiplier)
+
+
+func _can_start_harpoon_throw() -> bool:
+	if not manual_control_enabled:
+		return false
+	if not harpoon_enabled:
+		return false
+	if dead or stun_left > 0.0:
+		return false
+	if is_casting:
+		return false
+	if harpoon_cooldown_left > 0.0:
+		return false
+	if harpoon_charge_active or harpoon_projectile_active or harpoon_reel_active:
+		return false
+	return true
+
+
+func _try_start_harpoon_charge() -> bool:
+	if not _can_start_harpoon_throw():
+		return false
+	harpoon_charge_active = true
+	harpoon_charge_time = 0.0
+	harpoon_charge_ratio = 0.0
+	harpoon_throw_direction_sign = -1.0 if facing_left else 1.0
+	harpoon_reel_charge_ratio = 0.0
+	harpoon_projectile_active = false
+	harpoon_reel_active = false
+	harpoon_hooked_target = null
+	return true
+
+
+func _tick_harpoon_state(delta: float) -> void:
+	if harpoon_charge_active:
+		if not manual_control_enabled or is_casting:
+			_cancel_harpoon_state()
+			return
+		if Input.is_action_pressed("ability_1"):
+			harpoon_charge_time = minf(maxf(0.01, harpoon_max_charge_time), harpoon_charge_time + maxf(0.0, delta))
+			harpoon_charge_ratio = _get_harpoon_charge_ratio_from_time(harpoon_charge_time)
+		else:
+			_release_harpoon_throw()
+	if harpoon_projectile_active:
+		_advance_harpoon_projectile(delta)
+	if harpoon_reel_active:
+		_tick_harpoon_reel(delta)
+
+
+func _release_harpoon_throw() -> void:
+	if not harpoon_charge_active:
+		return
+	harpoon_charge_active = false
+	_hide_harpoon_charge_telegraph()
+	harpoon_charge_ratio = _get_harpoon_charge_ratio_from_time(harpoon_charge_time)
+	harpoon_reel_charge_ratio = harpoon_charge_ratio
+	harpoon_throw_direction_sign = -1.0 if facing_left else 1.0
+	var throw_origin := _get_harpoon_origin_global()
+	harpoon_projectile_active = true
+	harpoon_projectile_position = throw_origin
+	harpoon_projectile_travel_left = lerpf(maxf(24.0, harpoon_min_range), maxf(harpoon_min_range, harpoon_max_range), harpoon_charge_ratio)
+	harpoon_projectile_speed = lerpf(maxf(80.0, harpoon_min_projectile_speed), maxf(harpoon_min_projectile_speed, harpoon_max_projectile_speed), harpoon_charge_ratio)
+	harpoon_cooldown_left = maxf(harpoon_cooldown_left, maxf(0.05, harpoon_cooldown * _get_healer_harpoon_cooldown_multiplier()))
+	_spawn_heal_burst(throw_origin, false)
+
+
+func _advance_harpoon_projectile(delta: float) -> void:
+	if not harpoon_projectile_active:
+		return
+	var step_distance := harpoon_projectile_speed * maxf(0.0, delta)
+	if step_distance <= 0.0:
+		return
+	var travel_step := minf(step_distance, harpoon_projectile_travel_left)
+	var previous_position := harpoon_projectile_position
+	harpoon_projectile_position.x += harpoon_throw_direction_sign * travel_step
+	harpoon_projectile_travel_left = maxf(0.0, harpoon_projectile_travel_left - travel_step)
+	var hit_target := _find_harpoon_first_target(previous_position, harpoon_projectile_position, harpoon_throw_direction_sign)
+	if hit_target != null and is_instance_valid(hit_target):
+		var hit_is_enemy := hit_target is EnemyBase
+		var hit_is_heavy := false
+		if hit_is_enemy:
+			hit_is_heavy = _is_harpoon_heavy_enemy(hit_target as EnemyBase)
+		harpoon_projectile_active = false
+		_spawn_heal_burst(hit_target.global_position + Vector2(0.0, -12.0), false)
+		_begin_harpoon_reel(hit_target, hit_is_enemy, hit_is_heavy)
+		return
+	if harpoon_projectile_travel_left <= 0.0:
+		harpoon_projectile_active = false
+		_spawn_heal_burst(harpoon_projectile_position + Vector2(0.0, -3.0), false)
+
+
+func _begin_harpoon_reel(target: Node2D, target_is_enemy: bool, target_is_heavy: bool) -> void:
+	if target == null or not is_instance_valid(target):
+		return
+	harpoon_hooked_target = target
+	harpoon_hooked_target_is_enemy = target_is_enemy
+	harpoon_hooked_target_is_heavy = target_is_heavy
+	_cache_harpoon_hooked_target_properties(target)
+	harpoon_reel_active = true
+	harpoon_reel_speed = lerpf(maxf(80.0, harpoon_min_reel_speed), maxf(harpoon_min_reel_speed, harpoon_max_reel_speed), harpoon_reel_charge_ratio)
+	harpoon_reel_speed *= _get_healer_harpoon_reel_speed_multiplier()
+	if not target_is_enemy:
+		harpoon_reel_speed *= maxf(0.1, harpoon_ally_reel_speed_multiplier)
+	var destination := _get_harpoon_reel_destination(target.global_position)
+	var travel_distance := target.global_position.distance_to(destination)
+	var estimated_reel_time := travel_distance / maxf(1.0, harpoon_reel_speed)
+	harpoon_reel_left = clampf(estimated_reel_time + 0.2, 0.2, maxf(0.2, harpoon_reel_max_duration))
+
+
+func _tick_harpoon_reel(delta: float) -> void:
+	if not harpoon_reel_active:
+		return
+	if harpoon_hooked_target == null or not is_instance_valid(harpoon_hooked_target):
+		_cancel_harpoon_state()
+		return
+	harpoon_reel_left = maxf(0.0, harpoon_reel_left - maxf(0.0, delta))
+	var target_position := harpoon_hooked_target.global_position
+	var destination := _get_harpoon_reel_destination(target_position)
+	var max_step := harpoon_reel_speed * maxf(0.0, delta)
+	target_position = target_position.move_toward(destination, max_step)
+	_apply_harpoon_reel_target_position(harpoon_hooked_target, target_position, delta)
+	if target_position.distance_to(destination) <= 2.0:
+		_finalize_harpoon_reel(true)
+		return
+	if harpoon_reel_left <= 0.0:
+		target_position = destination
+		_apply_harpoon_reel_target_position(harpoon_hooked_target, target_position, delta)
+		_finalize_harpoon_reel(true)
+
+
+func _finalize_harpoon_reel(arrived: bool) -> void:
+	if harpoon_hooked_target != null and is_instance_valid(harpoon_hooked_target) and arrived:
+		if harpoon_hooked_target_is_enemy:
+			if harpoon_hooked_target_is_heavy:
+				_apply_harpoon_heavy_tug_effect(harpoon_hooked_target as EnemyBase)
+			else:
+				_apply_harpoon_enemy_arrival_effect(harpoon_hooked_target as EnemyBase)
+		else:
+			_apply_harpoon_ally_arrival_effect(harpoon_hooked_target)
+	_cancel_harpoon_state()
+
+
+func _cancel_harpoon_state() -> void:
+	var was_harpoon_charging := harpoon_charge_active
+	harpoon_charge_active = false
+	harpoon_charge_time = 0.0
+	harpoon_charge_ratio = 0.0
+	harpoon_projectile_active = false
+	harpoon_projectile_travel_left = 0.0
+	harpoon_reel_active = false
+	harpoon_reel_left = 0.0
+	harpoon_hooked_target = null
+	harpoon_hooked_target_is_enemy = false
+	harpoon_hooked_target_is_heavy = false
+	harpoon_hooked_has_velocity = false
+	harpoon_hooked_has_move_velocity = false
+	harpoon_hooked_has_knockback_velocity = false
+	harpoon_hooked_has_stun_left = false
+	if is_instance_valid(harpoon_tether_line):
+		harpoon_tether_line.visible = false
+	if is_instance_valid(harpoon_tether_glow_line):
+		harpoon_tether_glow_line.visible = false
+	if is_instance_valid(harpoon_projectile_visual):
+		harpoon_projectile_visual.visible = false
+	if was_harpoon_charging:
+		_hide_harpoon_charge_telegraph()
+
+
+func _find_harpoon_first_target(from_position: Vector2, to_position: Vector2, direction_sign: float) -> Node2D:
+	var best_target: Node2D = null
+	var best_progress := INF
+	var segment_min_x := minf(from_position.x, to_position.x)
+	var segment_max_x := maxf(from_position.x, to_position.x)
+	for candidate in _collect_harpoon_targets():
+		if not _is_valid_harpoon_target(candidate):
+			continue
+		var radius := _get_harpoon_target_radius(candidate)
+		var max_distance := maxf(4.0, harpoon_projectile_hit_radius) + radius
+		var candidate_position := candidate.global_position
+		if candidate_position.x < segment_min_x - max_distance or candidate_position.x > segment_max_x + max_distance:
+			continue
+		if absf(candidate_position.y - from_position.y) > max_distance:
+			continue
+		var forward_progress := (candidate_position.x - from_position.x) * direction_sign
+		if forward_progress < -max_distance:
+			continue
+		var closest_x := clampf(candidate_position.x, segment_min_x, segment_max_x)
+		var delta := candidate_position - Vector2(closest_x, from_position.y)
+		if delta.length_squared() > max_distance * max_distance:
+			continue
+		if forward_progress < best_progress:
+			best_progress = forward_progress
+			best_target = candidate
+	return best_target
+
+
+func _collect_harpoon_targets() -> Array[Node2D]:
+	var targets: Array[Node2D] = []
+	var seen_ids: Dictionary = {}
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy_target := node as Node2D
+		if enemy_target == null:
+			continue
+		var enemy_id := enemy_target.get_instance_id()
+		if seen_ids.has(enemy_id):
+			continue
+		seen_ids[enemy_id] = true
+		targets.append(enemy_target)
+	if is_instance_valid(player):
+		var player_id := player.get_instance_id()
+		seen_ids[player_id] = true
+		targets.append(player)
+	for node in get_tree().get_nodes_in_group("friendly_npcs"):
+		var friendly_target := node as Node2D
+		if friendly_target == null:
+			continue
+		var ally_id := friendly_target.get_instance_id()
+		if seen_ids.has(ally_id):
+			continue
+		seen_ids[ally_id] = true
+		targets.append(friendly_target)
+	return targets
+
+
+func _is_valid_harpoon_target(candidate: Node2D) -> bool:
+	if candidate == null or not is_instance_valid(candidate):
+		return false
+	if candidate == self:
+		return false
+	if candidate is EnemyBase:
+		return not (candidate as EnemyBase).dead
+	if candidate is Player:
+		var player_candidate := candidate as Player
+		return not player_candidate.is_dead
+	if candidate is FriendlyHealer:
+		return not (candidate as FriendlyHealer).dead
+	if candidate is FriendlyRatfolk:
+		return not (candidate as FriendlyRatfolk).dead
+	if candidate is FriendlyLizardfolk:
+		return not (candidate as FriendlyLizardfolk).dead
+	return false
+
+
+func _get_harpoon_target_radius(candidate: Node2D) -> float:
+	if candidate is EnemyBase:
+		var enemy := candidate as EnemyBase
+		if enemy.collision_shape == null or enemy.collision_shape.shape == null:
+			return 14.0
+		var enemy_shape := enemy.collision_shape.shape
+		if enemy_shape is CircleShape2D:
+			return maxf(6.0, (enemy_shape as CircleShape2D).radius)
+		if enemy_shape is CapsuleShape2D:
+			var enemy_capsule := enemy_shape as CapsuleShape2D
+			return maxf(6.0, enemy_capsule.radius + (enemy_capsule.height * 0.25))
+		if enemy_shape is RectangleShape2D:
+			var enemy_rectangle := enemy_shape as RectangleShape2D
+			return maxf(6.0, maxf(enemy_rectangle.size.x, enemy_rectangle.size.y) * 0.5)
+		return 14.0
+	var collision_node := candidate.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if collision_node == null or collision_node.shape == null:
+		return 14.0
+	var shape := collision_node.shape
+	if shape is CircleShape2D:
+		return maxf(6.0, (shape as CircleShape2D).radius)
+	if shape is CapsuleShape2D:
+		var capsule := shape as CapsuleShape2D
+		return maxf(6.0, capsule.radius + (capsule.height * 0.25))
+	if shape is RectangleShape2D:
+		var rectangle := shape as RectangleShape2D
+		return maxf(6.0, maxf(rectangle.size.x, rectangle.size.y) * 0.5)
+	return 14.0
+
+
+func _is_harpoon_heavy_enemy(enemy: EnemyBase) -> bool:
+	if enemy == null or not is_instance_valid(enemy):
+		return false
+	if enemy.is_miniboss:
+		return true
+	return enemy.monster_visual_profile in [
+		EnemyBase.MonsterVisualProfile.MINOTAUR,
+		EnemyBase.MonsterVisualProfile.CACODEMON,
+		EnemyBase.MonsterVisualProfile.SHARDSOUL
+	]
+
+
+func _get_harpoon_reel_destination_x(current_target_x: float) -> float:
+	var healer_radius := _get_healer_harpoon_collision_radius()
+	var target_radius := _get_harpoon_target_radius(harpoon_hooked_target) if (harpoon_hooked_target != null and is_instance_valid(harpoon_hooked_target)) else 14.0
+	var contact_gap := maxf(0.0, harpoon_stop_distance)
+	var contact_scale := clampf(harpoon_contact_distance_scale, 0.35, 1.0)
+	var stop_distance := maxf(6.0, (healer_radius + target_radius) * contact_scale + contact_gap)
+	return global_position.x + (harpoon_throw_direction_sign * stop_distance)
+
+
+func _get_harpoon_reel_destination(current_target_position: Vector2) -> Vector2:
+	var destination_x := _get_harpoon_reel_destination_x(current_target_position.x)
+	return Vector2(destination_x, global_position.y)
+
+
+func _get_healer_harpoon_collision_radius() -> float:
+	if collision_shape == null or not is_instance_valid(collision_shape) or collision_shape.shape == null:
+		return 14.0
+	var shape := collision_shape.shape
+	if shape is CircleShape2D:
+		var circle := shape as CircleShape2D
+		var radius_scale := maxf(absf(collision_shape.global_scale.x), absf(collision_shape.global_scale.y))
+		return maxf(6.0, circle.radius * maxf(0.01, radius_scale))
+	if shape is CapsuleShape2D:
+		var capsule := shape as CapsuleShape2D
+		return maxf(6.0, capsule.radius + (capsule.height * 0.25))
+	if shape is RectangleShape2D:
+		var rectangle := shape as RectangleShape2D
+		return maxf(6.0, maxf(rectangle.size.x, rectangle.size.y) * 0.5)
+	return 14.0
+
+
+func _apply_harpoon_enemy_arrival_effect(enemy: EnemyBase) -> void:
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+		return
+	var final_damage := maxf(0.0, harpoon_enemy_damage) * lerpf(0.9, 1.35, harpoon_reel_charge_ratio)
+	var final_stagger := maxf(0.0, harpoon_arrival_stagger_duration) * lerpf(0.9, 1.3, harpoon_reel_charge_ratio)
+	var to_healer := (global_position - enemy.global_position).normalized()
+	if to_healer == Vector2.ZERO:
+		to_healer = Vector2.LEFT if harpoon_throw_direction_sign >= 0.0 else Vector2.RIGHT
+	var inward_knock_source := enemy.global_position - (to_healer * 12.0)
+	var enemy_health_before := _get_target_current_health(enemy)
+	var landed := enemy.receive_hit(final_damage, inward_knock_source, final_stagger, true, 0.1, self)
+	if landed:
+		var enemy_health_after := _get_target_current_health(enemy)
+		var damage_dealt := maxf(0.0, enemy_health_before - enemy_health_after)
+		if damage_dealt > 0.0:
+			_spawn_damage_number_popup(enemy.global_position + Vector2(0.0, combat_number_popup_head_offset_y), damage_dealt)
+		add_special_meter_from_damage(final_damage)
+		_apply_echo_prism_harpoon_pulse(enemy.global_position)
+		if _is_equipped_healer_trinket("echo_prism"):
+			var trinket_data := _get_equipped_healer_trinket_data()
+			var refund := maxf(0.0, float(trinket_data.get("harpoon_refund", 0.0)))
+			if refund > 0.0:
+				harpoon_cooldown_left = maxf(0.0, harpoon_cooldown_left - refund)
+	_spawn_heal_burst(enemy.global_position + Vector2(0.0, -12.0), false)
+
+
+func _apply_harpoon_heavy_tug_effect(enemy: EnemyBase) -> void:
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+		return
+	if enemy.has_method("apply_hitstop"):
+		enemy.call("apply_hitstop", 0.09)
+	_set_node_float_max(enemy, "stun_left", maxf(0.0, harpoon_arrival_stagger_duration) * 0.35)
+	_spawn_heal_burst(enemy.global_position + Vector2(0.0, -12.0), false)
+
+
+func _apply_harpoon_ally_arrival_effect(ally_target: Node2D) -> void:
+	if ally_target == null or not is_instance_valid(ally_target):
+		return
+	_set_node_float(ally_target, "stun_left", 0.0)
+	_set_node_vector(ally_target, "knockback_velocity", Vector2.ZERO)
+	_spawn_heal_burst(ally_target.global_position + Vector2(0.0, -14.0), true)
+
+
+func _apply_echo_prism_harpoon_pulse(pulse_origin: Vector2) -> void:
+	if not _is_equipped_healer_trinket("echo_prism"):
+		return
+	var trinket_data := _get_equipped_healer_trinket_data()
+	var pulse_radius := maxf(24.0, float(trinket_data.get("harpoon_pulse_radius", 96.0)))
+	var pulse_heal := maxf(0.0, float(trinket_data.get("harpoon_pulse_heal", 6.0)))
+	if pulse_heal <= 0.0:
+		return
+	var pulse_radius_sq := pulse_radius * pulse_radius
+	var candidates: Array[Node2D] = []
+	if is_instance_valid(player):
+		candidates.append(player)
+	for node in get_tree().get_nodes_in_group("friendly_npcs"):
+		var candidate := node as Node2D
+		if candidate == null or not is_instance_valid(candidate):
+			continue
+		if candidate != self and not _is_valid_support_target(candidate):
+			continue
+		candidates.append(candidate)
+	var seen_ids: Dictionary = {}
+	for candidate in candidates:
+		if candidate == null or not is_instance_valid(candidate):
+			continue
+		var candidate_id := candidate.get_instance_id()
+		if seen_ids.has(candidate_id):
+			continue
+		seen_ids[candidate_id] = true
+		if candidate.global_position.distance_squared_to(pulse_origin) > pulse_radius_sq:
+			continue
+		if not candidate.has_method("receive_heal"):
+			continue
+		var health_before := _get_target_current_health(candidate)
+		var healed := bool(candidate.call("receive_heal", pulse_heal))
+		var health_after := _get_target_current_health(candidate)
+		var healed_amount := maxf(0.0, health_after - health_before)
+		var burst_position := candidate.global_position + Vector2(0.0, -14.0)
+		_spawn_heal_burst(burst_position, healed)
+		_spawn_heal_beam(pulse_origin + Vector2(0.0, -10.0), burst_position, true)
+		if healed_amount > 0.0:
+			_spawn_heal_number_popup(burst_position + Vector2(0.0, combat_number_popup_head_offset_y * 0.2), healed_amount)
+		if healed:
+			EnemyBase.add_healing_threat_to_active_enemies(self, pulse_heal)
+			add_special_meter_from_heal(pulse_heal)
+
+
+func _cache_harpoon_hooked_target_properties(target: Node2D) -> void:
+	harpoon_hooked_has_velocity = false
+	harpoon_hooked_has_move_velocity = false
+	harpoon_hooked_has_knockback_velocity = false
+	harpoon_hooked_has_stun_left = false
+	if target == null or not is_instance_valid(target):
+		return
+	harpoon_hooked_has_velocity = _object_has_property(target, "velocity")
+	harpoon_hooked_has_move_velocity = _object_has_property(target, "move_velocity")
+	harpoon_hooked_has_knockback_velocity = _object_has_property(target, "knockback_velocity")
+	harpoon_hooked_has_stun_left = _object_has_property(target, "stun_left")
+
+
+func _apply_harpoon_reel_target_position(target: Node2D, reel_position: Vector2, delta: float) -> void:
+	if target == null or not is_instance_valid(target):
+		return
+	if harpoon_hooked_target_is_enemy:
+		if harpoon_hooked_has_velocity:
+			target.set("velocity", Vector2.ZERO)
+		if harpoon_hooked_has_move_velocity:
+			target.set("move_velocity", Vector2.ZERO)
+		if harpoon_hooked_has_knockback_velocity:
+			target.set("knockback_velocity", Vector2.ZERO)
+		var reel_stun := maxf(0.05, maxf(0.0, delta) + 0.02)
+		if harpoon_hooked_target_is_heavy:
+			reel_stun = minf(reel_stun, 0.06)
+		if harpoon_hooked_has_stun_left:
+			var current_stun := float(target.get("stun_left"))
+			if reel_stun > current_stun:
+				target.set("stun_left", reel_stun)
+	else:
+		if harpoon_hooked_has_knockback_velocity:
+			target.set("knockback_velocity", Vector2.ZERO)
+	if target.global_position.distance_squared_to(reel_position) > 0.0001:
+		target.global_position = reel_position
+
+
+func _object_has_property(target: Object, property_name: String) -> bool:
+	for property_info in target.get_property_list():
+		if String(property_info.get("name", "")) == property_name:
+			return true
+	return false
+
+
+func _set_node_float_max(target: Object, property_name: String, value: float) -> void:
+	if target == null or property_name.is_empty():
+		return
+	if not _object_has_property(target, property_name):
+		return
+	var current_value := float(target.get(property_name))
+	target.set(property_name, maxf(current_value, value))
+
+
+func _set_node_vector(target: Object, property_name: String, value: Vector2) -> void:
+	if target == null or property_name.is_empty():
+		return
+	if not _object_has_property(target, property_name):
+		return
+	target.set(property_name, value)
+
+
+func _set_node_float(target: Object, property_name: String, value: float) -> void:
+	if target == null or property_name.is_empty():
+		return
+	if not _object_has_property(target, property_name):
+		return
+	target.set(property_name, value)
+
+
+func _get_harpoon_charge_ratio_from_time(charge_time_value: float) -> float:
+	var clamped_time := clampf(charge_time_value, 0.0, maxf(0.01, harpoon_max_charge_time))
+	var min_time := maxf(0.0, harpoon_min_charge_time)
+	var normalized := 0.0
+	if clamped_time <= min_time:
+		normalized = 0.0
+	else:
+		normalized = (clamped_time - min_time) / maxf(0.01, harpoon_max_charge_time - min_time)
+	return clampf(normalized, 0.0, 1.0)
+
+
+func _get_harpoon_origin_global() -> Vector2:
+	return global_position + Vector2(24.0 * harpoon_throw_direction_sign, -16.0)
+
+
+func _update_harpoon_visuals() -> void:
+	if (harpoon_tether_line == null or not is_instance_valid(harpoon_tether_line)) \
+		or (harpoon_tether_glow_line == null or not is_instance_valid(harpoon_tether_glow_line)) \
+		or (harpoon_projectile_visual == null or not is_instance_valid(harpoon_projectile_visual)):
+		_setup_harpoon_visuals()
+	if harpoon_tether_line == null or harpoon_tether_glow_line == null or harpoon_projectile_visual == null:
+		return
+	var origin := _get_harpoon_origin_global()
+	if harpoon_charge_active:
+		var preview_ratio := _get_harpoon_charge_ratio_from_time(harpoon_charge_time)
+		var preview_distance := lerpf(maxf(24.0, harpoon_min_range), maxf(harpoon_min_range, harpoon_max_range), preview_ratio)
+		var charge_progress := clampf(harpoon_charge_time / maxf(0.01, harpoon_max_charge_time), 0.0, 1.0)
+		var telegraph_length := lerpf(20.0, preview_distance, charge_progress)
+		var preview_tip := origin + Vector2(preview_distance * harpoon_throw_direction_sign, 0.0)
+		_show_harpoon_charge_telegraph(telegraph_length)
+		_set_harpoon_tether_visual(
+			origin,
+			preview_tip,
+			4.2,
+			Color(0.12, 0.34, 0.44, 0.94),
+			Color(0.68, 0.98, 1.0, lerpf(0.44, 0.94, preview_ratio)),
+			lerpf(0.4, 2.0, preview_ratio)
+		)
+		harpoon_projectile_visual.visible = true
+		harpoon_projectile_visual.global_position = preview_tip
+		harpoon_projectile_visual.rotation = (0.0 if harpoon_throw_direction_sign >= 0.0 else PI) + (sin(Time.get_ticks_msec() * 0.016) * 0.06)
+		harpoon_projectile_visual.scale = Vector2.ONE * lerpf(0.82, 1.28, preview_ratio)
+		return
+	if harpoon_projectile_active:
+		_set_harpoon_tether_visual(
+			origin,
+			harpoon_projectile_position,
+			4.8,
+			Color(0.1, 0.32, 0.42, 0.94),
+			Color(0.66, 0.98, 1.0, 0.96),
+			1.2
+		)
+		harpoon_projectile_visual.visible = true
+		harpoon_projectile_visual.global_position = harpoon_projectile_position
+		harpoon_projectile_visual.rotation = (0.0 if harpoon_throw_direction_sign >= 0.0 else PI) + (sin(Time.get_ticks_msec() * 0.022) * 0.08)
+		harpoon_projectile_visual.scale = Vector2.ONE * lerpf(0.9, 1.26, harpoon_charge_ratio)
+		return
+	if harpoon_reel_active and harpoon_hooked_target != null and is_instance_valid(harpoon_hooked_target):
+		var target_position := harpoon_hooked_target.global_position + Vector2(0.0, -8.0)
+		_set_harpoon_tether_visual(
+			origin,
+			target_position,
+			5.2,
+			Color(0.1, 0.34, 0.44, 0.96),
+			Color(0.76, 0.99, 1.0, 0.98),
+			1.6
+		)
+		var reel_sign := 1.0 if target_position.x >= origin.x else -1.0
+		harpoon_projectile_visual.visible = true
+		harpoon_projectile_visual.global_position = target_position
+		harpoon_projectile_visual.rotation = (0.0 if reel_sign >= 0.0 else PI) + (sin(Time.get_ticks_msec() * 0.02) * 0.05)
+		harpoon_projectile_visual.scale = Vector2.ONE * 1.08
+		return
+	if is_instance_valid(harpoon_charge_telegraph):
+		harpoon_charge_telegraph.visible = false
+	harpoon_tether_line.visible = false
+	harpoon_tether_glow_line.visible = false
+	harpoon_projectile_visual.visible = false
+
+
+func _set_harpoon_tether_visual(
+	origin: Vector2,
+	tip: Vector2,
+	core_width: float,
+	core_color: Color,
+	glow_color: Color,
+	wave_strength: float
+) -> void:
+	var points := _build_harpoon_tether_points(origin, tip, wave_strength)
+	harpoon_tether_line.visible = true
+	harpoon_tether_line.width = core_width
+	harpoon_tether_line.default_color = core_color
+	harpoon_tether_line.points = points
+	harpoon_tether_glow_line.visible = true
+	harpoon_tether_glow_line.width = maxf(1.6, core_width * 0.45)
+	harpoon_tether_glow_line.default_color = glow_color
+	harpoon_tether_glow_line.points = points
+
+
+func _build_harpoon_tether_points(origin: Vector2, tip: Vector2, wave_strength: float) -> PackedVector2Array:
+	var desired_segments := int(round(origin.distance_to(tip) / 24.0))
+	var segment_count := clampi(desired_segments, 8, 24)
+	var points := PackedVector2Array()
+	var span := tip - origin
+	var span_length := maxf(1.0, span.length())
+	var direction := span / span_length
+	var normal := Vector2(-direction.y, direction.x)
+	var time_wave := float(Time.get_ticks_msec()) * 0.001
+	for i in range(segment_count + 1):
+		var t := float(i) / float(segment_count)
+		var falloff := 1.0 - absf((t * 2.0) - 1.0)
+		var sway := sin((t * PI * 4.0) + (time_wave * 17.0)) * wave_strength * falloff
+		points.append(to_local(origin.lerp(tip, t) + (normal * sway)))
+	return points
+
+
+func _show_harpoon_charge_telegraph(telegraph_length: float) -> void:
+	if harpoon_charge_telegraph == null or not is_instance_valid(harpoon_charge_telegraph):
+		return
+	harpoon_charge_telegraph.visible = true
+	harpoon_charge_telegraph.color = Color(0.4, 0.82, 1.0, 0.34)
+	harpoon_charge_telegraph.polygon = _build_harpoon_arrow_polygon(telegraph_length)
+	harpoon_charge_telegraph.position = Vector2(24.0 * harpoon_throw_direction_sign, -16.0)
+	harpoon_charge_telegraph.rotation = 0.0 if harpoon_throw_direction_sign >= 0.0 else PI
+	harpoon_charge_telegraph.modulate.a = 0.25
+	harpoon_charge_telegraph.scale = Vector2.ONE
+
+
+func _hide_harpoon_charge_telegraph() -> void:
+	if harpoon_charge_telegraph == null or not is_instance_valid(harpoon_charge_telegraph):
+		return
+	harpoon_charge_telegraph.visible = false
+	harpoon_charge_telegraph.position = Vector2.ZERO
+	harpoon_charge_telegraph.scale = Vector2.ONE
+	harpoon_charge_telegraph.modulate.a = 1.0
+
+
+func _build_harpoon_arrow_polygon(arrow_length: float) -> PackedVector2Array:
+	var body_length := maxf(18.0, arrow_length)
+	var head_length := clampf(body_length * 0.24, 14.0, 28.0)
+	var half_width := clampf(body_length * 0.045, 3.4, 7.0)
+	var tail_x := 0.0
+	var body_end_x := body_length - head_length
+	var tip_x := body_length
+	return PackedVector2Array([
+		Vector2(tail_x, -half_width * 0.62),
+		Vector2(body_end_x, -half_width * 0.62),
+		Vector2(body_end_x, -half_width * 1.35),
+		Vector2(tip_x, 0.0),
+		Vector2(body_end_x, half_width * 1.35),
+		Vector2(body_end_x, half_width * 0.62),
+		Vector2(tail_x, half_width * 0.62)
+	])
+
+
+func _setup_harpoon_visuals() -> void:
+	if harpoon_charge_telegraph == null or not is_instance_valid(harpoon_charge_telegraph):
+		var telegraph := Polygon2D.new()
+		telegraph.name = "HarpoonChargeTelegraph"
+		telegraph.visible = false
+		telegraph.z_index = 228
+		telegraph.color = Color(0.4, 0.82, 1.0, 0.34)
+		add_child(telegraph)
+		harpoon_charge_telegraph = telegraph
+	if harpoon_tether_line == null or not is_instance_valid(harpoon_tether_line):
+		var tether := Line2D.new()
+		tether.name = "HarpoonTether"
+		tether.default_color = Color(0.1, 0.34, 0.44, 0.94)
+		tether.width = 4.6
+		tether.begin_cap_mode = Line2D.LINE_CAP_ROUND
+		tether.end_cap_mode = Line2D.LINE_CAP_ROUND
+		tether.visible = false
+		tether.z_index = 230
+		add_child(tether)
+		harpoon_tether_line = tether
+	if harpoon_tether_glow_line == null or not is_instance_valid(harpoon_tether_glow_line):
+		var tether_glow := Line2D.new()
+		tether_glow.name = "HarpoonTetherGlow"
+		tether_glow.default_color = Color(0.76, 0.98, 1.0, 0.88)
+		tether_glow.width = 2.0
+		tether_glow.begin_cap_mode = Line2D.LINE_CAP_ROUND
+		tether_glow.end_cap_mode = Line2D.LINE_CAP_ROUND
+		tether_glow.visible = false
+		tether_glow.z_index = 231
+		add_child(tether_glow)
+		harpoon_tether_glow_line = tether_glow
+	if harpoon_projectile_visual == null or not is_instance_valid(harpoon_projectile_visual):
+		var hook_root := Node2D.new()
+		hook_root.name = "HarpoonProjectile"
+		hook_root.visible = false
+		hook_root.z_index = 232
+		var hook_body := Polygon2D.new()
+		hook_body.color = Color(0.14, 0.46, 0.56, 0.96)
+		hook_body.polygon = PackedVector2Array([
+			Vector2(13.0, 0.0),
+			Vector2(4.0, -3.2),
+			Vector2(-4.0, -3.2),
+			Vector2(-10.0, 0.0),
+			Vector2(-4.0, 3.2),
+			Vector2(4.0, 3.2)
+		])
+		hook_root.add_child(hook_body)
+		var hook_highlight := Polygon2D.new()
+		hook_highlight.color = Color(0.78, 1.0, 1.0, 0.94)
+		hook_highlight.polygon = PackedVector2Array([
+			Vector2(13.0, 0.0),
+			Vector2(4.0, -2.4),
+			Vector2(-4.0, -2.4),
+			Vector2(-9.0, 0.0),
+			Vector2(-4.0, 2.4),
+			Vector2(4.0, 2.4)
+		])
+		hook_root.add_child(hook_highlight)
+		add_child(hook_root)
+		harpoon_projectile_visual = hook_root
+
+
+func _teardown_harpoon_visuals() -> void:
+	if harpoon_charge_telegraph != null and is_instance_valid(harpoon_charge_telegraph):
+		harpoon_charge_telegraph.queue_free()
+	if harpoon_tether_line != null and is_instance_valid(harpoon_tether_line):
+		harpoon_tether_line.queue_free()
+	if harpoon_tether_glow_line != null and is_instance_valid(harpoon_tether_glow_line):
+		harpoon_tether_glow_line.queue_free()
+	if harpoon_projectile_visual != null and is_instance_valid(harpoon_projectile_visual):
+		harpoon_projectile_visual.queue_free()
+	harpoon_charge_telegraph = null
+	harpoon_tether_line = null
+	harpoon_tether_glow_line = null
+	harpoon_projectile_visual = null
+
+
+func _setup_heal_range_indicator() -> void:
+	if heal_range_indicator != null and is_instance_valid(heal_range_indicator):
+		return
+	var ring := Line2D.new()
+	ring.name = "HealRangeIndicator"
+	ring.width = maxf(0.5, heal_range_indicator_width)
+	ring.default_color = Color(0.42, 0.78, 1.0, clampf(heal_range_indicator_alpha, 0.0, 0.35))
+	ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	ring.end_cap_mode = Line2D.LINE_CAP_ROUND
+	ring.joint_mode = Line2D.LINE_JOINT_ROUND
+	ring.closed = true
+	ring.z_as_relative = true
+	ring.z_index = -5
+	ring.visible = false
+	add_child(ring)
+	heal_range_indicator = ring
+	_rebuild_heal_range_indicator_points()
+
+
+func _rebuild_heal_range_indicator_points() -> void:
+	if heal_range_indicator == null or not is_instance_valid(heal_range_indicator):
+		return
+	var radius := maxf(8.0, basic_heal_range * maxf(0.1, heal_range_indicator_radius_scale))
+	var segment_count := maxi(16, heal_range_indicator_segments)
+	var points := PackedVector2Array()
+	for i in range(segment_count):
+		var ratio := float(i) / float(segment_count)
+		var angle := TAU * ratio
+		var point := Vector2(cos(angle), sin(angle)) * radius
+		point.y += heal_range_indicator_y_offset
+		points.append(point)
+	heal_range_indicator.points = points
+
+
+func _update_heal_range_indicator() -> void:
+	if heal_range_indicator == null or not is_instance_valid(heal_range_indicator):
+		return
+	var should_show := heal_range_indicator_enabled and manual_control_enabled and not dead
+	heal_range_indicator.visible = should_show
+	if not should_show:
+		return
+	heal_range_indicator.default_color = Color(0.42, 0.78, 1.0, clampf(heal_range_indicator_alpha, 0.0, 0.35))
 
 
 func _setup_breath_safe_indicator() -> void:
@@ -2335,6 +4063,75 @@ func _apply_frame_alignment(row: int, col: int) -> void:
 	var delta_pixels := Vector2(alignment_anchor_point.x - aligned_foot_x, alignment_anchor_point.y - frame_anchor.y)
 	var sprite_scale := Vector2(absf(sprite.scale.x), absf(sprite.scale.y))
 	sprite.position = (sprite_base_position + Vector2(delta_pixels.x * sprite_scale.x, delta_pixels.y * sprite_scale.y)).round()
+
+
+func _spawn_damage_number_popup(world_position: Vector2, damage_amount: float) -> void:
+	_spawn_combat_number_popup(
+		world_position,
+		damage_amount,
+		Color(1.0, 0.88, 0.34, 0.98),
+		Color(0.08, 0.05, 0.02, 0.95)
+	)
+
+
+func _spawn_heal_number_popup(world_position: Vector2, heal_amount: float) -> void:
+	_spawn_combat_number_popup(
+		world_position,
+		heal_amount,
+		Color(0.44, 1.0, 0.56, 0.98),
+		Color(0.04, 0.12, 0.04, 0.95),
+		"+"
+	)
+
+
+func _spawn_combat_number_popup(
+	world_position: Vector2,
+	amount: float,
+	text_color: Color,
+	outline_color: Color,
+	prefix: String = ""
+) -> void:
+	if not combat_number_popups_enabled:
+		return
+	if amount <= 0.0:
+		return
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		scene_root = get_parent()
+	if scene_root == null:
+		return
+
+	var label := Label.new()
+	label.top_level = true
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	label.global_position = world_position
+	label.z_index = 262
+	label.text = "%s%d" % [prefix, int(round(amount))]
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.scale = Vector2.ONE * maxf(0.1, combat_number_popup_scale)
+
+	var label_settings := LabelSettings.new()
+	label_settings.font_size = maxi(8, combat_number_popup_font_size)
+	label_settings.font_color = text_color
+	label_settings.outline_size = maxi(0, combat_number_popup_outline_size)
+	label_settings.outline_color = outline_color
+	label.label_settings = label_settings
+	scene_root.add_child(label)
+
+	combat_number_popup_sequence += 1
+	var spread_step := float((combat_number_popup_sequence % 5) - 2)
+	var x_offset := spread_step * maxf(0.0, combat_number_popup_x_spread)
+	var rise := maxf(6.0, combat_number_popup_rise_distance)
+	var duration := maxf(0.06, combat_number_popup_duration)
+
+	var tween := create_tween()
+	tween.tween_property(label, "global_position", label.global_position + Vector2(x_offset, -rise), duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(label, "modulate:a", 0.0, duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tween.finished.connect(func() -> void:
+		if is_instance_valid(label):
+			label.queue_free()
+	)
 
 
 func _spawn_cast_flash(world_position: Vector2) -> void:
@@ -2509,8 +4306,8 @@ func _cast_action_name(action: CastAction) -> String:
 	match action:
 		CastAction.QUICK_HEAL:
 			return "QUICK_HEAL"
-		CastAction.PROTECTIVE_SHIELD:
-			return "PROTECTIVE_SHIELD"
+		CastAction.BIG_HEAL:
+			return "BIG_HEAL"
 		CastAction.TIDAL_WAVE:
 			return "TIDAL_WAVE"
 		CastAction.LIGHT_BOLT:

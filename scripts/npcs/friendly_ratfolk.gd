@@ -76,6 +76,12 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var cast_bar_width: float = 52.0
 @export var cast_bar_thickness: float = 3.0
 @export var cast_bar_vertical_offset: float = 8.0
+@export var special_bar_width: float = 52.0
+@export var special_bar_thickness: float = 3.0
+@export var special_bar_vertical_offset: float = 8.0
+@export var special_meter_max: float = 100.0
+@export var special_meter_gain_per_damage: float = 2.0
+@export var special_meter_gain_per_heal: float = 2.0
 @export var hit_effect_duration: float = 0.12
 @export var heal_flash_duration: float = 0.16
 @export var shadow_fear_enabled: bool = true
@@ -192,6 +198,9 @@ var health_bar_background: Line2D = null
 var health_bar_fill: Line2D = null
 var cast_bar_background: Line2D = null
 var cast_bar_fill: Line2D = null
+var special_bar_background: Line2D = null
+var special_bar_fill: Line2D = null
+var special_meter: float = 0.0
 var ratfolk_sheet_texture: Texture2D = null
 var ratfolk_scene_cache: PackedScene = null
 var shadow_fear_projectile_scene_cache: PackedScene = null
@@ -237,6 +246,7 @@ func _ready() -> void:
 	_acquire_player()
 	_apply_shadow_clone_setup()
 	current_health = maxf(1.0, max_health)
+	special_meter = 0.0
 	attack_cooldown_left = attack_cooldown * 0.35
 	shadow_fear_cooldown_left = 0.0
 	shadow_fear_pending_left = -1.0
@@ -1578,7 +1588,7 @@ func _can_start_shadow_clone_cast(enemy: EnemyBase, distance_to_enemy: float, be
 		return false
 	if shadow_clone_count <= 0:
 		return false
-	if shadow_clone_cooldown_left > 0.0:
+	if not _is_special_meter_full():
 		return false
 	if shadow_clone_cast_active or shadow_clone_cast_left > 0.0:
 		return false
@@ -1708,6 +1718,7 @@ func _start_attack_windup(reason: String, windup_scale: float = 1.0) -> void:
 
 
 func _start_shadow_clone_cast() -> void:
+	_consume_special_meter()
 	shadow_clone_cast_left = maxf(0.01, shadow_clone_cast_duration)
 	shadow_clone_cast_active = true
 	_spawn_shadow_clone_focus_effect()
@@ -1810,6 +1821,7 @@ func _perform_attack() -> void:
 		var landed := bool(enemy.call("receive_hit", attack_damage, global_position, outgoing_hit_stun_duration, true, attack_knockback_scale, self))
 		if landed:
 			hit_any = true
+			add_special_meter_from_damage(attack_damage)
 			if enemy.has_method("apply_hitstop"):
 				enemy.apply_hitstop(maxf(0.0, attack_hitstop_duration))
 			var impact_scale := maxf(0.6, attack_impact_vfx_scale)
@@ -1850,6 +1862,7 @@ func revive_at_full_health() -> void:
 	hurt_anim_left = 0.0
 	hit_flash_left = 0.0
 	heal_flash_left = 0.0
+	special_meter = 0.0
 	attack_windup_left = 0.0
 	attack_recovery_left = 0.0
 	attack_cooldown_left = maxf(0.0, attack_cooldown * 0.35)
@@ -2135,6 +2148,20 @@ func _setup_health_bar() -> void:
 	cast_bar_fill.visible = false
 	health_bar_root.add_child(cast_bar_fill)
 
+	special_bar_background = Line2D.new()
+	special_bar_background.default_color = Color(0.08, 0.08, 0.08, 0.9)
+	special_bar_background.width = maxf(1.0, special_bar_thickness)
+	special_bar_background.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	special_bar_background.end_cap_mode = Line2D.LINE_CAP_ROUND
+	health_bar_root.add_child(special_bar_background)
+
+	special_bar_fill = Line2D.new()
+	special_bar_fill.default_color = Color(0.98, 0.84, 0.36, 0.95)
+	special_bar_fill.width = maxf(1.0, special_bar_thickness - 1.0)
+	special_bar_fill.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	special_bar_fill.end_cap_mode = Line2D.LINE_CAP_ROUND
+	health_bar_root.add_child(special_bar_fill)
+
 
 func _update_health_bar() -> void:
 	if not is_instance_valid(health_bar_root):
@@ -2165,6 +2192,17 @@ func _update_health_bar() -> void:
 	else:
 		cast_bar_fill.visible = false
 
+	if not is_instance_valid(special_bar_background) or not is_instance_valid(special_bar_fill):
+		return
+	var special_half_width := special_bar_width * 0.5
+	var special_start := Vector2(-special_half_width, special_bar_vertical_offset)
+	var special_end := Vector2(special_half_width, special_bar_vertical_offset)
+	special_bar_background.points = PackedVector2Array([special_start, special_end])
+	var special_ratio := _get_special_meter_ratio()
+	var special_fill_x := lerpf(special_start.x, special_end.x, special_ratio)
+	special_bar_fill.points = PackedVector2Array([special_start, Vector2(special_fill_x, special_start.y)])
+	special_bar_fill.visible = special_ratio > 0.0
+
 
 func _get_cast_progress_ratio() -> float:
 	if shadow_fear_cast_active and shadow_fear_cast_duration > 0.01:
@@ -2177,6 +2215,41 @@ func _get_cast_progress_ratio() -> float:
 			return 1.0
 		return clampf(1.0 - (shadow_fear_pending_left / shadow_fear_pending_total), 0.0, 1.0)
 	return -1.0
+
+
+func _get_special_meter_ratio() -> float:
+	if is_shadow_clone:
+		return 0.0
+	return clampf(special_meter / maxf(1.0, special_meter_max), 0.0, 1.0)
+
+
+func _is_special_meter_full() -> bool:
+	return _get_special_meter_ratio() >= 0.999
+
+
+func _add_special_meter(raw_amount: float) -> void:
+	if is_shadow_clone:
+		return
+	var amount := maxf(0.0, raw_amount)
+	if amount <= 0.0:
+		return
+	special_meter = clampf(special_meter + amount, 0.0, maxf(1.0, special_meter_max))
+	_update_health_bar()
+
+
+func _consume_special_meter() -> void:
+	if is_shadow_clone:
+		return
+	special_meter = 0.0
+	_update_health_bar()
+
+
+func add_special_meter_from_damage(damage_amount: float) -> void:
+	_add_special_meter(maxf(0.0, damage_amount) * maxf(0.0, special_meter_gain_per_damage))
+
+
+func add_special_meter_from_heal(heal_amount: float) -> void:
+	_add_special_meter(maxf(0.0, heal_amount) * maxf(0.0, special_meter_gain_per_heal))
 
 
 func _setup_breath_safe_indicator() -> void:

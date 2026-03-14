@@ -6,6 +6,7 @@ signal shield_selected(shield_id: String)
 signal ring_selected(ring_id: String)
 signal store_purchase_requested(item_id: String)
 signal party_member_toggled(member_id: String, enabled: bool)
+signal controlled_character_selected(control_id: String)
 signal menu_closed
 
 var sword_entries: Array[Dictionary] = []
@@ -18,9 +19,15 @@ var boot_entries: Array[Dictionary] = []
 var gold_total: int = 0
 var store_entries: Array[Dictionary] = []
 var party_entries: Array[Dictionary] = []
+var control_entries: Array[Dictionary] = []
+var controlled_character_id: String = ""
+var shield_slot_title: String = "Shields"
+var shield_slot_empty_text: String = "No shields found."
+var shield_slot_default_icon: String = "SHD"
 
 var _content_root: VBoxContainer = null
 var _gold_label: Label = null
+var _control_list_root: VBoxContainer = null
 var _party_list_root: VBoxContainer = null
 var _party_capacity_label: Label = null
 var _button_by_sword_id: Dictionary = {}
@@ -28,6 +35,7 @@ var _button_by_shield_id: Dictionary = {}
 var _button_by_ring_id: Dictionary = {}
 var _button_by_store_item_id: Dictionary = {}
 var _toggle_by_party_member_id: Dictionary = {}
+var _button_by_control_id: Dictionary = {}
 
 
 func _ready() -> void:
@@ -47,7 +55,12 @@ func configure(
 	gold_amount: int = 0,
 	store_entry_list: Array[Dictionary] = [],
 	party_entry_list: Array[Dictionary] = [],
-	boot_entry_list: Array[Dictionary] = []
+	boot_entry_list: Array[Dictionary] = [],
+	control_entry_list: Array[Dictionary] = [],
+	control_character_id: String = "",
+	shield_slot_title_text: String = "Shields",
+	shield_slot_empty_label_text: String = "No shields found.",
+	shield_slot_icon_text: String = "SHD"
 ) -> void:
 	sword_entries = []
 	for entry in entries:
@@ -77,6 +90,14 @@ func configure(
 	for party_entry in party_entry_list:
 		if party_entry is Dictionary:
 			party_entries.append((party_entry as Dictionary).duplicate(true))
+	control_entries = []
+	for control_entry in control_entry_list:
+		if control_entry is Dictionary:
+			control_entries.append((control_entry as Dictionary).duplicate(true))
+	controlled_character_id = control_character_id
+	shield_slot_title = shield_slot_title_text if not shield_slot_title_text.strip_edges().is_empty() else "Shields"
+	shield_slot_empty_text = shield_slot_empty_label_text if not shield_slot_empty_label_text.strip_edges().is_empty() else "No shields found."
+	shield_slot_default_icon = shield_slot_icon_text if not shield_slot_icon_text.strip_edges().is_empty() else "SHD"
 	if is_inside_tree():
 		_rebuild_gear_lists()
 
@@ -228,6 +249,21 @@ func _build_ui() -> void:
 	party_subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	party_column.add_child(party_subtitle)
 
+	var control_title := Label.new()
+	control_title.text = "Controlled Character"
+	control_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	control_title.modulate = Color(0.88, 0.94, 0.98, 0.95)
+	party_column.add_child(control_title)
+
+	var control_list := VBoxContainer.new()
+	control_list.name = "ControlList"
+	control_list.add_theme_constant_override("separation", 8)
+	party_column.add_child(control_list)
+	_control_list_root = control_list
+
+	var control_separator := HSeparator.new()
+	party_column.add_child(control_separator)
+
 	_party_capacity_label = Label.new()
 	_party_capacity_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_party_capacity_label.modulate = Color(0.94, 0.96, 0.86, 0.95)
@@ -258,7 +294,12 @@ func _build_ui() -> void:
 
 
 func _rebuild_gear_lists() -> void:
-	if _content_root == null or not is_instance_valid(_content_root) or _party_list_root == null or not is_instance_valid(_party_list_root):
+	if _content_root == null \
+		or not is_instance_valid(_content_root) \
+		or _control_list_root == null \
+		or not is_instance_valid(_control_list_root) \
+		or _party_list_root == null \
+		or not is_instance_valid(_party_list_root):
 		return
 	var sword_list := _content_root.get_node_or_null("SwordList") as VBoxContainer
 	var shield_list := _content_root.get_node_or_null("ShieldList") as VBoxContainer
@@ -279,6 +320,8 @@ func _rebuild_gear_lists() -> void:
 		child.queue_free()
 	for child in store_list.get_children():
 		child.queue_free()
+	for child in _control_list_root.get_children():
+		child.queue_free()
 	for child in _party_list_root.get_children():
 		child.queue_free()
 	_button_by_sword_id.clear()
@@ -286,6 +329,7 @@ func _rebuild_gear_lists() -> void:
 	_button_by_ring_id.clear()
 	_button_by_store_item_id.clear()
 	_toggle_by_party_member_id.clear()
+	_button_by_control_id.clear()
 
 	var sword_title := Label.new()
 	sword_title.text = "Swords"
@@ -318,14 +362,14 @@ func _rebuild_gear_lists() -> void:
 		_button_by_sword_id[sword_id] = button
 
 	var shield_title := Label.new()
-	shield_title.text = "Shields"
+	shield_title.text = shield_slot_title
 	shield_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	shield_title.modulate = Color(0.88, 0.93, 1.0, 0.95)
 	shield_list.add_child(shield_title)
 
 	if shield_entries.is_empty():
 		var empty_shield := Label.new()
-		empty_shield.text = "No shields found."
+		empty_shield.text = shield_slot_empty_text
 		empty_shield.modulate = Color(0.72, 0.78, 0.88, 0.92)
 		shield_list.add_child(empty_shield)
 	else:
@@ -334,7 +378,7 @@ func _rebuild_gear_lists() -> void:
 			if shield_id.is_empty():
 				continue
 			var shield_name := String(shield_entry.get("name", shield_id))
-			var shield_icon := String(shield_entry.get("icon", "SHD"))
+			var shield_icon := String(shield_entry.get("icon", shield_slot_default_icon))
 			var shield_description := String(shield_entry.get("description", ""))
 			var shield_equipped := shield_id == equipped_shield_id
 			var shield_button := Button.new()
@@ -457,6 +501,36 @@ func _rebuild_gear_lists() -> void:
 			store_list.add_child(store_button)
 			_button_by_store_item_id[item_id] = store_button
 
+	if control_entries.is_empty():
+		var no_control := Label.new()
+		no_control.text = "No controllable characters available."
+		no_control.modulate = Color(0.72, 0.78, 0.88, 0.92)
+		_control_list_root.add_child(no_control)
+	else:
+		for control_entry in control_entries:
+			var control_id := String(control_entry.get("id", ""))
+			if control_id.is_empty():
+				continue
+			var control_name := String(control_entry.get("name", control_id))
+			var control_description := String(control_entry.get("description", ""))
+			var selected := bool(control_entry.get("selected", control_id == controlled_character_id))
+			var available := bool(control_entry.get("available", true))
+			var control_button := Button.new()
+			control_button.custom_minimum_size = Vector2(0.0, 48.0)
+			control_button.toggle_mode = false
+			control_button.disabled = not available
+			control_button.text = "%s%s\n%s" % [
+				control_name,
+				"   [CONTROLLED]" if selected else "",
+				control_description
+			]
+			control_button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			control_button.pressed.connect(_on_control_button_pressed.bind(control_id))
+			if selected:
+				control_button.modulate = Color(0.82, 0.96, 1.0, 1.0)
+			_control_list_root.add_child(control_button)
+			_button_by_control_id[control_id] = control_button
+
 	var party_title := Label.new()
 	party_title.text = "Companions"
 	party_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -559,12 +633,22 @@ func _rebuild_gear_lists() -> void:
 			continue
 		store_candidate.grab_focus()
 		return
+	for control_variant in _button_by_control_id.values():
+		var control_candidate := control_variant as Button
+		if control_candidate == null:
+			continue
+		control_candidate.grab_focus()
+		return
 	for toggle_variant in _toggle_by_party_member_id.values():
 		var party_candidate := toggle_variant as CheckBox
 		if party_candidate == null:
 			continue
 		party_candidate.grab_focus()
 		return
+
+
+func _on_control_button_pressed(control_id: String) -> void:
+	controlled_character_selected.emit(control_id)
 
 
 func _on_party_toggle_toggled(enabled: bool, member_id: String) -> void:
