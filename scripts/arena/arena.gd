@@ -35,6 +35,8 @@ const PARTY_MEMBER_RATFOLK: String = "ratfolk"
 const PARTY_MEMBER_LIZARDFOLK: String = "lizardfolk"
 const CONTROLLED_CHARACTER_TANK: String = "tank"
 const CONTROLLED_CHARACTER_HEALER: String = "healer"
+const CONTROLLED_CHARACTER_RATFOLK: String = "ratfolk"
+const CONTROLLED_CHARACTER_LIZARDFOLK: String = "lizardfolk"
 const MAX_PARTY_SIZE: int = 3
 const PARTY_MEMBER_LABELS: Dictionary = {
 	PARTY_MEMBER_HEALER: "Healer",
@@ -247,8 +249,11 @@ func _process(delta: float) -> void:
 			_sync_hitbox_debug_mode()
 	_maybe_log_opening_spacing()
 	_try_spawn_timed_extra_minotaur()
+	_sync_control_mode_availability()
 	_emit_combat_debug()
+	_emit_manual_control_cooldowns()
 	_try_auto_activate_two_room_exit_if_ready()
+	_try_auto_activate_two_room_return_portal_if_ready()
 
 
 func start_demo_with_encounter(encounter_type: int) -> void:
@@ -292,16 +297,40 @@ func get_controlled_character_id() -> String:
 func get_controlled_inventory_actor() -> Object:
 	if controlled_character_id == CONTROLLED_CHARACTER_HEALER and is_instance_valid(healer):
 		return healer
+	if controlled_character_id == CONTROLLED_CHARACTER_RATFOLK and is_instance_valid(ratfolk):
+		return ratfolk
+	if controlled_character_id == CONTROLLED_CHARACTER_LIZARDFOLK and is_instance_valid(lizardfolk):
+		return lizardfolk
 	if is_instance_valid(player):
 		return player
 	if is_instance_valid(healer):
 		return healer
+	if is_instance_valid(ratfolk):
+		return ratfolk
+	if is_instance_valid(lizardfolk):
+		return lizardfolk
 	return null
+
+
+func _get_controlled_adventure_interaction_actor() -> Node:
+	if _is_manual_healer_control_active() and is_instance_valid(healer):
+		return healer
+	if _is_manual_ratfolk_control_active() and is_instance_valid(ratfolk):
+		return ratfolk
+	if _is_manual_lizardfolk_control_active() and is_instance_valid(lizardfolk):
+		return lizardfolk
+	if is_instance_valid(player):
+		return player
+	return get_controlled_inventory_actor() as Node
 
 
 func get_controlled_character_display_name() -> String:
 	if controlled_character_id == CONTROLLED_CHARACTER_HEALER:
 		return "Healer"
+	if controlled_character_id == CONTROLLED_CHARACTER_RATFOLK:
+		return "Ratfolk"
+	if controlled_character_id == CONTROLLED_CHARACTER_LIZARDFOLK:
+		return "Lizardfolk"
 	return "Tank"
 
 
@@ -322,17 +351,39 @@ func get_control_target_entries() -> Array[Dictionary]:
 		"available": healer_available,
 		"selected": controlled_character_id == CONTROLLED_CHARACTER_HEALER
 	})
+	var ratfolk_available := _is_ratfolk_control_available()
+	entries.append({
+		"id": CONTROLLED_CHARACTER_RATFOLK,
+		"name": "Ratfolk",
+		"description": "Directly control the ratfolk striker; tank fights with AI.",
+		"available": ratfolk_available,
+		"selected": controlled_character_id == CONTROLLED_CHARACTER_RATFOLK
+	})
+	var lizardfolk_available := _is_lizardfolk_control_available()
+	entries.append({
+		"id": CONTROLLED_CHARACTER_LIZARDFOLK,
+		"name": "Lizardfolk",
+		"description": "Directly control the lizard ranger; tank fights with AI.",
+		"available": lizardfolk_available,
+		"selected": controlled_character_id == CONTROLLED_CHARACTER_LIZARDFOLK
+	})
 	return entries
 
 
 func set_controlled_character(control_id: String) -> bool:
 	control_target_failure_reason = ""
 	var normalized_control_id := control_id.strip_edges().to_lower()
-	if normalized_control_id != CONTROLLED_CHARACTER_TANK and normalized_control_id != CONTROLLED_CHARACTER_HEALER:
+	if normalized_control_id != CONTROLLED_CHARACTER_TANK and normalized_control_id != CONTROLLED_CHARACTER_HEALER and normalized_control_id != CONTROLLED_CHARACTER_RATFOLK and normalized_control_id != CONTROLLED_CHARACTER_LIZARDFOLK:
 		control_target_failure_reason = "Unknown controlled character."
 		return false
 	if normalized_control_id == CONTROLLED_CHARACTER_HEALER and not _is_healer_control_available():
 		control_target_failure_reason = "Healer control is unavailable right now."
+		return false
+	if normalized_control_id == CONTROLLED_CHARACTER_RATFOLK and not _is_ratfolk_control_available():
+		control_target_failure_reason = "Ratfolk control is unavailable right now."
+		return false
+	if normalized_control_id == CONTROLLED_CHARACTER_LIZARDFOLK and not _is_lizardfolk_control_available():
+		control_target_failure_reason = "Lizardfolk control is unavailable right now."
 		return false
 	if controlled_character_id == normalized_control_id:
 		return false
@@ -609,6 +660,9 @@ func _spawn_friendly_ratfolk() -> void:
 		ratfolk.set_player(player)
 	if ratfolk.has_method("set_arena_bounds"):
 		ratfolk.call("set_arena_bounds", arena_min_x, arena_max_x, arena_min_y, arena_max_y)
+	if ratfolk.has_method("set_manual_control_enabled"):
+		ratfolk.call("set_manual_control_enabled", false)
+	_apply_control_mode_runtime()
 
 
 func _spawn_friendly_lizardfolk() -> void:
@@ -628,6 +682,8 @@ func _spawn_friendly_lizardfolk() -> void:
 		lizardfolk.call("set_player", player)
 	if lizardfolk.has_method("set_arena_bounds"):
 		lizardfolk.call("set_arena_bounds", arena_min_x, arena_max_x, arena_min_y, arena_max_y)
+	if lizardfolk.has_method("set_manual_control_enabled"):
+		lizardfolk.call("set_manual_control_enabled", false)
 
 
 func _spawn_regular_enemies() -> void:
@@ -1710,7 +1766,8 @@ func _on_two_room_return_portal_body_entered(body: Node) -> void:
 		return
 	if two_room_test_transition_in_progress:
 		return
-	if body == null or not is_instance_valid(player) or body != player:
+	var interaction_actor := _get_controlled_adventure_interaction_actor()
+	if body == null or interaction_actor == null or not is_instance_valid(interaction_actor) or body != interaction_actor:
 		return
 	status_message.emit("Portal activated - returning to Room 1", 1.0)
 	two_room_force_next_transition_spawn_on_left = true
@@ -1738,6 +1795,44 @@ func _try_auto_open_two_room_chest_if_ready() -> void:
 		if body == player:
 			_on_two_room_chest_body_entered(player)
 			return
+
+
+func _is_controlled_actor_inside_trigger_area(area: Area2D) -> bool:
+	var interaction_actor := _get_controlled_adventure_interaction_actor()
+	return _is_actor_inside_trigger_area(interaction_actor, area)
+
+
+func _is_actor_inside_trigger_area(actor: Node, area: Area2D) -> bool:
+	if actor == null or not is_instance_valid(actor):
+		return false
+	if area == null or not is_instance_valid(area):
+		return false
+	for body in area.get_overlapping_bodies():
+		if body == actor:
+			return true
+	var actor_node := actor as Node2D
+	if actor_node == null or not is_instance_valid(actor_node):
+		return false
+	for child in area.get_children():
+		var collision_shape := child as CollisionShape2D
+		if collision_shape == null or not is_instance_valid(collision_shape) or collision_shape.disabled:
+			continue
+		if _is_point_inside_trigger_shape(collision_shape.to_local(actor_node.global_position), collision_shape.shape):
+			return true
+	return false
+
+
+func _is_point_inside_trigger_shape(local_point: Vector2, shape: Shape2D) -> bool:
+	if shape == null:
+		return false
+	var rectangle := shape as RectangleShape2D
+	if rectangle != null:
+		var half_size := rectangle.size * 0.5
+		return absf(local_point.x) <= half_size.x and absf(local_point.y) <= half_size.y
+	var circle := shape as CircleShape2D
+	if circle != null:
+		return local_point.length_squared() <= circle.radius * circle.radius
+	return false
 
 
 func _open_two_room_final_reward_chest() -> void:
@@ -1770,7 +1865,8 @@ func _on_two_room_exit_body_entered(body: Node, target_room_index: int) -> void:
 		return
 	if two_room_test_transition_in_progress:
 		return
-	if body == null or not is_instance_valid(player) or body != player:
+	var interaction_actor := _get_controlled_adventure_interaction_actor()
+	if body == null or interaction_actor == null or not is_instance_valid(interaction_actor) or body != interaction_actor:
 		return
 	var clamped_target := clampi(target_room_index, 1, TWO_ROOM_TEST_TOTAL_ROOMS)
 	if clamped_target == two_room_test_room_index:
@@ -1783,7 +1879,8 @@ func _try_auto_activate_two_room_exit_if_ready() -> void:
 		return
 	if two_room_test_transition_in_progress:
 		return
-	if not is_instance_valid(player):
+	var interaction_actor := _get_controlled_adventure_interaction_actor()
+	if interaction_actor == null or not is_instance_valid(interaction_actor):
 		return
 	if not is_instance_valid(two_room_exit_root):
 		return
@@ -1794,10 +1891,24 @@ func _try_auto_activate_two_room_exit_if_ready() -> void:
 		var target_room_index := int(area.get_meta("target_room_index", 0))
 		if target_room_index <= 0:
 			continue
-		for body in area.get_overlapping_bodies():
-			if body == player:
-				_on_two_room_exit_body_entered(player, target_room_index)
-				return
+		if _is_actor_inside_trigger_area(interaction_actor, area):
+			_on_two_room_exit_body_entered(interaction_actor, target_room_index)
+			return
+
+
+func _try_auto_activate_two_room_return_portal_if_ready() -> void:
+	if not two_room_test_active:
+		return
+	if two_room_test_room_index != TWO_ROOM_TEST_TOTAL_ROOMS:
+		return
+	if two_room_test_transition_in_progress:
+		return
+	if not _is_controlled_actor_inside_trigger_area(two_room_return_portal_area):
+		return
+	var interaction_actor := _get_controlled_adventure_interaction_actor()
+	if interaction_actor == null or not is_instance_valid(interaction_actor):
+		return
+	_on_two_room_return_portal_body_entered(interaction_actor)
 
 
 func _transition_two_room_to_room(target_room_index: int) -> void:
@@ -3010,24 +3121,88 @@ func _is_healer_control_available() -> bool:
 	return _is_party_member_enabled(PARTY_MEMBER_HEALER, true)
 
 
+func _is_ratfolk_control_available() -> bool:
+	if not is_instance_valid(ratfolk):
+		return false
+	var ratfolk_ref := ratfolk as FriendlyRatfolk
+	if ratfolk_ref != null and ratfolk_ref.dead:
+		return false
+	if two_room_test_active:
+		return two_room_rat_released
+	if not _encounter_uses_companions():
+		return false
+	return _is_party_member_enabled(PARTY_MEMBER_RATFOLK, true)
+
+
+func _is_lizardfolk_control_available() -> bool:
+	if not is_instance_valid(lizardfolk):
+		return false
+	var lizardfolk_ref := lizardfolk as FriendlyLizardfolk
+	if lizardfolk_ref != null and lizardfolk_ref.dead:
+		return false
+	if two_room_test_active:
+		return two_room_lizard_released
+	if not _encounter_uses_companions():
+		return false
+	return _is_party_member_enabled(PARTY_MEMBER_LIZARDFOLK, true)
+
+
 func _apply_control_mode_runtime() -> void:
 	var manual_healer_control := controlled_character_id == CONTROLLED_CHARACTER_HEALER and _is_healer_control_available()
+	var manual_ratfolk_control := controlled_character_id == CONTROLLED_CHARACTER_RATFOLK and _is_ratfolk_control_available()
+	var manual_lizardfolk_control := controlled_character_id == CONTROLLED_CHARACTER_LIZARDFOLK and _is_lizardfolk_control_available()
 	if not manual_healer_control and controlled_character_id == CONTROLLED_CHARACTER_HEALER:
 		controlled_character_id = CONTROLLED_CHARACTER_TANK
+	if not manual_ratfolk_control and controlled_character_id == CONTROLLED_CHARACTER_RATFOLK:
+		controlled_character_id = CONTROLLED_CHARACTER_TANK
+	if not manual_lizardfolk_control and controlled_character_id == CONTROLLED_CHARACTER_LIZARDFOLK:
+		controlled_character_id = CONTROLLED_CHARACTER_TANK
 	if is_instance_valid(player) and player.has_method("set_ai_control_enabled"):
-		player.call("set_ai_control_enabled", manual_healer_control)
+		player.call("set_ai_control_enabled", manual_healer_control or manual_ratfolk_control or manual_lizardfolk_control)
 	if is_instance_valid(healer) and healer.has_method("set_manual_control_enabled"):
 		healer.call("set_manual_control_enabled", manual_healer_control)
+	if is_instance_valid(ratfolk) and ratfolk.has_method("set_manual_control_enabled"):
+		ratfolk.call("set_manual_control_enabled", manual_ratfolk_control)
+	if is_instance_valid(lizardfolk) and lizardfolk.has_method("set_manual_control_enabled"):
+		lizardfolk.call("set_manual_control_enabled", manual_lizardfolk_control)
+	if is_instance_valid(player) and player.has_method("_emit_cooldown_state"):
+		player.call("_emit_cooldown_state")
 
 
 func _is_manual_healer_control_active() -> bool:
 	if controlled_character_id != CONTROLLED_CHARACTER_HEALER:
+		return false
+	if not _is_healer_control_available():
 		return false
 	if not is_instance_valid(healer):
 		return false
 	if healer.has_method("is_manual_control_enabled"):
 		return bool(healer.call("is_manual_control_enabled"))
 	return _is_healer_control_available()
+
+
+func _is_manual_ratfolk_control_active() -> bool:
+	if controlled_character_id != CONTROLLED_CHARACTER_RATFOLK:
+		return false
+	if not _is_ratfolk_control_available():
+		return false
+	if not is_instance_valid(ratfolk):
+		return false
+	if ratfolk.has_method("is_manual_control_enabled"):
+		return bool(ratfolk.call("is_manual_control_enabled"))
+	return _is_ratfolk_control_available()
+
+
+func _is_manual_lizardfolk_control_active() -> bool:
+	if controlled_character_id != CONTROLLED_CHARACTER_LIZARDFOLK:
+		return false
+	if not _is_lizardfolk_control_available():
+		return false
+	if not is_instance_valid(lizardfolk):
+		return false
+	if lizardfolk.has_method("is_manual_control_enabled"):
+		return bool(lizardfolk.call("is_manual_control_enabled"))
+	return _is_lizardfolk_control_available()
 
 
 func _build_healer_manual_control_cooldowns() -> Dictionary:
@@ -3060,6 +3235,86 @@ func _build_healer_manual_control_cooldowns() -> Dictionary:
 	var data := (data_variant as Dictionary).duplicate(true)
 	data["ability_layout"] = "healer"
 	return data
+
+
+func _build_ratfolk_manual_control_cooldowns() -> Dictionary:
+	var fallback := {
+		"ability_layout": "ratfolk",
+		"basic": 0.0,
+		"basic_unlocked": false,
+		"ability_1": 0.0,
+		"ability_1_unlocked": false,
+		"counter": 0.0,
+		"counter_unlocked": false,
+		"ability_2": 0.0,
+		"ability_2_unlocked": false,
+		"roll": 0.0,
+		"roll_unlocked": false,
+		"block_cooldown_left": 0.0,
+		"block_unlocked": false,
+		"special_meter_ratio": 0.0
+	}
+	if not is_instance_valid(ratfolk):
+		return fallback
+	if not ratfolk.has_method("get_manual_control_cooldown_state"):
+		return fallback
+	var data_variant: Variant = ratfolk.call("get_manual_control_cooldown_state")
+	if not (data_variant is Dictionary):
+		return fallback
+	var data := (data_variant as Dictionary).duplicate(true)
+	data["ability_layout"] = "ratfolk"
+	return data
+
+
+func _build_lizardfolk_manual_control_cooldowns() -> Dictionary:
+	var fallback := {
+		"ability_layout": "lizardfolk",
+		"basic": 0.0,
+		"basic_unlocked": false,
+		"ability_1": 0.0,
+		"ability_1_unlocked": false,
+		"counter": 0.0,
+		"counter_unlocked": false,
+		"ability_2": 0.0,
+		"ability_2_unlocked": false,
+		"roll": 0.0,
+		"roll_unlocked": false,
+		"block_cooldown_left": 0.0,
+		"block_unlocked": false,
+		"special_meter_ratio": 0.0
+	}
+	if not is_instance_valid(lizardfolk):
+		return fallback
+	if not lizardfolk.has_method("get_manual_control_cooldown_state"):
+		return fallback
+	var data_variant: Variant = lizardfolk.call("get_manual_control_cooldown_state")
+	if not (data_variant is Dictionary):
+		return fallback
+	var data := (data_variant as Dictionary).duplicate(true)
+	data["ability_layout"] = "lizardfolk"
+	return data
+
+
+func _emit_manual_control_cooldowns() -> void:
+	if _is_manual_healer_control_active():
+		cooldowns_changed.emit(_build_healer_manual_control_cooldowns())
+		return
+	if _is_manual_ratfolk_control_active():
+		cooldowns_changed.emit(_build_ratfolk_manual_control_cooldowns())
+		return
+	if _is_manual_lizardfolk_control_active():
+		cooldowns_changed.emit(_build_lizardfolk_manual_control_cooldowns())
+
+
+func _sync_control_mode_availability() -> void:
+	if controlled_character_id == CONTROLLED_CHARACTER_HEALER and not _is_healer_control_available():
+		_apply_control_mode_runtime()
+		return
+	if controlled_character_id == CONTROLLED_CHARACTER_RATFOLK and not _is_ratfolk_control_available():
+		_apply_control_mode_runtime()
+		return
+	if controlled_character_id == CONTROLLED_CHARACTER_LIZARDFOLK and not _is_lizardfolk_control_available():
+		_apply_control_mode_runtime()
 
 
 func toggle_hitbox_debug_mode() -> bool:
@@ -3295,6 +3550,12 @@ func _on_player_xp_changed(current: int, needed: int, level: int) -> void:
 func _on_player_cooldowns_changed(values: Dictionary) -> void:
 	if _is_manual_healer_control_active():
 		cooldowns_changed.emit(_build_healer_manual_control_cooldowns())
+		return
+	if _is_manual_ratfolk_control_active():
+		cooldowns_changed.emit(_build_ratfolk_manual_control_cooldowns())
+		return
+	if _is_manual_lizardfolk_control_active():
+		cooldowns_changed.emit(_build_lizardfolk_manual_control_cooldowns())
 		return
 	var emitted_values := values.duplicate(true)
 	emitted_values["ability_layout"] = "tank"

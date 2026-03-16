@@ -1,0 +1,17 @@
+AUTOPLAY_TEST START
+Loaded test scene (scenario=lunge_block)
+AUTOPLAY_TEST START
+Loaded test scene (scenario=lunge_block)
+AUTOPLAY_TEST END (quit=0 reason=shield_intercept)
+AUTOPLAY_TEST START
+Loaded test scene (scenario=lunge_block)
+AUTOPLAY_TEST START
+Loaded test scene (scenario=lunge_block)
+AUTOPLAY_TEST START
+Loaded test scene (scenario=lunge_block)
+AUTOPLAY_TEST START
+Loaded test scene (scenario=lunge_block)
+AUTOPLAY_TEST START
+Loaded test scene (scenario=lunge_block)
+AUTOPLAY_TEST START
+Loaded test scene (scenario=lunge_block)

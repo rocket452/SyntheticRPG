@@ -14,6 +14,11 @@ enum DPSAIState {
 	BREATH_STACK
 }
 
+enum AttackMode {
+	BASIC,
+	SHADOW_STRIKE
+}
+
 const DPS_AI_STATE_NAMES: Dictionary = {
 	DPSAIState.FOLLOWING: "FOLLOWING",
 	DPSAIState.REPOSITIONING: "REPOSITIONING",
@@ -33,7 +38,8 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export_range(0.0, 1.0, 0.01) var player_like_move_deadzone_ratio: float = 0.24
 @export var ai_decision_interval: float = 0.1
 @export var attack_damage: float = 8.5
-@export var attack_range: float = 82.0
+@export var basic_attack_behind_damage_multiplier: float = 1.2
+@export var attack_range: float = 41.0
 @export var attack_arc_degrees: float = 95.0
 @export var attack_depth_tolerance: float = 58.0
 @export var preferred_attack_spacing: float = 66.0
@@ -49,6 +55,9 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var attack_knockback_scale: float = 0.82
 @export var attack_hitstop_duration: float = 0.045
 @export var attack_impact_vfx_scale: float = 1.15
+@export var manual_roll_speed: float = 276.0
+@export var manual_roll_duration: float = 0.2
+@export var manual_roll_cooldown: float = 3.2
 @export var outgoing_hit_stun_duration: float = 0.16
 @export var hit_stun_duration: float = 0.2
 @export var hit_knockback_speed: float = 170.0
@@ -79,6 +88,9 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var special_bar_width: float = 52.0
 @export var special_bar_thickness: float = 3.0
 @export var special_bar_vertical_offset: float = 8.0
+@export var combo_point_radius: float = 3.8
+@export var combo_point_spacing: float = 12.0
+@export_range(8, 24, 1) var combo_point_segments: int = 14
 @export var special_meter_max: float = 100.0
 @export var special_meter_gain_per_damage: float = 2.0
 @export var special_meter_gain_per_heal: float = 2.0
@@ -95,14 +107,22 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var shadow_fear_projectile_max_distance: float = 980.0
 @export var shadow_fear_cast_duration: float = 0.28
 @export var shadow_clone_enabled: bool = true
-@export var shadow_clone_count: int = 2
+@export var shadow_clone_count: int = 1
 @export var shadow_clone_cast_duration: float = 0.5
 @export var shadow_clone_cooldown: float = 11.25
+@export_range(1, 5, 1) var shadow_strike_combo_cost: int = 2
+@export var shadow_strike_windup_scale: float = 0.94
+@export_range(1, 5, 1) var shadow_surge_combo_cost: int = 5
+@export var shadow_surge_speed: float = 412.0
+@export var shadow_surge_duration: float = 0.18
+@export var shadow_surge_damage_multiplier: float = 1.35
+@export var shadow_surge_hit_radius: float = 18.0
+@export var shadow_surge_hitstop_duration: float = 0.065
 @export var boss_mark_duration: float = 6.0
 @export var boss_mark_cooldown: float = 4.2
 @export var boss_mark_range: float = 232.0
 @export var shadow_clone_spawn_radius: float = 30.0
-@export var shadow_clone_lifetime: float = 5.5
+@export var shadow_clone_lifetime: float = 11.0
 @export var shadow_clone_scatter_duration: float = 0.32
 @export var shadow_clone_scatter_speed: float = 178.0
 @export var shadow_clone_scatter_angle_degrees: float = 90.0
@@ -152,6 +172,109 @@ const ANIM_FPS: Dictionary = {
 	"hurt": 12.0,
 	"death": 8.0
 }
+const RATFOLK_ITEM_PRICE: int = 15
+const RATFOLK_WEAPON_DEFINITIONS: Dictionary = {
+	"needlefang_blades": {
+		"id": "needlefang_blades",
+		"name": "Needlefang Blades",
+		"icon": "WPN",
+		"description": "Basic stab range +28% and damage +12%.",
+		"attack_range_multiplier": 1.28,
+		"attack_damage_multiplier": 1.12
+	},
+	"dreadwhisper_knife": {
+		"id": "dreadwhisper_knife",
+		"name": "Dreadwhisper Knife",
+		"icon": "WPN",
+		"description": "Shadow Fear lasts 35% longer and its cooldown is 18% shorter.",
+		"shadow_fear_duration_multiplier": 1.35,
+		"shadow_fear_cooldown_multiplier": 0.82
+	},
+	"splittail_dirk": {
+		"id": "splittail_dirk",
+		"name": "Splittail Dirk",
+		"icon": "WPN",
+		"description": "Shadow Strike summons +1 extra clone and Shadow Clone cooldown -18%.",
+		"shadow_clone_count_bonus": 1,
+		"shadow_clone_cooldown_multiplier": 0.82
+	}
+}
+const RATFOLK_TRINKET_DEFINITIONS: Dictionary = {
+	"gutter_charm": {
+		"id": "gutter_charm",
+		"name": "Gutter Charm",
+		"icon": "TRK",
+		"description": "Start each encounter with 1 combo point.",
+		"starting_combo_points": 1
+	},
+	"tyrant_seal": {
+		"id": "tyrant_seal",
+		"name": "Tyrant Seal",
+		"icon": "TRK",
+		"description": "Boss Mark duration +50% and mark range +15%.",
+		"boss_mark_duration_multiplier": 1.5,
+		"boss_mark_range_multiplier": 1.15
+	},
+	"nightglass_vial": {
+		"id": "nightglass_vial",
+		"name": "Nightglass Vial",
+		"icon": "TRK",
+		"description": "Max health +18% and damage taken -12%.",
+		"max_health_multiplier": 1.18,
+		"damage_taken_multiplier": 0.88
+	}
+}
+const RATFOLK_BOOT_DEFINITIONS: Dictionary = {
+	"quickpaw_boots": {
+		"id": "quickpaw_boots",
+		"name": "Quickpaw Boots",
+		"icon": "BTS",
+		"description": "Movement speed +15%.",
+		"move_speed_multiplier": 1.15
+	},
+	"ghoststep_boots": {
+		"id": "ghoststep_boots",
+		"name": "Ghoststep Boots",
+		"icon": "BTS",
+		"description": "Roll cooldown -32% and roll speed +18%.",
+		"roll_cooldown_multiplier": 0.68,
+		"roll_speed_multiplier": 1.18
+	},
+	"ambush_spurs": {
+		"id": "ambush_spurs",
+		"name": "Ambush Spurs",
+		"icon": "BTS",
+		"description": "Backstab Dash cooldown -30% and dash speed +20%.",
+		"dash_cooldown_multiplier": 0.7,
+		"dash_speed_multiplier": 1.2
+	}
+}
+const RATFOLK_WEAPON_ORDER: Array[String] = [
+	"needlefang_blades",
+	"dreadwhisper_knife",
+	"splittail_dirk"
+]
+const RATFOLK_TRINKET_ORDER: Array[String] = [
+	"gutter_charm",
+	"tyrant_seal",
+	"nightglass_vial"
+]
+const RATFOLK_BOOT_ORDER: Array[String] = [
+	"quickpaw_boots",
+	"ghoststep_boots",
+	"ambush_spurs"
+]
+const RATFOLK_STORE_ITEM_ORDER: Array[String] = [
+	"needlefang_blades",
+	"dreadwhisper_knife",
+	"splittail_dirk",
+	"gutter_charm",
+	"tyrant_seal",
+	"nightglass_vial",
+	"quickpaw_boots",
+	"ghoststep_boots",
+	"ambush_spurs"
+]
 
 var player: Player = null
 var target_enemy: EnemyBase = null
@@ -177,6 +300,9 @@ var backstab_dash_cooldown_left: float = 0.0
 var backstab_dash_left: float = 0.0
 var backstab_dash_target_position: Vector2 = Vector2.ZERO
 var backstab_dash_target_enemy: EnemyBase = null
+var manual_roll_cooldown_left: float = 0.0
+var manual_roll_left: float = 0.0
+var manual_roll_vector: Vector2 = Vector2.ZERO
 var is_shadow_clone: bool = false
 var stun_left: float = 0.0
 var hurt_anim_left: float = 0.0
@@ -193,6 +319,7 @@ var dps_ai_state: DPSAIState = DPSAIState.FOLLOWING
 var dps_ai_state_name: String = "FOLLOWING"
 var dps_ai_target: Node2D = null
 var dps_ai_decision_left: float = 0.0
+var manual_control_enabled: bool = false
 var health_bar_root: Node2D = null
 var health_bar_background: Line2D = null
 var health_bar_fill: Line2D = null
@@ -200,6 +327,14 @@ var cast_bar_background: Line2D = null
 var cast_bar_fill: Line2D = null
 var special_bar_background: Line2D = null
 var special_bar_fill: Line2D = null
+var combo_point_root: Node2D = null
+var combo_point_nodes: Array[Polygon2D] = []
+var combo_point_count: int = 0
+var current_attack_mode: AttackMode = AttackMode.BASIC
+var shadow_surge_left: float = 0.0
+var shadow_surge_direction: Vector2 = Vector2.ZERO
+var shadow_surge_hit_enemy_ids: Dictionary = {}
+var shadow_surge_clone_expire_on_finish: bool = false
 var special_meter: float = 0.0
 var ratfolk_sheet_texture: Texture2D = null
 var ratfolk_scene_cache: PackedScene = null
@@ -219,6 +354,27 @@ var hitbox_debug_enabled: bool = false
 var idle_follow_anchor_world: Vector2 = Vector2.ZERO
 var idle_follow_anchor_initialized: bool = false
 var idle_follow_active: bool = false
+var available_weapon_ids: Array[String] = []
+var equipped_weapon_id: String = ""
+var available_trinket_ids: Array[String] = []
+var equipped_trinket_id: String = ""
+var available_boot_ids: Array[String] = []
+var base_max_health: float = 0.0
+var base_move_speed: float = 0.0
+var base_attack_damage: float = 0.0
+var base_attack_range: float = 0.0
+var base_shadow_fear_duration: float = 0.0
+var base_shadow_fear_cooldown: float = 0.0
+var base_shadow_clone_count: int = 0
+var base_shadow_clone_cooldown: float = 0.0
+var base_boss_mark_duration: float = 0.0
+var base_boss_mark_range: float = 0.0
+var base_manual_roll_speed: float = 0.0
+var base_manual_roll_cooldown: float = 0.0
+var base_backstab_dash_speed: float = 0.0
+var base_backstab_dash_cooldown: float = 0.0
+var base_special_meter_gain_per_damage: float = 0.0
+var base_special_meter_gain_per_heal: float = 0.0
 var rng := RandomNumberGenerator.new()
 
 @onready var sprite: Sprite2D = $Sprite2D
@@ -245,8 +401,13 @@ func _ready() -> void:
 		sprite_base_scale = sprite.scale
 	_acquire_player()
 	_apply_shadow_clone_setup()
+	_cache_base_stats()
+	_initialize_default_equipment_inventory()
+	_refresh_equipment_stats()
 	current_health = maxf(1.0, max_health)
 	special_meter = 0.0
+	combo_point_count = _get_starting_combo_points() if _uses_combo_points() else 0
+	current_attack_mode = AttackMode.BASIC
 	attack_cooldown_left = attack_cooldown * 0.35
 	shadow_fear_cooldown_left = 0.0
 	shadow_fear_pending_left = -1.0
@@ -285,6 +446,497 @@ func set_player(target_player: Player) -> void:
 	idle_follow_active = false
 
 
+func set_manual_control_enabled(enabled: bool) -> void:
+	manual_control_enabled = bool(enabled) and not is_shadow_clone
+	velocity = Vector2.ZERO
+	manual_roll_left = 0.0
+	manual_roll_vector = Vector2.ZERO
+	current_attack_mode = AttackMode.BASIC
+	shadow_surge_left = 0.0
+	shadow_surge_direction = Vector2.ZERO
+	shadow_surge_hit_enemy_ids.clear()
+	shadow_surge_clone_expire_on_finish = false
+	if not manual_control_enabled:
+		dps_ai_decision_left = 0.0
+		if not dead:
+			_set_dps_ai_state(DPSAIState.FOLLOWING, player)
+		return
+	shadow_fear_focus_target = null
+	shadow_fear_resume_target = null
+	shadow_fear_pending_left = -1.0
+	shadow_fear_pending_total = 0.0
+	shadow_fear_focus_requires_close = true
+	dps_ai_state_name = "PLAYER_CONTROLLED"
+	dps_ai_target = null
+	idle_follow_anchor_initialized = false
+	idle_follow_active = false
+
+
+func is_manual_control_enabled() -> bool:
+	return manual_control_enabled
+
+
+func _uses_combo_points() -> bool:
+	return true
+
+
+func _get_combo_point_max() -> int:
+	return 5
+
+
+func _get_starting_combo_points() -> int:
+	if not _uses_combo_points():
+		return 0
+	var trinket_data := _get_equipped_ratfolk_trinket_data()
+	if trinket_data.is_empty():
+		return 0
+	return clampi(int(trinket_data.get("starting_combo_points", 0)), 0, _get_combo_point_max())
+
+
+func get_manual_control_cooldown_state() -> Dictionary:
+	var special_ratio := _get_special_meter_ratio()
+	return {
+		"ability_layout": "ratfolk",
+		"basic": attack_cooldown_left,
+		"basic_unlocked": true,
+		"ability_1": shadow_fear_cooldown_left,
+		"ability_1_unlocked": shadow_fear_enabled and not is_shadow_clone,
+		"counter": boss_mark_cooldown_left,
+		"counter_unlocked": not is_shadow_clone,
+		"ability_2": 0.0,
+		"ability_2_unlocked": shadow_clone_enabled and shadow_clone_count > 0 and _can_pay_combo_points(shadow_strike_combo_cost) and not is_shadow_clone,
+		"roll": manual_roll_cooldown_left,
+		"roll_unlocked": not is_shadow_clone,
+		"block_cooldown_left": shadow_surge_left,
+		"block_unlocked": not is_shadow_clone and shadow_surge_left <= 0.0 and _can_pay_combo_points(shadow_surge_combo_cost),
+		"special_meter_ratio": special_ratio
+	}
+
+
+func get_shield_slot_display_name() -> String:
+	return "Trinkets"
+
+
+func get_shield_slot_singular_display_name() -> String:
+	return "Trinket"
+
+
+func get_shield_slot_empty_text() -> String:
+	return "No trinkets found."
+
+
+func get_shield_slot_default_icon() -> String:
+	return "TRK"
+
+
+func get_available_sword_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	for weapon_id in available_weapon_ids:
+		if not RATFOLK_WEAPON_DEFINITIONS.has(weapon_id):
+			continue
+		var weapon_data_variant: Variant = RATFOLK_WEAPON_DEFINITIONS[weapon_id]
+		if weapon_data_variant is Dictionary:
+			entries.append((weapon_data_variant as Dictionary).duplicate(true))
+	return entries
+
+
+func get_equipped_sword_id() -> String:
+	return equipped_weapon_id
+
+
+func get_equipped_sword_name() -> String:
+	if equipped_weapon_id.is_empty():
+		return "No Weapon"
+	if not RATFOLK_WEAPON_DEFINITIONS.has(equipped_weapon_id):
+		return equipped_weapon_id
+	var weapon_data_variant: Variant = RATFOLK_WEAPON_DEFINITIONS[equipped_weapon_id]
+	if weapon_data_variant is Dictionary:
+		return String((weapon_data_variant as Dictionary).get("name", equipped_weapon_id))
+	return equipped_weapon_id
+
+
+func equip_sword(sword_id: String) -> bool:
+	var weapon_id := sword_id.strip_edges().to_lower()
+	if weapon_id.is_empty():
+		return false
+	if available_weapon_ids.find(weapon_id) == -1:
+		return false
+	if equipped_weapon_id == weapon_id:
+		return false
+	equipped_weapon_id = weapon_id
+	_refresh_equipment_stats()
+	return true
+
+
+func get_available_shield_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	for trinket_id in available_trinket_ids:
+		if not RATFOLK_TRINKET_DEFINITIONS.has(trinket_id):
+			continue
+		var trinket_data_variant: Variant = RATFOLK_TRINKET_DEFINITIONS[trinket_id]
+		if trinket_data_variant is Dictionary:
+			entries.append((trinket_data_variant as Dictionary).duplicate(true))
+	return entries
+
+
+func get_equipped_shield_id() -> String:
+	return equipped_trinket_id
+
+
+func get_equipped_shield_name() -> String:
+	if equipped_trinket_id.is_empty():
+		return "No Trinket"
+	if not RATFOLK_TRINKET_DEFINITIONS.has(equipped_trinket_id):
+		return equipped_trinket_id
+	var trinket_data_variant: Variant = RATFOLK_TRINKET_DEFINITIONS[equipped_trinket_id]
+	if trinket_data_variant is Dictionary:
+		return String((trinket_data_variant as Dictionary).get("name", equipped_trinket_id))
+	return equipped_trinket_id
+
+
+func equip_shield(shield_id: String) -> bool:
+	var trinket_id := shield_id.strip_edges().to_lower()
+	if trinket_id.is_empty():
+		return false
+	if available_trinket_ids.find(trinket_id) == -1:
+		return false
+	if equipped_trinket_id == trinket_id:
+		return false
+	equipped_trinket_id = trinket_id
+	_refresh_equipment_stats()
+	return true
+
+
+func get_available_ring_entries() -> Array[Dictionary]:
+	return []
+
+
+func get_equipped_ring_id() -> String:
+	return ""
+
+
+func get_equipped_ring_name() -> String:
+	return "No Ring"
+
+
+func equip_ring(_ring_id: String) -> bool:
+	return false
+
+
+func get_equipped_boot_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	for boot_id in available_boot_ids:
+		if not RATFOLK_BOOT_DEFINITIONS.has(boot_id):
+			continue
+		var boot_data_variant: Variant = RATFOLK_BOOT_DEFINITIONS[boot_id]
+		if not (boot_data_variant is Dictionary):
+			continue
+		var boot_data := (boot_data_variant as Dictionary).duplicate(true)
+		boot_data["equipped"] = true
+		entries.append(boot_data)
+	return entries
+
+
+func get_gold_total() -> int:
+	if not is_instance_valid(player):
+		return 0
+	if not player.has_method("get_gold_total"):
+		return 0
+	return maxi(0, int(player.call("get_gold_total")))
+
+
+func get_store_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	for item_id_variant in RATFOLK_STORE_ITEM_ORDER:
+		var item_id := String(item_id_variant).strip_edges().to_lower()
+		if item_id.is_empty():
+			continue
+		var item_data := _get_ratfolk_store_definition(item_id)
+		if item_data.is_empty():
+			continue
+		entries.append({
+			"item_id": item_id,
+			"name": String(item_data.get("name", item_id)),
+			"description": String(item_data.get("description", "Ratfolk upgrade.")),
+			"price": RATFOLK_ITEM_PRICE,
+			"owned": _is_store_item_owned(item_id)
+		})
+	return entries
+
+
+func purchase_store_item(item_id: String) -> Dictionary:
+	var normalized_item_id := item_id.strip_edges().to_lower()
+	if normalized_item_id.is_empty() or _get_ratfolk_store_definition(normalized_item_id).is_empty():
+		return {
+			"success": false,
+			"reason": "Item unavailable.",
+			"gold_total": get_gold_total()
+		}
+	if _is_store_item_owned(normalized_item_id):
+		return {
+			"success": false,
+			"reason": "Already owned.",
+			"gold_total": get_gold_total()
+		}
+	if get_gold_total() < RATFOLK_ITEM_PRICE:
+		return {
+			"success": false,
+			"reason": "Not enough gold.",
+			"gold_total": get_gold_total()
+		}
+	if not _spend_shared_gold(RATFOLK_ITEM_PRICE):
+		return {
+			"success": false,
+			"reason": "Unable to spend gold.",
+			"gold_total": get_gold_total()
+		}
+	var granted := _grant_store_item(normalized_item_id)
+	if not granted:
+		return {
+			"success": false,
+			"reason": "Grant failed.",
+			"gold_total": get_gold_total()
+		}
+	var item_data := _get_ratfolk_store_definition(normalized_item_id)
+	return {
+		"success": true,
+		"item_id": normalized_item_id,
+		"item_name": String(item_data.get("name", normalized_item_id)),
+		"price": RATFOLK_ITEM_PRICE,
+		"gold_total": get_gold_total()
+	}
+
+
+func _is_store_item_owned(item_id: String) -> bool:
+	if RATFOLK_WEAPON_DEFINITIONS.has(item_id):
+		return available_weapon_ids.find(item_id) != -1
+	if RATFOLK_TRINKET_DEFINITIONS.has(item_id):
+		return available_trinket_ids.find(item_id) != -1
+	if RATFOLK_BOOT_DEFINITIONS.has(item_id):
+		return available_boot_ids.find(item_id) != -1
+	return false
+
+
+func _get_ratfolk_store_definition(item_id: String) -> Dictionary:
+	if RATFOLK_WEAPON_DEFINITIONS.has(item_id):
+		return (RATFOLK_WEAPON_DEFINITIONS[item_id] as Dictionary).duplicate(true)
+	if RATFOLK_TRINKET_DEFINITIONS.has(item_id):
+		return (RATFOLK_TRINKET_DEFINITIONS[item_id] as Dictionary).duplicate(true)
+	if RATFOLK_BOOT_DEFINITIONS.has(item_id):
+		return (RATFOLK_BOOT_DEFINITIONS[item_id] as Dictionary).duplicate(true)
+	return {}
+
+
+func _spend_shared_gold(amount: int) -> bool:
+	if amount <= 0:
+		return true
+	if not is_instance_valid(player):
+		return false
+	var current_gold := maxi(0, int(player.gold_total))
+	if current_gold < amount:
+		return false
+	player.gold_total = maxi(0, current_gold - amount)
+	return true
+
+
+func _grant_store_item(item_id: String) -> bool:
+	if RATFOLK_WEAPON_DEFINITIONS.has(item_id):
+		if available_weapon_ids.find(item_id) == -1:
+			available_weapon_ids.append(item_id)
+		if equipped_weapon_id.is_empty():
+			equipped_weapon_id = item_id
+		_sort_ratfolk_owned_items()
+		_refresh_equipment_stats()
+		return true
+	if RATFOLK_TRINKET_DEFINITIONS.has(item_id):
+		if available_trinket_ids.find(item_id) == -1:
+			available_trinket_ids.append(item_id)
+		if equipped_trinket_id.is_empty():
+			equipped_trinket_id = item_id
+		_sort_ratfolk_owned_items()
+		_refresh_equipment_stats()
+		return true
+	if RATFOLK_BOOT_DEFINITIONS.has(item_id):
+		if available_boot_ids.find(item_id) == -1:
+			available_boot_ids.append(item_id)
+		_sort_ratfolk_owned_items()
+		_refresh_equipment_stats()
+		return true
+	return false
+
+
+func _initialize_default_equipment_inventory() -> void:
+	available_weapon_ids.clear()
+	equipped_weapon_id = ""
+	available_trinket_ids.clear()
+	equipped_trinket_id = ""
+	available_boot_ids.clear()
+
+
+func _cache_base_stats() -> void:
+	base_max_health = max_health
+	base_move_speed = move_speed
+	base_attack_damage = attack_damage
+	base_attack_range = attack_range
+	base_shadow_fear_duration = shadow_fear_duration
+	base_shadow_fear_cooldown = shadow_fear_cooldown
+	base_shadow_clone_count = shadow_clone_count
+	base_shadow_clone_cooldown = shadow_clone_cooldown
+	base_boss_mark_duration = boss_mark_duration
+	base_boss_mark_range = boss_mark_range
+	base_manual_roll_speed = manual_roll_speed
+	base_manual_roll_cooldown = manual_roll_cooldown
+	base_backstab_dash_speed = backstab_dash_speed
+	base_backstab_dash_cooldown = backstab_dash_cooldown
+	base_special_meter_gain_per_damage = special_meter_gain_per_damage
+	base_special_meter_gain_per_heal = special_meter_gain_per_heal
+
+
+func _refresh_equipment_stats() -> void:
+	if base_max_health <= 0.0:
+		return
+	max_health = base_max_health
+	move_speed = base_move_speed
+	attack_damage = base_attack_damage
+	attack_range = base_attack_range
+	shadow_fear_duration = base_shadow_fear_duration
+	shadow_fear_cooldown = base_shadow_fear_cooldown
+	shadow_clone_count = base_shadow_clone_count
+	shadow_clone_cooldown = base_shadow_clone_cooldown
+	boss_mark_duration = base_boss_mark_duration
+	boss_mark_range = base_boss_mark_range
+	manual_roll_speed = base_manual_roll_speed
+	manual_roll_cooldown = base_manual_roll_cooldown
+	backstab_dash_speed = base_backstab_dash_speed
+	backstab_dash_cooldown = base_backstab_dash_cooldown
+	special_meter_gain_per_damage = base_special_meter_gain_per_damage
+	special_meter_gain_per_heal = base_special_meter_gain_per_heal
+
+	var weapon_data := _get_equipped_ratfolk_weapon_data()
+	if not weapon_data.is_empty():
+		attack_damage *= maxf(0.1, float(weapon_data.get("attack_damage_multiplier", 1.0)))
+		attack_range *= maxf(0.1, float(weapon_data.get("attack_range_multiplier", 1.0)))
+		shadow_fear_duration *= maxf(0.1, float(weapon_data.get("shadow_fear_duration_multiplier", 1.0)))
+		shadow_fear_cooldown *= clampf(float(weapon_data.get("shadow_fear_cooldown_multiplier", 1.0)), 0.1, 10.0)
+		shadow_clone_count += maxi(0, int(weapon_data.get("shadow_clone_count_bonus", 0)))
+		shadow_clone_cooldown *= clampf(float(weapon_data.get("shadow_clone_cooldown_multiplier", 1.0)), 0.1, 10.0)
+
+	var trinket_data := _get_equipped_ratfolk_trinket_data()
+	if not trinket_data.is_empty():
+		max_health *= maxf(0.1, float(trinket_data.get("max_health_multiplier", 1.0)))
+		boss_mark_duration *= maxf(0.1, float(trinket_data.get("boss_mark_duration_multiplier", 1.0)))
+		boss_mark_range *= maxf(0.1, float(trinket_data.get("boss_mark_range_multiplier", 1.0)))
+		if not _uses_combo_points():
+			var special_gain_multiplier := maxf(0.1, float(trinket_data.get("special_gain_multiplier", 1.0)))
+			special_meter_gain_per_damage *= special_gain_multiplier
+			special_meter_gain_per_heal *= special_gain_multiplier
+
+	if _has_ratfolk_boot("quickpaw_boots"):
+		var move_boot_data := RATFOLK_BOOT_DEFINITIONS.get("quickpaw_boots", {}) as Dictionary
+		move_speed *= maxf(1.0, float(move_boot_data.get("move_speed_multiplier", 1.0)))
+	if _has_ratfolk_boot("ghoststep_boots"):
+		var roll_boot_data := RATFOLK_BOOT_DEFINITIONS.get("ghoststep_boots", {}) as Dictionary
+		manual_roll_speed *= maxf(1.0, float(roll_boot_data.get("roll_speed_multiplier", 1.0)))
+		manual_roll_cooldown *= clampf(float(roll_boot_data.get("roll_cooldown_multiplier", 1.0)), 0.1, 10.0)
+	if _has_ratfolk_boot("ambush_spurs"):
+		var dash_boot_data := RATFOLK_BOOT_DEFINITIONS.get("ambush_spurs", {}) as Dictionary
+		backstab_dash_speed *= maxf(1.0, float(dash_boot_data.get("dash_speed_multiplier", 1.0)))
+		backstab_dash_cooldown *= clampf(float(dash_boot_data.get("dash_cooldown_multiplier", 1.0)), 0.1, 10.0)
+
+	max_health = maxf(1.0, max_health)
+	attack_damage = maxf(1.0, attack_damage)
+	attack_range = maxf(8.0, attack_range)
+	shadow_fear_duration = maxf(0.1, shadow_fear_duration)
+	shadow_fear_cooldown = maxf(0.1, shadow_fear_cooldown)
+	shadow_clone_count = maxi(1, shadow_clone_count)
+	shadow_clone_cooldown = maxf(0.1, shadow_clone_cooldown)
+	boss_mark_duration = maxf(0.1, boss_mark_duration)
+	boss_mark_range = maxf(16.0, boss_mark_range)
+	manual_roll_speed = maxf(48.0, manual_roll_speed)
+	manual_roll_cooldown = maxf(0.05, manual_roll_cooldown)
+	backstab_dash_speed = maxf(48.0, backstab_dash_speed)
+	backstab_dash_cooldown = maxf(0.05, backstab_dash_cooldown)
+
+	current_health = minf(current_health, max_health)
+	shadow_fear_cooldown_left = minf(shadow_fear_cooldown_left, shadow_fear_cooldown)
+	shadow_clone_cooldown_left = minf(shadow_clone_cooldown_left, shadow_clone_cooldown)
+	boss_mark_cooldown_left = minf(boss_mark_cooldown_left, boss_mark_cooldown)
+	manual_roll_cooldown_left = minf(manual_roll_cooldown_left, manual_roll_cooldown)
+	backstab_dash_cooldown_left = minf(backstab_dash_cooldown_left, backstab_dash_cooldown)
+	if _uses_combo_points():
+		combo_point_count = clampi(combo_point_count, 0, _get_combo_point_max())
+	else:
+		special_meter = clampf(special_meter, 0.0, maxf(1.0, special_meter_max))
+	if is_inside_tree() and not dead and current_health > 0.0:
+		_update_health_bar()
+		health_changed.emit(current_health, max_health)
+
+
+func _is_equipped_ratfolk_weapon(weapon_id: String) -> bool:
+	return not weapon_id.is_empty() and equipped_weapon_id == weapon_id
+
+
+func _is_equipped_ratfolk_trinket(trinket_id: String) -> bool:
+	return not trinket_id.is_empty() and equipped_trinket_id == trinket_id
+
+
+func _has_ratfolk_boot(boot_id: String) -> bool:
+	return not boot_id.is_empty() and available_boot_ids.find(boot_id) != -1
+
+
+func _get_equipped_ratfolk_weapon_data() -> Dictionary:
+	if equipped_weapon_id.is_empty() or not RATFOLK_WEAPON_DEFINITIONS.has(equipped_weapon_id):
+		return {}
+	return (RATFOLK_WEAPON_DEFINITIONS[equipped_weapon_id] as Dictionary).duplicate(true)
+
+
+func _get_equipped_ratfolk_trinket_data() -> Dictionary:
+	if equipped_trinket_id.is_empty() or not RATFOLK_TRINKET_DEFINITIONS.has(equipped_trinket_id):
+		return {}
+	return (RATFOLK_TRINKET_DEFINITIONS[equipped_trinket_id] as Dictionary).duplicate(true)
+
+
+func _get_ratfolk_damage_taken_multiplier() -> float:
+	var trinket_data := _get_equipped_ratfolk_trinket_data()
+	if trinket_data.is_empty():
+		return 1.0
+	return clampf(float(trinket_data.get("damage_taken_multiplier", 1.0)), 0.1, 10.0)
+
+
+func _sort_ratfolk_owned_items() -> void:
+	available_weapon_ids = _sort_ids_by_order(available_weapon_ids, RATFOLK_WEAPON_ORDER)
+	available_trinket_ids = _sort_ids_by_order(available_trinket_ids, RATFOLK_TRINKET_ORDER)
+	available_boot_ids = _sort_ids_by_order(available_boot_ids, RATFOLK_BOOT_ORDER)
+
+
+func _sort_ids_by_order(ids: Array[String], ordered_ids: Array[String]) -> Array[String]:
+	var sorted: Array[String] = []
+	for ordered_id in ordered_ids:
+		if ids.find(ordered_id) != -1:
+			sorted.append(ordered_id)
+	for id in ids:
+		if sorted.find(id) == -1:
+			sorted.append(id)
+	return sorted
+
+
+func _copy_equipment_to_shadow_clone(clone: FriendlyRatfolk) -> void:
+	if clone == null or not is_instance_valid(clone):
+		return
+	clone.available_weapon_ids = available_weapon_ids.duplicate()
+	clone.equipped_weapon_id = equipped_weapon_id
+	clone.available_trinket_ids = available_trinket_ids.duplicate()
+	clone.equipped_trinket_id = equipped_trinket_id
+	clone.available_boot_ids = available_boot_ids.duplicate()
+	clone.base_attack_range = base_attack_range
+	clone.attack_arc_degrees = attack_arc_degrees
+	clone.attack_depth_tolerance = attack_depth_tolerance
+	clone.preferred_attack_spacing = preferred_attack_spacing
+	clone.preferred_attack_spacing_tolerance = preferred_attack_spacing_tolerance
+	clone._refresh_equipment_stats()
+	clone.attack_range = maxf(8.0, attack_range)
+
+
 func setup_as_shadow_clone(owner_player: Player = null) -> void:
 	is_shadow_clone = true
 	shadow_fear_enabled = false
@@ -304,6 +956,10 @@ func setup_as_shadow_clone(owner_player: Player = null) -> void:
 	shadow_clone_cooldown_left = 0.0
 	shadow_clone_scatter_left = 0.0
 	shadow_clone_scatter_direction = Vector2.ZERO
+	shadow_surge_left = 0.0
+	shadow_surge_direction = Vector2.ZERO
+	shadow_surge_hit_enemy_ids.clear()
+	shadow_surge_clone_expire_on_finish = false
 	if is_in_group("friendly_npcs"):
 		remove_from_group("friendly_npcs")
 	if not is_in_group("shadow_clones"):
@@ -360,13 +1016,20 @@ func _physics_process(delta: float) -> void:
 		_interrupt_attack()
 		velocity = knockback_velocity
 	else:
-		_tick_combat_logic(delta)
-		velocity = _apply_player_like_movement_velocity(velocity)
-		velocity += knockback_velocity
+		if manual_control_enabled:
+			dps_ai_state_name = "PLAYER_CONTROLLED"
+			_tick_manual_control_logic(delta)
+			velocity += knockback_velocity
+		else:
+			_tick_combat_logic(delta)
+			velocity = _apply_player_like_movement_velocity(velocity)
+			velocity += knockback_velocity
 
 	move_and_slide()
 	_apply_miniboss_soft_separation(delta)
 	_clamp_to_bounds()
+	if shadow_surge_left > 0.0:
+		_apply_shadow_surge_hits(previous_position, global_position)
 	var frame_displacement := global_position - previous_position
 	if frame_displacement.length() <= maxf(0.0, run_anim_displacement_deadzone):
 		visual_motion_velocity = Vector2.ZERO
@@ -383,6 +1046,8 @@ func _apply_player_like_movement_velocity(raw_velocity: Vector2) -> Vector2:
 	if raw_velocity.length_squared() <= 0.0001:
 		return Vector2.ZERO
 	if backstab_dash_left > 0.0:
+		return raw_velocity
+	if shadow_surge_left > 0.0:
 		return raw_velocity
 	if is_shadow_clone and shadow_clone_scatter_left > 0.0:
 		return raw_velocity
@@ -407,6 +1072,8 @@ func _is_idle_following_state() -> bool:
 	if attack_windup_left > 0.0 or attack_recovery_left > 0.0:
 		return false
 	if shadow_fear_cast_active or shadow_clone_cast_active:
+		return false
+	if shadow_surge_left > 0.0:
 		return false
 	if backstab_dash_left > 0.0:
 		return false
@@ -433,10 +1100,13 @@ func _tick_timers(delta: float) -> void:
 	if shadow_clone_cast_active:
 		shadow_clone_cast_left = maxf(0.0, shadow_clone_cast_left - delta)
 	shadow_clone_cooldown_left = maxf(0.0, shadow_clone_cooldown_left - delta)
+	shadow_surge_left = maxf(0.0, shadow_surge_left - delta)
 	boss_mark_cooldown_left = maxf(0.0, boss_mark_cooldown_left - delta)
 	shadow_clone_scatter_left = maxf(0.0, shadow_clone_scatter_left - delta)
 	backstab_dash_cooldown_left = maxf(0.0, backstab_dash_cooldown_left - delta)
 	backstab_dash_left = maxf(0.0, backstab_dash_left - delta)
+	manual_roll_cooldown_left = maxf(0.0, manual_roll_cooldown_left - delta)
+	manual_roll_left = maxf(0.0, manual_roll_left - delta)
 	marked_lunge_panic_left = maxf(0.0, marked_lunge_panic_left - delta)
 	stun_left = maxf(0.0, stun_left - delta)
 	hurt_anim_left = maxf(0.0, hurt_anim_left - delta)
@@ -453,6 +1123,10 @@ func _tick_timers(delta: float) -> void:
 			base_modulate = base_modulate.lerp(Color(1.0, 0.7, 0.7, base_modulate.a), 0.78)
 		elif heal_flash_left > 0.0:
 			base_modulate = base_modulate.lerp(Color(0.72, 1.0, 0.72, base_modulate.a), 0.78)
+		elif shadow_surge_left > 0.0:
+			base_modulate = base_modulate.lerp(Color(0.92, 0.62, 1.0, base_modulate.a), 0.64)
+		elif current_attack_mode == AttackMode.SHADOW_STRIKE and (attack_windup_left > 0.0 or attack_recovery_left > 0.0):
+			base_modulate = base_modulate.lerp(Color(0.86, 0.58, 1.0, base_modulate.a), 0.58)
 		sprite.modulate = base_modulate
 		var cast_ratio := -1.0
 		if shadow_fear_cast_active and shadow_fear_cast_duration > 0.01:
@@ -462,6 +1136,12 @@ func _tick_timers(delta: float) -> void:
 		if cast_ratio >= 0.0:
 			var pulse := 1.0 + (sin(cast_ratio * TAU * 3.0) * 0.06)
 			sprite.scale = sprite_base_scale * pulse
+		elif shadow_surge_left > 0.0:
+			sprite.scale = sprite_base_scale * Vector2(1.16, 0.9)
+		elif manual_roll_left > 0.0:
+			sprite.scale = sprite_base_scale * Vector2(1.08, 0.92)
+		elif current_attack_mode == AttackMode.SHADOW_STRIKE and (attack_windup_left > 0.0 or attack_recovery_left > 0.0):
+			sprite.scale = sprite_base_scale * Vector2(1.06, 1.02)
 		else:
 			sprite.scale = sprite_base_scale
 	if is_shadow_clone and not dead:
@@ -570,7 +1250,81 @@ func _handle_marked_lunge_threat(delta: float) -> bool:
 	return true
 
 
+func _tick_manual_control_logic(delta: float) -> void:
+	shadow_fear_focus_target = null
+	shadow_fear_resume_target = null
+	shadow_fear_pending_left = -1.0
+	shadow_fear_pending_total = 0.0
+	shadow_fear_focus_requires_close = true
+	if shadow_surge_left > 0.0:
+		velocity = shadow_surge_direction * maxf(64.0, shadow_surge_speed)
+		if shadow_surge_direction.length_squared() > 0.0001:
+			_update_facing(velocity)
+		return
+	if shadow_surge_direction.length_squared() > 0.0001:
+		_finish_shadow_surge()
+		velocity = Vector2.ZERO
+		return
+	if manual_roll_left > 0.0:
+		velocity = manual_roll_vector * maxf(48.0, manual_roll_speed)
+		if manual_roll_vector.length_squared() > 0.0001:
+			_update_facing(velocity)
+		return
+	var move_input := _get_manual_move_input()
+	if move_input.length_squared() > 0.0001:
+		_cancel_active_manual_cast_for_movement()
+	if shadow_clone_cast_active:
+		velocity = Vector2.ZERO
+		if shadow_clone_cast_left <= 0.0001:
+			shadow_clone_cast_active = false
+			_spawn_shadow_clones()
+			shadow_clone_cooldown_left = maxf(0.01, shadow_clone_cooldown)
+		return
+	if shadow_fear_cast_active:
+		velocity = Vector2.ZERO
+		if shadow_fear_cast_left <= 0.0001:
+			_finish_shadow_fear_cast()
+		return
+	if attack_windup_left > 0.0:
+		attack_windup_left = maxf(0.0, attack_windup_left - delta)
+		velocity = Vector2.ZERO
+		if attack_windup_left <= 0.0:
+			_perform_attack()
+			attack_recovery_left = maxf(0.01, attack_recovery)
+		return
+	if attack_recovery_left > 0.0:
+		attack_recovery_left = maxf(0.0, attack_recovery_left - delta)
+		if attack_recovery_left <= 0.0:
+			current_attack_mode = AttackMode.BASIC
+		velocity = Vector2.ZERO
+		return
+	if backstab_dash_left > 0.0 and backstab_dash_target_enemy != null and is_instance_valid(backstab_dash_target_enemy) and not backstab_dash_target_enemy.dead:
+		var to_dash_target := backstab_dash_target_position - global_position
+		if to_dash_target.length() <= maxf(2.0, backstab_dash_stop_distance):
+			backstab_dash_left = 0.0
+			velocity = Vector2.ZERO
+			_try_start_attack_after_dash(backstab_dash_target_enemy)
+			return
+		velocity = to_dash_target.normalized() * maxf(48.0, backstab_dash_speed)
+		_update_facing(backstab_dash_target_enemy.global_position - global_position)
+		return
+	elif backstab_dash_left > 0.0:
+		backstab_dash_left = 0.0
+		backstab_dash_target_enemy = null
+	_handle_manual_control_movement()
+	_handle_manual_control_actions()
+
+
 func _tick_combat_logic(delta: float) -> void:
+	if shadow_surge_left > 0.0:
+		velocity = shadow_surge_direction * maxf(64.0, shadow_surge_speed)
+		if shadow_surge_direction.length_squared() > 0.0001:
+			_update_facing(velocity)
+		return
+	if shadow_surge_direction.length_squared() > 0.0001:
+		_finish_shadow_surge()
+		velocity = Vector2.ZERO
+		return
 	if shadow_clone_cast_active:
 		velocity = Vector2.ZERO
 		if shadow_clone_cast_left <= 0.0001:
@@ -602,6 +1356,8 @@ func _tick_combat_logic(delta: float) -> void:
 
 	if attack_recovery_left > 0.0:
 		attack_recovery_left = maxf(0.0, attack_recovery_left - delta)
+		if attack_recovery_left <= 0.0:
+			current_attack_mode = AttackMode.BASIC
 		velocity = _compute_attack_hold_spacing_velocity(target_enemy)
 		return
 
@@ -642,7 +1398,7 @@ func _tick_combat_logic(delta: float) -> void:
 	var to_enemy := target_enemy.global_position - global_position
 	var distance_to_enemy := to_enemy.length()
 	var attack_depth_aligned := absf(to_enemy.y) <= (attack_depth_tolerance * 1.75)
-	var attack_connect_window := _is_attack_connect_window(to_enemy)
+	var attack_connect_window := _is_attack_connect_window(to_enemy, target_enemy)
 	var attack_spacing_ready := _is_attack_spacing_ready(distance_to_enemy)
 	var close_attack_ready := attack_cooldown_left <= 0.0 \
 		and attack_windup_left <= 0.0 \
@@ -757,16 +1513,16 @@ func _tick_combat_logic(delta: float) -> void:
 			if not _is_attack_spacing_ready(distance_to_enemy):
 				velocity = _compute_reposition_velocity(target_enemy, to_enemy, distance_to_enemy)
 				return
-			if attack_cooldown_left <= 0.0 and _is_attack_connect_window(to_enemy):
+			if attack_cooldown_left <= 0.0 and _is_attack_connect_window(to_enemy, target_enemy):
 				_start_attack_windup("state_attack")
 				velocity = Vector2.ZERO
 				return
-			if _is_attack_connect_window(to_enemy):
+			if _is_attack_connect_window(to_enemy, target_enemy):
 				velocity = Vector2.ZERO
 			else:
 				velocity = _compute_reposition_velocity(target_enemy, to_enemy, distance_to_enemy)
 		DPSAIState.REPOSITIONING:
-			if _is_attack_connect_window(to_enemy) and _is_attack_spacing_ready(distance_to_enemy):
+			if _is_attack_connect_window(to_enemy, target_enemy) and _is_attack_spacing_ready(distance_to_enemy):
 				_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
 				if attack_cooldown_left <= 0.0 and attack_windup_left <= 0.0 and attack_recovery_left <= 0.0:
 					_start_attack_windup("reposition_close")
@@ -775,6 +1531,287 @@ func _tick_combat_logic(delta: float) -> void:
 			velocity = _compute_reposition_velocity(target_enemy, to_enemy, distance_to_enemy)
 		_:
 			_follow_player_when_idle(delta)
+
+
+func _handle_manual_control_movement() -> void:
+	var move_input := _get_manual_move_input()
+	velocity = move_input * maxf(1.0, move_speed)
+	if move_input.length_squared() > 0.0001:
+		_update_facing(velocity)
+	elif target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead:
+		_update_facing(target_enemy.global_position - global_position)
+
+
+func _handle_manual_control_actions() -> void:
+	if not manual_control_enabled or dead:
+		return
+	if stun_left > 0.0 or shadow_clone_cast_active or shadow_fear_cast_active:
+		return
+	if attack_windup_left > 0.0 or attack_recovery_left > 0.0:
+		return
+	if backstab_dash_left > 0.0:
+		return
+	if Input.is_action_just_pressed("roll"):
+		if _can_start_manual_roll():
+			_start_manual_roll()
+			return
+	if Input.is_action_just_pressed("ability_1"):
+		var fear_target := _find_manual_shadow_fear_target()
+		if _can_start_manual_shadow_fear_cast(fear_target):
+			target_enemy = fear_target
+			_start_shadow_fear_cast(fear_target)
+			return
+	if Input.is_action_just_pressed("counter_strike"):
+		var mark_target := _find_manual_boss_target(maxf(32.0, boss_mark_range))
+		if mark_target != null:
+			var mark_distance := global_position.distance_to(mark_target.global_position)
+			if _can_apply_boss_mark(mark_target, mark_distance):
+				target_enemy = mark_target
+				_set_dps_ai_state(DPSAIState.MARKING, mark_target)
+				_apply_boss_mark(mark_target)
+				velocity = Vector2.ZERO
+				return
+	if Input.is_action_just_pressed("ability_2"):
+		var strike_target := _find_manual_shadow_strike_target()
+		if _can_start_manual_shadow_strike(strike_target):
+			target_enemy = strike_target
+			if strike_target != null:
+				_update_facing(strike_target.global_position - global_position)
+			_set_dps_ai_state(DPSAIState.ASSAULT_CAST, strike_target)
+			_start_shadow_strike("manual")
+			velocity = Vector2.ZERO
+			return
+	if Input.is_action_just_pressed("block"):
+		if _can_start_manual_shadow_surge():
+			if _start_shadow_surge("manual"):
+				velocity = Vector2.ZERO
+				return
+	if Input.is_action_just_pressed("basic_attack"):
+		if attack_cooldown_left <= 0.0:
+			var attack_target := _find_manual_basic_attack_target()
+			target_enemy = attack_target
+			if attack_target != null:
+				var to_enemy := attack_target.global_position - global_position
+				_set_dps_ai_state(DPSAIState.ATTACKING, attack_target)
+				_update_facing(to_enemy)
+			_start_attack_windup("manual")
+			velocity = Vector2.ZERO
+
+
+func _find_manual_basic_attack_target() -> EnemyBase:
+	if target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead and not _is_enemy_shadow_feared(target_enemy):
+		var current_delta := target_enemy.global_position - global_position
+		if _is_attack_connect_window(current_delta, target_enemy):
+			return target_enemy
+	var nearest_enemy: EnemyBase = null
+	var nearest_distance_sq := INF
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if _is_enemy_shadow_feared(enemy):
+			continue
+		var to_enemy := enemy.global_position - global_position
+		if not _is_attack_connect_window(to_enemy, enemy):
+			continue
+		var distance_sq := to_enemy.length_squared()
+		if nearest_enemy == null or distance_sq < nearest_distance_sq:
+			nearest_enemy = enemy
+			nearest_distance_sq = distance_sq
+	return nearest_enemy
+
+
+func _find_manual_shadow_strike_target() -> EnemyBase:
+	return _find_manual_basic_attack_target()
+
+
+func _find_manual_shadow_fear_target() -> EnemyBase:
+	if target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead and not target_enemy.is_miniboss and not _enemy_has_hard_cc(target_enemy):
+		return target_enemy
+	return _select_shadow_fear_target()
+
+
+func _can_start_manual_shadow_fear_cast(enemy: EnemyBase) -> bool:
+	if is_shadow_clone or not shadow_fear_enabled:
+		return false
+	if shadow_fear_cooldown_left > 0.0:
+		return false
+	if enemy != null and (not is_instance_valid(enemy) or enemy.dead):
+		return false
+	if enemy != null and _enemy_has_hard_cc(enemy):
+		return false
+	if attack_windup_left > 0.0 or attack_recovery_left > 0.0:
+		return false
+	if shadow_clone_cast_active or backstab_dash_left > 0.0:
+		return false
+	return true
+
+
+func _can_start_manual_shadow_strike(enemy: EnemyBase = null) -> bool:
+	if is_shadow_clone or not shadow_clone_enabled:
+		return false
+	if shadow_clone_count <= 0:
+		return false
+	if not _can_pay_combo_points(shadow_strike_combo_cost):
+		return false
+	if attack_windup_left > 0.0 or attack_recovery_left > 0.0:
+		return false
+	if stun_left > 0.0:
+		return false
+	if shadow_fear_cast_active or shadow_clone_cast_active:
+		return false
+	if backstab_dash_left > 0.0:
+		return false
+	if enemy != null and (not is_instance_valid(enemy) or enemy.dead):
+		return false
+	return true
+
+
+func _can_start_manual_shadow_surge() -> bool:
+	if not manual_control_enabled or dead or is_shadow_clone:
+		return false
+	if shadow_surge_left > 0.0 or shadow_surge_direction.length_squared() > 0.0001:
+		return false
+	if not _can_pay_combo_points(shadow_surge_combo_cost):
+		return false
+	if stun_left > 0.0:
+		return false
+	if attack_windup_left > 0.0 or attack_recovery_left > 0.0:
+		return false
+	if shadow_fear_cast_active or shadow_clone_cast_active:
+		return false
+	if manual_roll_left > 0.0 or backstab_dash_left > 0.0:
+		return false
+	return true
+
+
+func _find_manual_boss_target(max_distance: float = INF) -> EnemyBase:
+	if target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead and target_enemy.is_miniboss:
+		var current_distance := global_position.distance_to(target_enemy.global_position)
+		if current_distance <= max_distance:
+			return target_enemy
+	var nearest_boss: EnemyBase = null
+	var nearest_distance_sq := INF
+	var max_distance_sq := max_distance * max_distance
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if not enemy.is_miniboss:
+			continue
+		var distance_sq := enemy.global_position.distance_squared_to(global_position)
+		if distance_sq > max_distance_sq:
+			continue
+		if nearest_boss == null or distance_sq < nearest_distance_sq:
+			nearest_boss = enemy
+			nearest_distance_sq = distance_sq
+	return nearest_boss
+
+
+func _get_manual_move_input() -> Vector2:
+	var move_input := Vector2(
+		Input.get_action_strength("move_right") - Input.get_action_strength("move_left"),
+		Input.get_action_strength("move_down") - Input.get_action_strength("move_up")
+	)
+	if move_input.length_squared() > 1.0:
+		move_input = move_input.normalized()
+	return move_input
+
+
+func _can_start_manual_roll() -> bool:
+	if not manual_control_enabled or dead or is_shadow_clone:
+		return false
+	if manual_roll_left > 0.0 or manual_roll_cooldown_left > 0.0:
+		return false
+	if stun_left > 0.0:
+		return false
+	if shadow_fear_cast_active or shadow_clone_cast_active:
+		return false
+	if attack_windup_left > 0.0 or attack_recovery_left > 0.0:
+		return false
+	if backstab_dash_left > 0.0:
+		return false
+	return true
+
+
+func _start_manual_roll(direction_override: Vector2 = Vector2.ZERO) -> void:
+	var movement_vector := direction_override
+	if movement_vector.length_squared() <= 0.0001:
+		movement_vector = _get_manual_move_input()
+	if movement_vector.length_squared() <= 0.0001:
+		movement_vector = Vector2.LEFT if facing_left else Vector2.RIGHT
+	manual_roll_vector = movement_vector.normalized()
+	manual_roll_left = maxf(0.05, manual_roll_duration)
+	manual_roll_cooldown_left = maxf(manual_roll_cooldown_left, manual_roll_cooldown)
+	velocity = manual_roll_vector * maxf(48.0, manual_roll_speed)
+	if manual_roll_vector.length_squared() > 0.0001:
+		_update_facing(velocity)
+
+
+func _start_shadow_strike(reason: String = "manual") -> void:
+	_start_attack_windup("shadow_strike_%s" % reason, shadow_strike_windup_scale, AttackMode.SHADOW_STRIKE)
+
+
+func _start_shadow_surge(reason: String = "manual", direction_override: Vector2 = Vector2.ZERO) -> bool:
+	if not _can_pay_combo_points(shadow_surge_combo_cost):
+		return false
+	var surge_direction := _resolve_shadow_surge_direction(direction_override)
+	if surge_direction.length_squared() <= 0.0001:
+		return false
+	if not _spend_combo_points(shadow_surge_combo_cost):
+		return false
+	target_enemy = _find_manual_shadow_strike_target()
+	_set_dps_ai_state(DPSAIState.DASHING, target_enemy)
+	_begin_shadow_surge(surge_direction, false, reason)
+	_command_active_shadow_clones_shadow_surge(surge_direction)
+	return true
+
+
+func trigger_shadow_surge_as_clone(direction_override: Vector2 = Vector2.ZERO) -> void:
+	if not is_shadow_clone or dead:
+		return
+	var surge_direction := _resolve_shadow_surge_direction(direction_override)
+	if surge_direction.length_squared() <= 0.0001:
+		return
+	_begin_shadow_surge(surge_direction, true, "clone")
+
+
+func _resolve_shadow_surge_direction(direction_override: Vector2 = Vector2.ZERO) -> Vector2:
+	var surge_direction := direction_override
+	if surge_direction.length_squared() <= 0.0001 and manual_control_enabled:
+		surge_direction = _get_manual_move_input()
+	if surge_direction.length_squared() <= 0.0001 and target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead:
+		surge_direction = target_enemy.global_position - global_position
+	if surge_direction.length_squared() <= 0.0001:
+		surge_direction = Vector2.LEFT if facing_left else Vector2.RIGHT
+	if surge_direction.length_squared() <= 0.0001:
+		return Vector2.ZERO
+	return surge_direction.normalized()
+
+
+func _begin_shadow_surge(direction: Vector2, expire_on_finish: bool = false, reason: String = "manual") -> void:
+	_interrupt_attack()
+	shadow_clone_scatter_left = 0.0
+	shadow_clone_scatter_direction = Vector2.ZERO
+	shadow_surge_direction = direction.normalized()
+	shadow_surge_left = maxf(0.05, shadow_surge_duration)
+	shadow_surge_hit_enemy_ids.clear()
+	shadow_surge_clone_expire_on_finish = expire_on_finish
+	velocity = shadow_surge_direction * maxf(64.0, shadow_surge_speed)
+	_update_facing(velocity)
+	_spawn_shadow_surge_start_effect(global_position + Vector2(0.0, -12.0), shadow_surge_direction, reason)
+
+
+func _command_active_shadow_clones_shadow_surge(direction: Vector2) -> void:
+	var normalized_direction := direction.normalized()
+	if normalized_direction.length_squared() <= 0.0001:
+		return
+	for node in get_tree().get_nodes_in_group("shadow_clones"):
+		var clone := node as FriendlyRatfolk
+		if clone == null or not is_instance_valid(clone) or clone == self or clone.dead:
+			continue
+		clone.trigger_shadow_surge_as_clone(normalized_direction)
+	_spawn_hit_effect(global_position + Vector2(0.0, -10.0), Color(0.52, 0.86, 1.0, 0.78), 6.0)
 
 
 func _update_dps_ai_state(delta: float, distance_to_enemy: float, depth_aligned: bool) -> void:
@@ -1191,6 +2228,7 @@ func _update_shadow_fear_trigger() -> void:
 	shadow_fear_pending_total = maxf(0.01, pending_delay)
 	attack_windup_left = 0.0
 	attack_recovery_left = 0.0
+	current_attack_mode = AttackMode.BASIC
 	if backstab_dash_left > 0.0:
 		backstab_dash_left = 0.0
 		backstab_dash_target_enemy = null
@@ -1252,6 +2290,7 @@ func _try_cast_shadow_fear() -> bool:
 	if attack_windup_left > 0.0 or attack_recovery_left > 0.0:
 		attack_windup_left = 0.0
 		attack_recovery_left = 0.0
+		current_attack_mode = AttackMode.BASIC
 	if backstab_dash_left > 0.0:
 		backstab_dash_left = 0.0
 		backstab_dash_target_enemy = null
@@ -1260,14 +2299,15 @@ func _try_cast_shadow_fear() -> bool:
 
 
 func _start_shadow_fear_cast(focus_enemy: EnemyBase) -> void:
-	if focus_enemy == null or not is_instance_valid(focus_enemy) or focus_enemy.dead:
+	if focus_enemy != null and (not is_instance_valid(focus_enemy) or focus_enemy.dead):
 		return
 	shadow_fear_cast_active = true
 	shadow_fear_cast_left = maxf(0.01, shadow_fear_cast_duration)
 	shadow_fear_cast_target = focus_enemy
 	velocity = Vector2.ZERO
-	_set_dps_ai_state(DPSAIState.MARKING, focus_enemy)
-	_log_shadow_fear("CAST_START rat=%s target=%s cast=%.2f" % [name, focus_enemy.name, shadow_fear_cast_left])
+	_set_dps_ai_state(DPSAIState.MARKING, focus_enemy if focus_enemy != null else null)
+	var focus_name: String = focus_enemy.name if focus_enemy != null and is_instance_valid(focus_enemy) else "forward"
+	_log_shadow_fear("CAST_START rat=%s target=%s cast=%.2f" % [name, focus_name, shadow_fear_cast_left])
 	_spawn_hit_effect(global_position + Vector2(0.0, -15.0), Color(0.54, 0.24, 0.76, 0.9), 5.6)
 
 
@@ -1276,12 +2316,12 @@ func _finish_shadow_fear_cast() -> void:
 	shadow_fear_cast_active = false
 	shadow_fear_cast_left = 0.0
 	shadow_fear_cast_target = null
-	if focus_enemy == null or not is_instance_valid(focus_enemy) or focus_enemy.dead:
+	if focus_enemy != null and (not is_instance_valid(focus_enemy) or focus_enemy.dead):
 		shadow_fear_focus_target = null
 		shadow_fear_pending_left = -1.0
 		shadow_fear_focus_requires_close = true
 		return
-	if _is_enemy_shadow_feared(focus_enemy):
+	if focus_enemy != null and _is_enemy_shadow_feared(focus_enemy):
 		shadow_fear_focus_target = null
 		shadow_fear_pending_left = -1.0
 		shadow_fear_focus_requires_close = true
@@ -1291,7 +2331,8 @@ func _finish_shadow_fear_cast() -> void:
 		shadow_fear_pending_left = -1.0
 		shadow_fear_focus_requires_close = true
 		return
-	_log_shadow_fear("CAST_RELEASE rat=%s target=%s" % [name, focus_enemy.name])
+	var focus_name: String = focus_enemy.name if focus_enemy != null and is_instance_valid(focus_enemy) else "forward"
+	_log_shadow_fear("CAST_RELEASE rat=%s target=%s" % [name, focus_name])
 	shadow_fear_cooldown_left = maxf(0.1, shadow_fear_cooldown)
 	velocity = Vector2.ZERO
 	shadow_fear_pending_left = -1.0
@@ -1300,6 +2341,28 @@ func _finish_shadow_fear_cast() -> void:
 	if shadow_fear_resume_target != null and _is_valid_shadow_fear_resume_target(shadow_fear_resume_target):
 		target_enemy = shadow_fear_resume_target
 		_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
+
+
+func _cancel_active_manual_cast_for_movement() -> bool:
+	var canceled := false
+	if shadow_fear_cast_active or shadow_fear_cast_left > 0.0:
+		shadow_fear_cast_active = false
+		shadow_fear_cast_left = 0.0
+		shadow_fear_cast_target = null
+		canceled = true
+	if shadow_clone_cast_active or shadow_clone_cast_left > 0.0:
+		shadow_clone_cast_active = false
+		shadow_clone_cast_left = 0.0
+		canceled = true
+	if not canceled:
+		return false
+	shadow_fear_focus_target = null
+	shadow_fear_resume_target = null
+	shadow_fear_pending_left = -1.0
+	shadow_fear_pending_total = 0.0
+	shadow_fear_focus_requires_close = true
+	velocity = Vector2.ZERO
+	return true
 
 
 func _is_valid_shadow_fear_resume_target(enemy) -> bool:
@@ -1487,7 +2550,8 @@ func _spawn_shadow_fear_projectile(enemy: EnemyBase) -> bool:
 			maxf(0.1, shadow_fear_duration),
 			enemy
 		)
-	_log_shadow_fear("CAST rat=%s target=%s active=%d dir=%.0f" % [name, enemy.name, _count_active_hostile_enemies(), direction_sign])
+	var target_name: String = enemy.name if enemy != null and is_instance_valid(enemy) else "forward"
+	_log_shadow_fear("CAST rat=%s target=%s active=%d dir=%.0f" % [name, target_name, _count_active_hostile_enemies(), direction_sign])
 	_spawn_hit_effect(global_position + Vector2(12.0 * direction_sign, -14.0), Color(0.42, 0.2, 0.62, 0.92), 6.4)
 	return true
 
@@ -1696,7 +2760,7 @@ func _try_start_attack_after_dash(enemy: EnemyBase) -> void:
 	if _is_enemy_shadow_feared(enemy):
 		return
 	var to_enemy := enemy.global_position - global_position
-	if not _is_attack_connect_window(to_enemy):
+	if not _is_attack_connect_window(to_enemy, enemy):
 		return
 	if attack_cooldown_left > 0.0:
 		return
@@ -1704,17 +2768,23 @@ func _try_start_attack_after_dash(enemy: EnemyBase) -> void:
 	_start_attack_windup("after_dash", 0.8)
 
 
-func _is_attack_connect_window(to_enemy: Vector2) -> bool:
-	var effective_depth_tolerance := attack_depth_tolerance * 1.35
-	if absf(to_enemy.y) > effective_depth_tolerance:
+func _is_attack_connect_window(to_enemy: Vector2, enemy: EnemyBase = null) -> bool:
+	var connect_delta := to_enemy
+	var target_radius := 0.0
+	if enemy != null and is_instance_valid(enemy) and not enemy.dead:
+		connect_delta = _get_enemy_attack_target_point(enemy, global_position) - global_position
+		target_radius = _get_enemy_attack_collision_radius(enemy)
+	var effective_depth_tolerance := (attack_depth_tolerance * 1.35) + target_radius
+	if absf(connect_delta.y) > effective_depth_tolerance:
 		return false
-	var attack_radius := attack_range * 1.12
-	return to_enemy.length_squared() <= attack_radius * attack_radius
+	var attack_radius := _get_basic_attack_hit_radius() + target_radius
+	return connect_delta.length_squared() <= attack_radius * attack_radius
 
 
-func _start_attack_windup(reason: String, windup_scale: float = 1.0) -> void:
+func _start_attack_windup(reason: String, windup_scale: float = 1.0, attack_mode: AttackMode = AttackMode.BASIC) -> void:
+	current_attack_mode = attack_mode
 	attack_windup_left = maxf(0.01, attack_windup * maxf(0.1, windup_scale))
-	_spawn_attack_range_indicator()
+	_spawn_attack_range_indicator(reason)
 
 
 func _start_shadow_clone_cast() -> void:
@@ -1747,6 +2817,7 @@ func _spawn_shadow_clones() -> void:
 		clone.position = spawn_position_local
 		clone.set_arena_bounds(lane_min_x, lane_max_x, lane_min_y, lane_max_y)
 		clone.set_player(player)
+		_copy_equipment_to_shadow_clone(clone)
 		clone.attack_cooldown_left = minf(maxf(0.02, clone.attack_cooldown * 0.18) + (0.03 * float(i)), maxf(0.06, clone.attack_cooldown * 0.42))
 		clone.shadow_clone_lifetime_left = maxf(0.2, shadow_clone_lifetime)
 		clone.shadow_clone_tint = shadow_clone_tint
@@ -1792,15 +2863,25 @@ func _clamp_world_position_to_bounds(world_position: Vector2) -> Vector2:
 
 func _perform_attack() -> void:
 	attack_cooldown_left = maxf(0.01, attack_cooldown)
+	var attempted_shadow_strike := current_attack_mode == AttackMode.SHADOW_STRIKE
+	var shadow_strike_ready := attempted_shadow_strike and _spend_combo_points(shadow_strike_combo_cost)
 	var facing_direction := Vector2.LEFT if facing_left else Vector2.RIGHT
 	if target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead:
 		var to_target := target_enemy.global_position - global_position
 		if to_target.length_squared() > 0.0001:
 			facing_direction = to_target.normalized()
+	if shadow_strike_ready:
+		_spawn_shadow_strike_swing_effect(facing_direction)
+		_spawn_shadow_clones()
 	var hit_any := false
 	var arc_threshold := cos(deg_to_rad(attack_arc_degrees * 0.5))
-	var attack_radius_sq := (attack_range * 1.12) * (attack_range * 1.12)
+	var attack_radius := _get_basic_attack_hit_radius()
+	var attack_radius_sq := attack_radius * attack_radius
 	var effective_depth_tolerance := attack_depth_tolerance * 1.35
+	var hit_damage := attack_damage
+	var impact_color := Color(1.0, 0.8, 0.42, 0.95)
+	if shadow_strike_ready:
+		impact_color = Color(0.86, 0.48, 1.0, 0.96)
 
 	for node in get_tree().get_nodes_in_group("enemies"):
 		var enemy := node as EnemyBase
@@ -1808,28 +2889,100 @@ func _perform_attack() -> void:
 			continue
 		if _is_enemy_shadow_feared(enemy):
 			continue
-		var to_enemy := enemy.global_position - global_position
-		if absf(to_enemy.y) > effective_depth_tolerance:
+		var target_point := _get_enemy_attack_target_point(enemy, global_position)
+		var target_radius := _get_enemy_attack_collision_radius(enemy)
+		var to_enemy := target_point - global_position
+		if absf(to_enemy.y) > effective_depth_tolerance + target_radius:
 			continue
-		if to_enemy.length_squared() > attack_radius_sq:
+		var effective_attack_radius := attack_radius + target_radius
+		if to_enemy.length_squared() > effective_attack_radius * effective_attack_radius:
 			continue
 		var direction_to_enemy := to_enemy.normalized() if to_enemy.length_squared() > 0.0001 else facing_direction
-		if facing_direction.dot(direction_to_enemy) < arc_threshold:
+		if to_enemy.length_squared() > 0.0001:
+			var distance_to_target := to_enemy.length()
+			var radius_arc_allowance := asin(clampf(target_radius / maxf(1.0, distance_to_target), 0.0, 0.99))
+			var alignment_threshold := cos(deg_to_rad(attack_arc_degrees * 0.5) + radius_arc_allowance + deg_to_rad(3.0))
+			if facing_direction.dot(direction_to_enemy) < alignment_threshold:
+				continue
+		elif facing_direction.dot(direction_to_enemy) < arc_threshold:
 			continue
 		if not enemy.has_method("receive_hit"):
 			continue
-		var landed := bool(enemy.call("receive_hit", attack_damage, global_position, outgoing_hit_stun_duration, true, attack_knockback_scale, self))
+		var enemy_hit_damage := hit_damage
+		if not attempted_shadow_strike and _is_position_behind_enemy(enemy, global_position):
+			enemy_hit_damage *= maxf(0.1, basic_attack_behind_damage_multiplier)
+		var landed := bool(enemy.call("receive_hit", enemy_hit_damage, global_position, outgoing_hit_stun_duration, true, attack_knockback_scale, self))
 		if landed:
 			hit_any = true
-			add_special_meter_from_damage(attack_damage)
+			if not _uses_combo_points():
+				add_special_meter_from_damage(enemy_hit_damage)
 			if enemy.has_method("apply_hitstop"):
 				enemy.apply_hitstop(maxf(0.0, attack_hitstop_duration))
 			var impact_scale := maxf(0.6, attack_impact_vfx_scale)
-			_spawn_hit_effect(enemy.global_position + Vector2(0.0, -12.0), Color(1.0, 0.8, 0.42, 0.95), 7.2 * impact_scale)
+			_spawn_hit_effect(enemy.global_position + Vector2(0.0, -12.0), impact_color, 7.2 * impact_scale)
+			if shadow_strike_ready:
+				_spawn_shadow_strike_impact_effect(enemy.global_position + Vector2(0.0, -12.0))
+
+	if hit_any and _uses_combo_points() and not attempted_shadow_strike:
+		_add_combo_points(1)
 
 	if hit_any:
 		var swing_scale := maxf(0.6, attack_impact_vfx_scale)
-		_spawn_hit_effect(global_position + (facing_direction * 14.0) + Vector2(0.0, -10.0), Color(0.94, 0.78, 0.36, 0.95), 8.0 * swing_scale)
+		var swing_color := Color(0.94, 0.78, 0.36, 0.95)
+		if shadow_strike_ready:
+			swing_color = Color(0.9, 0.54, 1.0, 0.95)
+		_spawn_hit_effect(global_position + (facing_direction * 14.0) + Vector2(0.0, -10.0), swing_color, 8.0 * swing_scale)
+
+
+func _apply_shadow_surge_hits(segment_start: Vector2, segment_end: Vector2) -> void:
+	if dead or shadow_surge_left <= 0.0:
+		return
+	var normalized_direction := shadow_surge_direction.normalized()
+	if normalized_direction.length_squared() <= 0.0001:
+		return
+	var hit_radius_sq := maxf(6.0, shadow_surge_hit_radius) * maxf(6.0, shadow_surge_hit_radius)
+	var dash_damage := attack_damage * maxf(0.1, shadow_surge_damage_multiplier)
+	var knockback_scale := attack_knockback_scale * 1.18
+	var enemy_stun := maxf(outgoing_hit_stun_duration, outgoing_hit_stun_duration * 1.15)
+	var hit_any := false
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if _is_enemy_shadow_feared(enemy):
+			continue
+		var enemy_id := enemy.get_instance_id()
+		if shadow_surge_hit_enemy_ids.has(enemy_id):
+			continue
+		var enemy_position := enemy.global_position
+		if _distance_sq_to_segment(enemy_position, segment_start, segment_end) > hit_radius_sq:
+			continue
+		if not enemy.has_method("receive_hit"):
+			continue
+		var knock_source := enemy_position - (normalized_direction * 16.0)
+		var landed := bool(enemy.call("receive_hit", dash_damage, knock_source, enemy_stun, true, knockback_scale, self))
+		if not landed:
+			continue
+		hit_any = true
+		shadow_surge_hit_enemy_ids[enemy_id] = true
+		if enemy.has_method("apply_hitstop"):
+			enemy.apply_hitstop(maxf(0.0, shadow_surge_hitstop_duration))
+		_spawn_shadow_surge_impact_effect(enemy_position + Vector2(0.0, -12.0))
+	if hit_any:
+		_spawn_hit_effect(global_position + (normalized_direction * 10.0) + Vector2(0.0, -11.0), Color(0.92, 0.64, 1.0, 0.94), 8.8 * maxf(0.7, attack_impact_vfx_scale))
+
+
+func _finish_shadow_surge() -> void:
+	var expire_clone := shadow_surge_clone_expire_on_finish and is_shadow_clone
+	var finish_position := global_position
+	shadow_surge_left = 0.0
+	shadow_surge_direction = Vector2.ZERO
+	shadow_surge_hit_enemy_ids.clear()
+	shadow_surge_clone_expire_on_finish = false
+	velocity = Vector2.ZERO
+	if expire_clone:
+		_spawn_shadow_surge_finish_effect(finish_position)
+		queue_free()
 
 
 func needs_healing(threshold_ratio: float = 0.999) -> bool:
@@ -1858,11 +3011,13 @@ func receive_heal(amount: float) -> bool:
 func revive_at_full_health() -> void:
 	dead = false
 	current_health = maxf(1.0, max_health)
+	combo_point_count = _get_starting_combo_points() if _uses_combo_points() else 0
+	current_attack_mode = AttackMode.BASIC
+	special_meter = 0.0
 	stun_left = 0.0
 	hurt_anim_left = 0.0
 	hit_flash_left = 0.0
 	heal_flash_left = 0.0
-	special_meter = 0.0
 	attack_windup_left = 0.0
 	attack_recovery_left = 0.0
 	attack_cooldown_left = maxf(0.0, attack_cooldown * 0.35)
@@ -1873,8 +3028,14 @@ func revive_at_full_health() -> void:
 	shadow_fear_cast_target = null
 	shadow_clone_cast_active = false
 	shadow_clone_cast_left = 0.0
+	shadow_surge_left = 0.0
+	shadow_surge_direction = Vector2.ZERO
+	shadow_surge_hit_enemy_ids.clear()
+	shadow_surge_clone_expire_on_finish = false
 	shadow_fear_focus_target = null
 	shadow_fear_resume_target = null
+	manual_roll_left = 0.0
+	manual_roll_vector = Vector2.ZERO
 	backstab_dash_left = 0.0
 	backstab_dash_target_enemy = null
 	target_enemy = null
@@ -1897,9 +3058,14 @@ func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = f
 		return false
 	if amount <= 0.0:
 		return false
+	if manual_roll_left > 0.0:
+		return false
+	if shadow_surge_left > 0.0:
+		return false
 	if is_instance_valid(player) and player.is_point_inside_block_shield(global_position):
 		return false
 
+	amount *= _get_ratfolk_damage_taken_multiplier()
 	var knockback_direction := (global_position - source_position).normalized()
 	if knockback_direction == Vector2.ZERO:
 		knockback_direction = Vector2.RIGHT if facing_left else Vector2.LEFT
@@ -1920,11 +3086,18 @@ func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = f
 func _interrupt_attack() -> void:
 	attack_windup_left = 0.0
 	attack_recovery_left = 0.0
+	current_attack_mode = AttackMode.BASIC
 	shadow_fear_cast_active = false
 	shadow_fear_cast_left = 0.0
 	shadow_fear_cast_target = null
 	shadow_clone_cast_active = false
 	shadow_clone_cast_left = 0.0
+	shadow_surge_left = 0.0
+	shadow_surge_direction = Vector2.ZERO
+	shadow_surge_hit_enemy_ids.clear()
+	shadow_surge_clone_expire_on_finish = false
+	manual_roll_left = 0.0
+	manual_roll_vector = Vector2.ZERO
 	backstab_dash_left = 0.0
 	backstab_dash_target_enemy = null
 	target_enemy = null
@@ -1941,6 +3114,13 @@ func _die() -> void:
 	heal_flash_left = 0.0
 	attack_windup_left = 0.0
 	attack_recovery_left = 0.0
+	current_attack_mode = AttackMode.BASIC
+	shadow_surge_left = 0.0
+	shadow_surge_direction = Vector2.ZERO
+	shadow_surge_hit_enemy_ids.clear()
+	shadow_surge_clone_expire_on_finish = false
+	manual_roll_left = 0.0
+	manual_roll_vector = Vector2.ZERO
 	death_anim_time = 0.0
 	died.emit(self)
 
@@ -1984,6 +3164,12 @@ func _update_animation(delta: float) -> void:
 		return
 	if shadow_clone_cast_active:
 		_set_loop_anim("idle", delta * 0.24)
+		return
+	if shadow_surge_left > 0.0:
+		_set_loop_anim("run", delta * 2.45)
+		return
+	if manual_roll_left > 0.0:
+		_set_loop_anim("run", delta * 1.9)
 		return
 	if attack_windup_left > 0.0 or attack_recovery_left > 0.0:
 		var total_attack_time := maxf(0.01, attack_windup + attack_recovery)
@@ -2148,19 +3334,36 @@ func _setup_health_bar() -> void:
 	cast_bar_fill.visible = false
 	health_bar_root.add_child(cast_bar_fill)
 
-	special_bar_background = Line2D.new()
-	special_bar_background.default_color = Color(0.08, 0.08, 0.08, 0.9)
-	special_bar_background.width = maxf(1.0, special_bar_thickness)
-	special_bar_background.begin_cap_mode = Line2D.LINE_CAP_ROUND
-	special_bar_background.end_cap_mode = Line2D.LINE_CAP_ROUND
-	health_bar_root.add_child(special_bar_background)
+	combo_point_nodes.clear()
+	combo_point_root = null
+	special_bar_background = null
+	special_bar_fill = null
+	if _uses_combo_points():
+		combo_point_root = Node2D.new()
+		combo_point_root.name = "ComboPointRoot"
+		health_bar_root.add_child(combo_point_root)
+		var point_total := _get_combo_point_max()
+		var circle_points := _build_circle_points(maxf(1.0, combo_point_radius), maxi(8, combo_point_segments))
+		for _i in range(point_total):
+			var combo_point := Polygon2D.new()
+			combo_point.polygon = circle_points
+			combo_point.color = Color(0.18, 0.18, 0.2, 0.92)
+			combo_point_root.add_child(combo_point)
+			combo_point_nodes.append(combo_point)
+	else:
+		special_bar_background = Line2D.new()
+		special_bar_background.default_color = Color(0.08, 0.08, 0.08, 0.9)
+		special_bar_background.width = maxf(1.0, special_bar_thickness)
+		special_bar_background.begin_cap_mode = Line2D.LINE_CAP_ROUND
+		special_bar_background.end_cap_mode = Line2D.LINE_CAP_ROUND
+		health_bar_root.add_child(special_bar_background)
 
-	special_bar_fill = Line2D.new()
-	special_bar_fill.default_color = Color(0.98, 0.84, 0.36, 0.95)
-	special_bar_fill.width = maxf(1.0, special_bar_thickness - 1.0)
-	special_bar_fill.begin_cap_mode = Line2D.LINE_CAP_ROUND
-	special_bar_fill.end_cap_mode = Line2D.LINE_CAP_ROUND
-	health_bar_root.add_child(special_bar_fill)
+		special_bar_fill = Line2D.new()
+		special_bar_fill.default_color = Color(0.98, 0.84, 0.36, 0.95)
+		special_bar_fill.width = maxf(1.0, special_bar_thickness - 1.0)
+		special_bar_fill.begin_cap_mode = Line2D.LINE_CAP_ROUND
+		special_bar_fill.end_cap_mode = Line2D.LINE_CAP_ROUND
+		health_bar_root.add_child(special_bar_fill)
 
 
 func _update_health_bar() -> void:
@@ -2192,6 +3395,21 @@ func _update_health_bar() -> void:
 	else:
 		cast_bar_fill.visible = false
 
+	if _uses_combo_points():
+		if combo_point_root == null or not is_instance_valid(combo_point_root):
+			return
+		var point_total := _get_combo_point_max()
+		var total_width := (float(maxi(0, point_total - 1)) * combo_point_spacing)
+		var start_x := -total_width * 0.5
+		for point_index in range(combo_point_nodes.size()):
+			var combo_point := combo_point_nodes[point_index]
+			if combo_point == null or not is_instance_valid(combo_point):
+				continue
+			combo_point.position = Vector2(start_x + (float(point_index) * combo_point_spacing), special_bar_vertical_offset)
+			var filled := point_index < combo_point_count
+			combo_point.color = Color(0.98, 0.84, 0.36, 0.96) if filled else Color(0.16, 0.16, 0.2, 0.94)
+		return
+
 	if not is_instance_valid(special_bar_background) or not is_instance_valid(special_bar_fill):
 		return
 	var special_half_width := special_bar_width * 0.5
@@ -2220,15 +3438,22 @@ func _get_cast_progress_ratio() -> float:
 func _get_special_meter_ratio() -> float:
 	if is_shadow_clone:
 		return 0.0
+	if _uses_combo_points():
+		return float(combo_point_count) / float(maxi(1, _get_combo_point_max()))
 	return clampf(special_meter / maxf(1.0, special_meter_max), 0.0, 1.0)
 
 
 func _is_special_meter_full() -> bool:
+	if _uses_combo_points():
+		return combo_point_count >= _get_combo_point_max()
 	return _get_special_meter_ratio() >= 0.999
 
 
 func _add_special_meter(raw_amount: float) -> void:
 	if is_shadow_clone:
+		return
+	if _uses_combo_points():
+		_add_combo_points(int(round(maxf(0.0, raw_amount))))
 		return
 	var amount := maxf(0.0, raw_amount)
 	if amount <= 0.0:
@@ -2240,16 +3465,65 @@ func _add_special_meter(raw_amount: float) -> void:
 func _consume_special_meter() -> void:
 	if is_shadow_clone:
 		return
+	if _uses_combo_points():
+		combo_point_count = 0
+		_update_health_bar()
+		return
 	special_meter = 0.0
 	_update_health_bar()
 
 
+func _can_pay_combo_points(amount: int) -> bool:
+	if is_shadow_clone:
+		return false
+	var combo_cost := maxi(0, amount)
+	if combo_cost <= 0:
+		return true
+	if not _uses_combo_points():
+		return _is_special_meter_full()
+	return combo_point_count >= combo_cost
+
+
+func _spend_combo_points(amount: int) -> bool:
+	if is_shadow_clone:
+		return false
+	var combo_cost := maxi(0, amount)
+	if combo_cost <= 0:
+		return true
+	if not _uses_combo_points():
+		if not _is_special_meter_full():
+			return false
+		_consume_special_meter()
+		return true
+	if combo_point_count < combo_cost:
+		return false
+	combo_point_count = clampi(combo_point_count - combo_cost, 0, _get_combo_point_max())
+	_update_health_bar()
+	return true
+
+
 func add_special_meter_from_damage(damage_amount: float) -> void:
+	if _uses_combo_points():
+		if damage_amount > 0.0:
+			_add_combo_points(1)
+		return
 	_add_special_meter(maxf(0.0, damage_amount) * maxf(0.0, special_meter_gain_per_damage))
 
 
 func add_special_meter_from_heal(heal_amount: float) -> void:
+	if _uses_combo_points():
+		return
 	_add_special_meter(maxf(0.0, heal_amount) * maxf(0.0, special_meter_gain_per_heal))
+
+
+func _add_combo_points(amount: int) -> void:
+	if not _uses_combo_points() or is_shadow_clone:
+		return
+	var combo_to_add := maxi(0, amount)
+	if combo_to_add <= 0:
+		return
+	combo_point_count = clampi(combo_point_count + combo_to_add, 0, _get_combo_point_max())
+	_update_health_bar()
 
 
 func _setup_breath_safe_indicator() -> void:
@@ -2312,7 +3586,111 @@ func _spawn_hit_effect(world_position: Vector2, effect_color: Color, effect_size
 	)
 
 
-func _spawn_attack_range_indicator() -> void:
+func _spawn_shadow_surge_start_effect(world_position: Vector2, direction: Vector2, reason: String = "manual") -> void:
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		scene_root = get_parent()
+	if scene_root == null:
+		return
+
+	var burst := Node2D.new()
+	burst.top_level = true
+	burst.global_position = world_position
+	burst.rotation = direction.angle()
+	burst.z_index = 234
+	scene_root.add_child(burst)
+
+	var core := Polygon2D.new()
+	core.color = Color(0.56, 0.2, 0.86, 0.24) if reason == "clone" else Color(0.68, 0.3, 0.94, 0.28)
+	core.polygon = PackedVector2Array([
+		Vector2(-9.0, -10.0),
+		Vector2(18.0, 0.0),
+		Vector2(-9.0, 10.0),
+		Vector2(-2.0, 0.0)
+	])
+	burst.add_child(core)
+
+	var arc := Line2D.new()
+	arc.default_color = Color(0.95, 0.72, 1.0, 0.96)
+	arc.width = 2.8
+	arc.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	arc.end_cap_mode = Line2D.LINE_CAP_ROUND
+	arc.points = PackedVector2Array([
+		Vector2(-8.0, -8.0),
+		Vector2(8.0, 0.0),
+		Vector2(-8.0, 8.0)
+	])
+	burst.add_child(arc)
+
+	var trail := Line2D.new()
+	trail.default_color = Color(0.72, 0.36, 1.0, 0.72)
+	trail.width = 2.2
+	trail.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	trail.end_cap_mode = Line2D.LINE_CAP_ROUND
+	trail.points = PackedVector2Array([Vector2(-16.0, 0.0), Vector2(16.0, 0.0)])
+	burst.add_child(trail)
+
+	var tween := create_tween()
+	tween.tween_property(burst, "scale", Vector2(1.32, 1.12), 0.14).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(burst, "modulate:a", 0.0, 0.14)
+	tween.finished.connect(func() -> void:
+		if is_instance_valid(burst):
+			burst.queue_free()
+	)
+
+
+func _spawn_shadow_surge_impact_effect(world_position: Vector2) -> void:
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		scene_root = get_parent()
+	if scene_root == null:
+		return
+
+	var impact := Node2D.new()
+	impact.top_level = true
+	impact.global_position = world_position
+	impact.z_index = 235
+	scene_root.add_child(impact)
+
+	var ring := Line2D.new()
+	ring.default_color = Color(0.96, 0.78, 1.0, 0.98)
+	ring.width = 2.4
+	ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	ring.end_cap_mode = Line2D.LINE_CAP_ROUND
+	ring.closed = true
+	ring.points = _build_ring_points(8.5, 16)
+	impact.add_child(ring)
+
+	var slash := Line2D.new()
+	slash.default_color = Color(0.68, 0.28, 0.92, 0.94)
+	slash.width = 2.6
+	slash.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	slash.end_cap_mode = Line2D.LINE_CAP_ROUND
+	slash.points = PackedVector2Array([Vector2(-9.0, -6.0), Vector2(10.0, 6.0)])
+	impact.add_child(slash)
+
+	var slash_back := Line2D.new()
+	slash_back.default_color = Color(0.88, 0.54, 1.0, 0.82)
+	slash_back.width = 1.8
+	slash_back.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	slash_back.end_cap_mode = Line2D.LINE_CAP_ROUND
+	slash_back.points = PackedVector2Array([Vector2(-6.0, 8.0), Vector2(7.0, -7.0)])
+	impact.add_child(slash_back)
+
+	var tween := create_tween()
+	tween.tween_property(impact, "scale", Vector2(1.38, 1.38), 0.1).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(impact, "modulate:a", 0.0, 0.1)
+	tween.finished.connect(func() -> void:
+		if is_instance_valid(impact):
+			impact.queue_free()
+	)
+
+
+func _spawn_shadow_surge_finish_effect(world_position: Vector2) -> void:
+	_spawn_shadow_clone_birth_effect(world_position)
+
+
+func _spawn_attack_range_indicator(reason: String = "") -> void:
 	var scene_root := get_tree().current_scene
 	if scene_root == null:
 		scene_root = get_parent()
@@ -2324,38 +3702,212 @@ func _spawn_attack_range_indicator() -> void:
 		var to_target := target_enemy.global_position - global_position
 		if to_target.length_squared() > 0.0001:
 			facing_direction = to_target.normalized()
+	var telegraph_target := _get_attack_indicator_target()
+	var target_radius := _get_enemy_attack_collision_radius(telegraph_target) if telegraph_target != null else 0.0
+	var attack_radius := _get_basic_attack_hit_radius() + target_radius
+	var telegraph_arc_degrees := clampf(attack_arc_degrees, 10.0, 179.0)
+	var effective_depth_tolerance := maxf(4.0, attack_depth_tolerance * 1.35) + target_radius
+	if telegraph_target != null:
+		var target_point := _get_enemy_attack_target_point(telegraph_target, global_position)
+		var distance_to_target := target_point.distance_to(global_position)
+		if target_radius > 0.01 and distance_to_target > 0.0001:
+			var arc_bonus := asin(clampf(target_radius / maxf(1.0, distance_to_target), 0.0, 0.99)) + deg_to_rad(3.0)
+			telegraph_arc_degrees = clampf(telegraph_arc_degrees + (rad_to_deg(arc_bonus) * 2.0), 10.0, 179.0)
 
 	var indicator := Node2D.new()
 	indicator.top_level = true
-	indicator.global_position = global_position + Vector2(0.0, -12.0)
+	indicator.global_position = global_position
 	indicator.rotation = facing_direction.angle()
 	indicator.z_index = 229
 	scene_root.add_child(indicator)
 
-	var attack_radius := attack_range * 0.28
+	var show_manual_range_telegraph := manual_control_enabled and reason == "manual"
+	var show_shadow_strike_telegraph := reason.begins_with("shadow_strike")
+	var arc_color := Color(1.0, 0.82, 0.42, 0.84)
+	var guide_color := Color(1.0, 0.92, 0.58, 0.62)
+	var duration := maxf(0.06, attack_range_indicator_duration)
+	if show_shadow_strike_telegraph:
+		arc_color = Color(0.9, 0.52, 1.0, 0.96)
+		guide_color = Color(0.96, 0.78, 1.0, 0.82)
+		duration = maxf(duration, attack_range_indicator_duration * 1.3)
+		var shadow_wedge := Polygon2D.new()
+		shadow_wedge.color = Color(0.46, 0.18, 0.72, 0.2)
+		var shadow_wedge_points := PackedVector2Array([Vector2.ZERO])
+		for point in _build_attack_hitbox_arc_points(attack_radius, telegraph_arc_degrees, effective_depth_tolerance, 19):
+			shadow_wedge_points.append(point)
+		shadow_wedge.polygon = shadow_wedge_points
+		indicator.add_child(shadow_wedge)
+	elif show_manual_range_telegraph:
+		arc_color = Color(0.34, 0.78, 1.0, 0.94)
+		guide_color = Color(0.56, 0.9, 1.0, 0.76)
+		duration = maxf(duration, attack_range_indicator_duration * 1.2)
+		var wedge := Polygon2D.new()
+		wedge.color = Color(0.18, 0.62, 1.0, 0.16)
+		var wedge_points := PackedVector2Array([Vector2.ZERO])
+		for point in _build_attack_hitbox_arc_points(attack_radius, telegraph_arc_degrees, effective_depth_tolerance, 17):
+			wedge_points.append(point)
+		wedge.polygon = wedge_points
+		indicator.add_child(wedge)
+
 	var arc := Line2D.new()
-	arc.default_color = Color(1.0, 0.82, 0.42, 0.84)
-	arc.width = maxf(1.4, attack_range_indicator_width)
+	arc.default_color = arc_color
+	arc.width = maxf(1.4, attack_range_indicator_width * (1.16 if show_shadow_strike_telegraph else (1.12 if show_manual_range_telegraph else 1.0)))
 	arc.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	arc.end_cap_mode = Line2D.LINE_CAP_ROUND
-	arc.points = _build_attack_arc_points(attack_radius, attack_arc_degrees, 13)
+	arc.points = _build_attack_hitbox_arc_points(attack_radius, telegraph_arc_degrees, effective_depth_tolerance, 13)
 	indicator.add_child(arc)
 
 	var guide := Line2D.new()
-	guide.default_color = Color(1.0, 0.92, 0.58, 0.62)
-	guide.width = maxf(1.0, attack_range_indicator_width * 0.45)
+	guide.default_color = guide_color
+	guide.width = maxf(1.0, attack_range_indicator_width * (0.7 if show_shadow_strike_telegraph else (0.62 if show_manual_range_telegraph else 0.45)))
 	guide.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	guide.end_cap_mode = Line2D.LINE_CAP_ROUND
 	guide.points = PackedVector2Array([Vector2.ZERO, Vector2(attack_radius, 0.0)])
 	indicator.add_child(guide)
 
-	var duration := maxf(0.06, attack_range_indicator_duration)
 	var tween := create_tween()
-	tween.tween_property(indicator, "scale", Vector2(1.08, 1.08), duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tween.parallel().tween_property(indicator, "modulate:a", 0.0, duration)
+	tween.tween_property(indicator, "modulate:a", 0.0, duration)
 	tween.finished.connect(func() -> void:
 		if is_instance_valid(indicator):
 			indicator.queue_free()
+	)
+
+
+func _get_attack_indicator_target() -> EnemyBase:
+	if target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead and not _is_enemy_shadow_feared(target_enemy):
+		return target_enemy
+	return _find_manual_basic_attack_target()
+
+
+func _get_basic_attack_hit_radius() -> float:
+	return maxf(8.0, attack_range * 1.12)
+
+
+func _get_enemy_attack_target_point(enemy: EnemyBase, attack_origin: Vector2) -> Vector2:
+	if enemy == null or not is_instance_valid(enemy):
+		return attack_origin
+	var target_point := enemy.global_position
+	var collision_shape := enemy.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if collision_shape == null:
+		return target_point
+	target_point = collision_shape.global_position
+	var circle := collision_shape.shape as CircleShape2D
+	if circle == null:
+		return target_point
+	var radius_scale := maxf(absf(collision_shape.global_scale.x), absf(collision_shape.global_scale.y))
+	var hit_radius := maxf(0.0, circle.radius * maxf(0.01, radius_scale))
+	var to_enemy := target_point - attack_origin
+	var distance := to_enemy.length()
+	if distance <= 0.0001 or hit_radius <= 0.01:
+		return target_point
+	var clamped_inset := minf(hit_radius, distance * 0.8)
+	return target_point - (to_enemy / distance) * clamped_inset
+
+
+func _get_enemy_attack_collision_radius(enemy: EnemyBase) -> float:
+	if enemy == null or not is_instance_valid(enemy):
+		return 0.0
+	var collision_shape := enemy.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if collision_shape == null:
+		return 0.0
+	var circle := collision_shape.shape as CircleShape2D
+	if circle == null:
+		return 0.0
+	var radius_scale := maxf(absf(collision_shape.global_scale.x), absf(collision_shape.global_scale.y))
+	return maxf(0.0, circle.radius * maxf(0.01, radius_scale))
+
+
+func _spawn_shadow_strike_swing_effect(facing_direction: Vector2) -> void:
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		scene_root = get_parent()
+	if scene_root == null:
+		return
+
+	var swing := Node2D.new()
+	swing.top_level = true
+	swing.global_position = global_position + (facing_direction.normalized() * 14.0) + Vector2(0.0, -12.0)
+	swing.rotation = facing_direction.angle()
+	swing.z_index = 232
+	scene_root.add_child(swing)
+
+	var slash_fill := Polygon2D.new()
+	slash_fill.color = Color(0.5, 0.18, 0.82, 0.24)
+	var slash_points := PackedVector2Array([Vector2.ZERO])
+	for point in _build_attack_arc_points(maxf(12.0, attack_range * 0.58), attack_arc_degrees * 0.72, 15):
+		slash_points.append(point)
+	slash_fill.polygon = slash_points
+	swing.add_child(slash_fill)
+
+	var slash_arc := Line2D.new()
+	slash_arc.default_color = Color(0.94, 0.72, 1.0, 0.96)
+	slash_arc.width = 3.0
+	slash_arc.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	slash_arc.end_cap_mode = Line2D.LINE_CAP_ROUND
+	slash_arc.points = _build_attack_arc_points(maxf(12.0, attack_range * 0.62), attack_arc_degrees * 0.78, 15)
+	swing.add_child(slash_arc)
+
+	var core := Line2D.new()
+	core.default_color = Color(0.72, 0.42, 1.0, 0.94)
+	core.width = 2.0
+	core.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	core.end_cap_mode = Line2D.LINE_CAP_ROUND
+	core.points = PackedVector2Array([Vector2.ZERO, Vector2(maxf(18.0, attack_range * 0.56), 0.0)])
+	swing.add_child(core)
+
+	var tween := create_tween()
+	tween.tween_property(swing, "scale", Vector2(1.16, 1.16), 0.12).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(swing, "modulate:a", 0.0, 0.12)
+	tween.finished.connect(func() -> void:
+		if is_instance_valid(swing):
+			swing.queue_free()
+	)
+
+
+func _spawn_shadow_strike_impact_effect(world_position: Vector2) -> void:
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		scene_root = get_parent()
+	if scene_root == null:
+		return
+
+	var impact := Node2D.new()
+	impact.top_level = true
+	impact.global_position = world_position
+	impact.z_index = 233
+	scene_root.add_child(impact)
+
+	var ring := Line2D.new()
+	ring.default_color = Color(0.94, 0.72, 1.0, 0.96)
+	ring.width = 2.1
+	ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	ring.end_cap_mode = Line2D.LINE_CAP_ROUND
+	ring.closed = true
+	ring.points = _build_ring_points(7.0, 14)
+	impact.add_child(ring)
+
+	var cross := Line2D.new()
+	cross.default_color = Color(0.7, 0.36, 1.0, 0.92)
+	cross.width = 2.0
+	cross.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	cross.end_cap_mode = Line2D.LINE_CAP_ROUND
+	cross.points = PackedVector2Array([Vector2(-7.0, -5.0), Vector2(8.0, 6.0)])
+	impact.add_child(cross)
+
+	var cross_back := Line2D.new()
+	cross_back.default_color = Color(0.58, 0.22, 0.86, 0.76)
+	cross_back.width = 1.8
+	cross_back.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	cross_back.end_cap_mode = Line2D.LINE_CAP_ROUND
+	cross_back.points = PackedVector2Array([Vector2(-6.0, 6.0), Vector2(7.0, -5.0)])
+	impact.add_child(cross_back)
+
+	var tween := create_tween()
+	tween.tween_property(impact, "scale", Vector2(1.45, 1.45), 0.12).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(impact, "modulate:a", 0.0, 0.12)
+	tween.finished.connect(func() -> void:
+		if is_instance_valid(impact):
+			impact.queue_free()
 	)
 
 
@@ -2471,6 +4023,16 @@ func _build_ring_points(radius: float, segments: int) -> PackedVector2Array:
 	return points
 
 
+func _build_circle_points(radius: float, segments: int) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	var safe_radius := maxf(1.0, radius)
+	var safe_segments := maxi(8, segments)
+	for i in range(safe_segments):
+		var angle := (TAU * float(i)) / float(safe_segments)
+		points.append(Vector2.RIGHT.rotated(angle) * safe_radius)
+	return points
+
+
 func _build_attack_arc_points(radius: float, arc_degrees: float, points_count: int) -> PackedVector2Array:
 	var points := PackedVector2Array()
 	var safe_radius := maxf(8.0, radius)
@@ -2481,6 +4043,34 @@ func _build_attack_arc_points(radius: float, arc_degrees: float, points_count: i
 		var angle := lerpf(-half_arc, half_arc, t)
 		points.append(Vector2.RIGHT.rotated(angle) * safe_radius)
 	return points
+
+
+func _build_attack_hitbox_arc_points(radius: float, arc_degrees: float, depth_tolerance: float, points_count: int) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	var safe_radius := maxf(8.0, radius)
+	var safe_depth := maxf(4.0, depth_tolerance)
+	var safe_points := maxi(3, points_count)
+	var half_arc := deg_to_rad(clampf(arc_degrees, 10.0, 179.0) * 0.5)
+	for i in range(safe_points):
+		var t := float(i) / float(safe_points - 1)
+		var angle := lerpf(-half_arc, half_arc, t)
+		var direction := Vector2.RIGHT.rotated(angle)
+		var radius_limit := safe_radius
+		var sin_amount := absf(direction.y)
+		if sin_amount > 0.0001:
+			radius_limit = minf(radius_limit, safe_depth / sin_amount)
+		points.append(direction * maxf(0.0, radius_limit))
+	return points
+
+
+func _distance_sq_to_segment(point: Vector2, segment_start: Vector2, segment_end: Vector2) -> float:
+	var segment := segment_end - segment_start
+	var segment_length_sq := segment.length_squared()
+	if segment_length_sq <= 0.0001:
+		return point.distance_squared_to(segment_start)
+	var t := clampf((point - segment_start).dot(segment) / segment_length_sq, 0.0, 1.0)
+	var closest := segment_start + (segment * t)
+	return point.distance_squared_to(closest)
 
 
 func set_hitbox_debug_enabled(enabled: bool) -> void:

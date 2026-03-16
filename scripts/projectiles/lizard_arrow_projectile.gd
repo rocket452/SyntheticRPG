@@ -2,10 +2,11 @@ extends Node2D
 class_name LizardArrowProjectile
 
 const ARROW_TEXTURE_PATH: String = "res://assets/external/ElthenAssets/lizardfolk/Arrow.png"
+const DEFAULT_HIT_RADIUS: float = 10.5
 
 static var arrow_texture_cache: Texture2D = null
 
-@export var hit_radius: float = 10.5
+@export var hit_radius: float = DEFAULT_HIT_RADIUS
 @export var default_speed: float = 560.0
 @export var max_lifetime: float = 2.4
 @export var trail_length: float = 22.0
@@ -19,6 +20,7 @@ var max_distance: float = 540.0
 var damage_amount: float = 8.0
 var stun_on_hit: float = 0.2
 var knockback_on_hit: float = 0.72
+var grant_owner_special_meter_on_hit: bool = true
 var traveled_distance: float = 0.0
 var alive_time: float = 0.0
 var hitbox_debug_enabled: bool = false
@@ -36,10 +38,12 @@ func setup(
 	damage: float,
 	stun_duration: float,
 	knockback_scale: float,
-	target_enemy: EnemyBase = null
+	target_enemy: EnemyBase = null,
+	grant_special_meter_on_hit: bool = true
 ) -> void:
 	owner_actor = source_actor
 	locked_target = target_enemy
+	grant_owner_special_meter_on_hit = grant_special_meter_on_hit
 	global_position = start_position
 	if direction.length_squared() <= 0.0001:
 		travel_direction = Vector2.RIGHT
@@ -132,15 +136,15 @@ func _try_hit_enemy(segment_start: Vector2, segment_end: Vector2) -> bool:
 func _try_hit_specific_enemy(enemy: EnemyBase, segment_start: Vector2, segment_end: Vector2) -> bool:
 	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
 		return false
-	var target_point := enemy.global_position + Vector2(0.0, -12.0)
-	var radius := maxf(6.0, hit_radius)
+	var target_point := _get_enemy_target_point(enemy)
+	var radius := maxf(6.0, hit_radius + _get_enemy_collision_radius(enemy))
 	if not _segment_hits_target(segment_start, segment_end, target_point, radius):
 		return false
 	if not enemy.has_method("receive_hit"):
 		return false
 	var source := owner_actor if owner_actor != null else self
 	var landed := bool(enemy.call("receive_hit", damage_amount, global_position, stun_on_hit, true, knockback_on_hit, source))
-	if landed and owner_actor != null and is_instance_valid(owner_actor) and owner_actor.has_method("add_special_meter_from_damage"):
+	if landed and grant_owner_special_meter_on_hit and owner_actor != null and is_instance_valid(owner_actor) and owner_actor.has_method("add_special_meter_from_damage"):
 		owner_actor.call("add_special_meter_from_damage", damage_amount)
 	if landed and enemy.has_method("apply_hitstop"):
 		enemy.call("apply_hitstop", 0.04)
@@ -155,6 +159,28 @@ func _segment_hits_target(segment_start: Vector2, segment_end: Vector2, target: 
 	var travel_t := clampf((target - segment_start).dot(segment) / segment_length_sq, 0.0, 1.0)
 	var nearest_point := segment_start + (segment * travel_t)
 	return nearest_point.distance_squared_to(target) <= radius * radius
+
+
+func _get_enemy_target_point(enemy: EnemyBase) -> Vector2:
+	if enemy == null or not is_instance_valid(enemy):
+		return global_position
+	var collision_shape := enemy.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if collision_shape != null:
+		return collision_shape.global_position
+	return enemy.global_position + Vector2(0.0, -12.0)
+
+
+func _get_enemy_collision_radius(enemy: EnemyBase) -> float:
+	if enemy == null or not is_instance_valid(enemy):
+		return 0.0
+	var collision_shape := enemy.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if collision_shape == null:
+		return 0.0
+	var circle := collision_shape.shape as CircleShape2D
+	if circle == null:
+		return 0.0
+	var radius_scale := maxf(absf(collision_shape.global_scale.x), absf(collision_shape.global_scale.y))
+	return maxf(0.0, circle.radius * maxf(0.01, radius_scale))
 
 
 func _get_arrow_texture() -> Texture2D:

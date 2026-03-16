@@ -45,6 +45,8 @@ signal combat_status_message(text: String, duration: float)
 @export var basic_combo_chain_window: float = 0.42
 @export var basic_combo_end_cooldown: float = 0.8
 
+const BASIC_ATTACK_RANGE_SCALE: float = 0.6
+
 @export var ability_1_damage: float = 30.0
 @export var ability_1_range: float = 84.0
 @export var ability_1_arc_degrees: float = 140.0
@@ -102,7 +104,7 @@ signal combat_status_message(text: String, duration: float)
 @export var counter_strike_startup: float = 0.12
 @export var counter_strike_recovery: float = 0.22
 @export var counter_strike_damage: float = 34.0
-@export var counter_strike_range: float = 74.0
+@export var counter_strike_range: float = 44.4
 @export var counter_strike_arc_degrees: float = 80.0
 @export var counter_strike_enemy_stun: float = 0.72
 @export var counter_strike_knockback_scale: float = 1.65
@@ -1322,23 +1324,21 @@ func receive_hit(amount: float, source_position: Vector2, guard_break: bool = fa
 	var incoming_direction := (source_position - global_position).normalized()
 	if incoming_direction == Vector2.ZERO:
 		incoming_direction = Vector2.LEFT if facing_direction.x >= 0.0 else Vector2.RIGHT
-	if is_blocking and not guard_break:
-		var block_threshold := cos(deg_to_rad(block_arc_degrees * 0.5))
-		if facing_direction.dot(incoming_direction) >= block_threshold:
-			perfect_block = perfect_block_window_left > 0.0
-			perfect_block_window_left = 0.0
-			if _is_shield_ring_equipped():
-				damage_to_apply = 0.0
-				blocked = true
-				blocked_damage = maxf(0.0, amount)
-				_register_ring_shield_successful_block(perfect_block)
-			else:
-				damage_to_apply *= (1.0 - block_damage_reduction)
-				blocked = true
-				blocked_damage = maxf(0.0, amount - damage_to_apply)
-				drain_block_stamina(block_stamina_blocked_hit_cost)
-			if perfect_block:
-				_register_perfect_block(source_position)
+	if is_block_shield_active() and not guard_break:
+		perfect_block = perfect_block_window_left > 0.0
+		perfect_block_window_left = 0.0
+		if _is_shield_ring_equipped():
+			damage_to_apply = 0.0
+			blocked = true
+			blocked_damage = maxf(0.0, amount)
+			_register_ring_shield_successful_block(perfect_block)
+		else:
+			damage_to_apply *= (1.0 - block_damage_reduction)
+			blocked = true
+			blocked_damage = maxf(0.0, amount - damage_to_apply)
+			drain_block_stamina(block_stamina_blocked_hit_cost)
+		if perfect_block:
+			_register_perfect_block(source_position)
 
 	if blocked and blocked_damage > 0.0:
 		_apply_block_reflect(blocked_damage, source_position)
@@ -2454,7 +2454,7 @@ func _tick_charge_attack_state(delta: float) -> void:
 			)
 			attack_telegraph.rotation = charge_release_direction.angle()
 			attack_telegraph.modulate.a = lerpf(0.35, 0.92, charge_ratio)
-			attack_telegraph.scale = Vector2.ONE * lerpf(0.94, 1.12, charge_ratio)
+			attack_telegraph.scale = Vector2.ONE
 
 	if charge_release_windup_left > 0.0:
 		charge_release_windup_left = maxf(0.0, charge_release_windup_left - delta)
@@ -2462,7 +2462,7 @@ func _tick_charge_attack_state(delta: float) -> void:
 		attack_telegraph.color = _get_equipped_sword_charge_release_color(lerpf(0.45, 0.85, windup_progress))
 		attack_telegraph.rotation = charge_release_direction.angle()
 		attack_telegraph.modulate.a = lerpf(0.45, 0.96, windup_progress)
-		attack_telegraph.scale = Vector2.ONE * lerpf(1.0, 1.18, windup_progress)
+		attack_telegraph.scale = Vector2.ONE
 		if charge_release_windup_left <= 0.0:
 			_begin_charge_attack_active()
 
@@ -2785,12 +2785,13 @@ func _start_basic_combo_attack() -> void:
 	var attack_speed_multiplier := _get_berserker_attack_speed_multiplier()
 	var attack_damage_multiplier := _get_berserker_attack_damage_multiplier()
 	var sword_range_multiplier := _get_equipped_basic_attack_range_multiplier()
+	var effective_basic_range := _get_effective_basic_attack_range()
 	if sword_range_multiplier > 1.001:
 		_log_sword_effect("BASIC_RANGE_MULT hit=%d x%.2f" % [combo_hit, sword_range_multiplier])
 
 	queued_basic_combo_hit_index = combo_hit
 	queued_basic_combo_damage = basic_attack_damage * damage_multiplier * attack_damage_multiplier
-	queued_basic_combo_range = basic_attack_range * range_multiplier * sword_range_multiplier
+	queued_basic_combo_range = effective_basic_range * range_multiplier * sword_range_multiplier
 	queued_basic_combo_arc_degrees = basic_attack_arc_degrees * arc_multiplier
 
 	basic_attack_cooldown_left = maxf(0.01, basic_attack_cooldown * cooldown_multiplier * attack_speed_multiplier)
@@ -2830,11 +2831,12 @@ func _start_basic_single_attack() -> void:
 	var attack_speed_multiplier := _get_berserker_attack_speed_multiplier()
 	var attack_damage_multiplier := _get_berserker_attack_damage_multiplier()
 	var sword_range_multiplier := _get_equipped_basic_attack_range_multiplier()
+	var effective_basic_range := _get_effective_basic_attack_range()
 	if sword_range_multiplier > 1.001:
 		_log_sword_effect("BASIC_RANGE_MULT hit=1 x%.2f" % sword_range_multiplier)
 	queued_basic_combo_hit_index = 1
 	queued_basic_combo_damage = basic_attack_damage * float(BASIC_COMBO_DAMAGE_MULTIPLIERS[combo_index]) * attack_damage_multiplier
-	queued_basic_combo_range = basic_attack_range * float(BASIC_COMBO_RANGE_MULTIPLIERS[combo_index]) * sword_range_multiplier
+	queued_basic_combo_range = effective_basic_range * float(BASIC_COMBO_RANGE_MULTIPLIERS[combo_index]) * sword_range_multiplier
 	queued_basic_combo_arc_degrees = basic_attack_arc_degrees * float(BASIC_COMBO_ARC_MULTIPLIERS[combo_index])
 	basic_attack_cooldown_left = maxf(0.01, basic_attack_cooldown * attack_speed_multiplier)
 	_queue_attack(
@@ -2859,7 +2861,7 @@ func _resolve_queued_attack() -> void:
 			var combo_hit := clampi(queued_basic_combo_hit_index, 1, BASIC_COMBO_MAX_HITS)
 			var combo_index := combo_hit - 1
 			var combo_damage := queued_basic_combo_damage if queued_basic_combo_damage > 0.0 else basic_attack_damage
-			var combo_range := queued_basic_combo_range if queued_basic_combo_range > 0.0 else basic_attack_range
+			var combo_range := queued_basic_combo_range if queued_basic_combo_range > 0.0 else _get_effective_basic_attack_range()
 			var combo_arc := queued_basic_combo_arc_degrees if queued_basic_combo_arc_degrees > 0.0 else basic_attack_arc_degrees
 			var combo_hitstop := 0.045 + (0.012 * float(combo_index))
 			var combo_knockback := 1.0 + (0.08 * float(combo_index))
@@ -3002,17 +3004,20 @@ func _apply_lunge_strike() -> void:
 
 
 func _show_attack_telegraph(attack_range: float, arc_degrees: float, telegraph_color: Color) -> void:
+	var telegraph_direction := _resolve_attack_telegraph_direction()
+	var profile := _get_attack_telegraph_arc_profile(attack_range, arc_degrees, telegraph_direction)
 	attack_telegraph.visible = true
 	attack_telegraph.color = telegraph_color
-	attack_telegraph.polygon = _build_arc_polygon(attack_range, arc_degrees, 18)
+	attack_telegraph.polygon = _build_hitbox_arc_polygon(
+		float(profile.get("range", attack_range)),
+		float(profile.get("arc", arc_degrees)),
+		float(profile.get("depth", attack_depth_tolerance)),
+		18
+	)
 	attack_telegraph.position = Vector2.ZERO
-	var telegraph_direction := facing_direction
-	if is_charging_attack or charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0:
-		telegraph_direction = charge_release_direction
-	if telegraph_direction.length_squared() <= 0.0001:
-		telegraph_direction = facing_direction
 	attack_telegraph.rotation = telegraph_direction.angle()
 	attack_telegraph.modulate.a = 0.25
+	attack_telegraph.scale = Vector2.ONE
 
 
 func _show_instant_attack_flash(
@@ -3021,15 +3026,20 @@ func _show_instant_attack_flash(
 	telegraph_color: Color,
 	telegraph_direction: Vector2 = Vector2.ZERO
 ) -> void:
+	var resolved_direction := _resolve_attack_telegraph_direction(telegraph_direction)
+	var profile := _get_attack_telegraph_arc_profile(attack_range, arc_degrees, resolved_direction)
 	attack_telegraph.visible = true
 	attack_telegraph.color = telegraph_color
-	attack_telegraph.polygon = _build_arc_polygon(attack_range, arc_degrees, 16)
+	attack_telegraph.polygon = _build_hitbox_arc_polygon(
+		float(profile.get("range", attack_range)),
+		float(profile.get("arc", arc_degrees)),
+		float(profile.get("depth", attack_depth_tolerance)),
+		16
+	)
 	attack_telegraph.position = Vector2.ZERO
-	var direction := telegraph_direction
-	if direction.length_squared() <= 0.0001:
-		direction = facing_direction
-	attack_telegraph.rotation = direction.angle()
+	attack_telegraph.rotation = resolved_direction.angle()
 	attack_telegraph.modulate.a = 0.7
+	attack_telegraph.scale = Vector2.ONE
 	var tween := create_tween()
 	tween.tween_property(attack_telegraph, "modulate:a", 0.0, 0.08)
 	tween.finished.connect(func() -> void:
@@ -3044,17 +3054,18 @@ func _show_forward_oval_attack_telegraph(
 	telegraph_color: Color,
 	telegraph_direction: Vector2 = Vector2.ZERO
 ) -> void:
-	var half_extents := _get_counter_strike_oval_half_extents_for_range(attack_range)
-	var forward_offset := _get_counter_strike_oval_forward_offset(half_extents)
+	var resolved_direction := _resolve_attack_telegraph_direction(telegraph_direction)
+	var profile := _get_forward_oval_telegraph_profile(attack_range, resolved_direction)
+	var half_extents_variant: Variant = profile.get("half_extents", _get_counter_strike_oval_half_extents_for_range(attack_range))
+	var half_extents: Vector2 = half_extents_variant if half_extents_variant is Vector2 else _get_counter_strike_oval_half_extents_for_range(attack_range)
+	var forward_offset := float(profile.get("forward_offset", _get_counter_strike_oval_forward_offset(half_extents)))
 	attack_telegraph.visible = true
 	attack_telegraph.color = telegraph_color
 	attack_telegraph.polygon = _build_forward_oval_polygon(forward_offset, half_extents, 20)
 	attack_telegraph.position = Vector2.ZERO
-	var direction := telegraph_direction
-	if direction.length_squared() <= 0.0001:
-		direction = facing_direction
-	attack_telegraph.rotation = direction.angle()
+	attack_telegraph.rotation = resolved_direction.angle()
 	attack_telegraph.modulate.a = 0.25
+	attack_telegraph.scale = Vector2.ONE
 
 
 func _show_instant_forward_oval_attack_flash(
@@ -3062,17 +3073,18 @@ func _show_instant_forward_oval_attack_flash(
 	telegraph_color: Color,
 	telegraph_direction: Vector2 = Vector2.ZERO
 ) -> void:
-	var half_extents := _get_counter_strike_oval_half_extents_for_range(attack_range)
-	var forward_offset := _get_counter_strike_oval_forward_offset(half_extents)
+	var resolved_direction := _resolve_attack_telegraph_direction(telegraph_direction)
+	var profile := _get_forward_oval_telegraph_profile(attack_range, resolved_direction)
+	var half_extents_variant: Variant = profile.get("half_extents", _get_counter_strike_oval_half_extents_for_range(attack_range))
+	var half_extents: Vector2 = half_extents_variant if half_extents_variant is Vector2 else _get_counter_strike_oval_half_extents_for_range(attack_range)
+	var forward_offset := float(profile.get("forward_offset", _get_counter_strike_oval_forward_offset(half_extents)))
 	attack_telegraph.visible = true
 	attack_telegraph.color = telegraph_color
 	attack_telegraph.polygon = _build_forward_oval_polygon(forward_offset, half_extents, 18)
 	attack_telegraph.position = Vector2.ZERO
-	var direction := telegraph_direction
-	if direction.length_squared() <= 0.0001:
-		direction = facing_direction
-	attack_telegraph.rotation = direction.angle()
+	attack_telegraph.rotation = resolved_direction.angle()
 	attack_telegraph.modulate.a = 0.7
+	attack_telegraph.scale = Vector2.ONE
 	var tween := create_tween()
 	tween.tween_property(attack_telegraph, "modulate:a", 0.0, 0.08)
 	tween.finished.connect(func() -> void:
@@ -3089,15 +3101,130 @@ func _update_attack_telegraph_progress() -> void:
 		attack_telegraph.color = _get_equipped_sword_charge_preview_color(attack_telegraph.color.a)
 	elif charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0:
 		attack_telegraph.color = _get_equipped_sword_charge_release_color(attack_telegraph.color.a)
-	var telegraph_direction := facing_direction
-	if is_charging_attack or charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0:
-		telegraph_direction = charge_release_direction
-	if telegraph_direction.length_squared() <= 0.0001:
-		telegraph_direction = facing_direction
+	var telegraph_direction := _resolve_attack_telegraph_direction()
 	attack_telegraph.rotation = telegraph_direction.angle()
 	var progress := 1.0 - (attack_windup_left / attack_windup_total)
 	attack_telegraph.modulate.a = lerpf(0.25, 0.85, clampf(progress, 0.0, 1.0))
-	attack_telegraph.scale = Vector2.ONE * lerpf(0.92, 1.02, progress)
+	attack_telegraph.scale = Vector2.ONE
+
+
+func _resolve_attack_telegraph_direction(preferred_direction: Vector2 = Vector2.ZERO) -> Vector2:
+	var resolved_direction := preferred_direction
+	if resolved_direction.length_squared() <= 0.0001:
+		if is_charging_attack or charge_release_windup_left > 0.0 or charge_attack_active_left > 0.0:
+			resolved_direction = charge_release_direction
+		else:
+			resolved_direction = facing_direction
+	if resolved_direction.length_squared() <= 0.0001:
+		resolved_direction = facing_direction
+	if resolved_direction.length_squared() <= 0.0001:
+		resolved_direction = Vector2.RIGHT
+	return resolved_direction.normalized()
+
+
+func _get_attack_telegraph_arc_profile(attack_range: float, arc_degrees: float, telegraph_direction: Vector2) -> Dictionary:
+	var effective_range := maxf(8.0, attack_range)
+	var effective_arc := clampf(arc_degrees, 5.0, 179.0)
+	var effective_depth := maxf(4.0, attack_depth_tolerance)
+	var target := _find_attack_telegraph_target(telegraph_direction, effective_range, effective_arc)
+	if target == null:
+		return {
+			"range": effective_range,
+			"arc": effective_arc,
+			"depth": effective_depth
+		}
+	var target_radius := _get_enemy_attack_collision_radius(target)
+	var target_point := _get_enemy_attack_target_point(target, global_position)
+	var is_air_boss := target.monster_visual_profile == EnemyBase.MonsterVisualProfile.CACODEMON \
+		or target.monster_visual_profile == EnemyBase.MonsterVisualProfile.SHARDSOUL
+	effective_range += target_radius + (14.0 if is_air_boss else 0.0)
+	effective_depth += target_radius + (18.0 if is_air_boss else 0.0)
+	var distance_to_target := target_point.distance_to(global_position)
+	if target_radius > 0.01 and distance_to_target > 0.0001:
+		var arc_bonus := asin(clampf(target_radius / maxf(1.0, distance_to_target), 0.0, 0.99)) + deg_to_rad(3.0)
+		effective_arc = clampf(effective_arc + (rad_to_deg(arc_bonus) * 2.0), 5.0, 179.0)
+	return {
+		"range": effective_range,
+		"arc": effective_arc,
+		"depth": effective_depth
+	}
+
+
+func _get_forward_oval_telegraph_profile(attack_range: float, telegraph_direction: Vector2) -> Dictionary:
+	var base_half_extents := _get_counter_strike_oval_half_extents_for_range(attack_range)
+	var draw_half_extents := base_half_extents
+	var target := _find_attack_telegraph_target(telegraph_direction, attack_range, 179.0, true)
+	if target != null:
+		var target_radius := _get_enemy_attack_collision_radius(target)
+		draw_half_extents += Vector2.ONE * target_radius
+		var is_air_boss := target.monster_visual_profile == EnemyBase.MonsterVisualProfile.CACODEMON \
+			or target.monster_visual_profile == EnemyBase.MonsterVisualProfile.SHARDSOUL
+		if is_air_boss:
+			draw_half_extents.y += 6.0
+	return {
+		"half_extents": draw_half_extents,
+		"forward_offset": _get_counter_strike_oval_forward_offset(base_half_extents)
+	}
+
+
+func _find_attack_telegraph_target(
+	telegraph_direction: Vector2,
+	search_range: float,
+	arc_degrees: float = 179.0,
+	use_forward_oval_hitbox: bool = false
+) -> EnemyBase:
+	var forward := telegraph_direction.normalized()
+	if forward.length_squared() <= 0.0001:
+		forward = Vector2.RIGHT
+	var best_enemy: EnemyBase = null
+	var best_distance_sq := INF
+	var search_radius := maxf(search_range + 72.0, search_range * 1.55)
+	var search_radius_sq := search_radius * search_radius
+	var half_arc_radians := deg_to_rad(clampf(arc_degrees, 10.0, 179.0) * 0.5)
+	var facing_threshold := cos(minf(PI, half_arc_radians + deg_to_rad(24.0)))
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		var target_point := _get_enemy_attack_target_point(enemy, global_position)
+		var to_enemy := target_point - global_position
+		var distance_sq := to_enemy.length_squared()
+		if distance_sq > search_radius_sq:
+			continue
+		if distance_sq > 0.0001:
+			var direction_to_enemy := to_enemy / sqrt(distance_sq)
+			if use_forward_oval_hitbox:
+				if forward.dot(direction_to_enemy) < -0.05:
+					continue
+			elif forward.dot(direction_to_enemy) < facing_threshold:
+				continue
+		if not use_forward_oval_hitbox:
+			var target_radius := _get_enemy_attack_collision_radius(enemy)
+			if absf(to_enemy.y) > attack_depth_tolerance + target_radius + 40.0:
+				continue
+		if best_enemy == null or distance_sq < best_distance_sq:
+			best_enemy = enemy
+			best_distance_sq = distance_sq
+	return best_enemy
+
+
+func _build_hitbox_arc_polygon(attack_range: float, arc_degrees: float, depth_tolerance: float, segments: int) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	points.append(Vector2.ZERO)
+	var safe_range := maxf(8.0, attack_range)
+	var safe_depth := maxf(4.0, depth_tolerance)
+	var safe_segments := maxi(8, segments)
+	var half_arc := deg_to_rad(clampf(arc_degrees, 5.0, 179.0) * 0.5)
+	for i in range(safe_segments + 1):
+		var t := float(i) / float(safe_segments)
+		var angle := lerpf(-half_arc, half_arc, t)
+		var direction := Vector2.RIGHT.rotated(angle)
+		var radius_limit := safe_range
+		var sin_amount := absf(direction.y)
+		if sin_amount > 0.0001:
+			radius_limit = minf(radius_limit, safe_depth / sin_amount)
+		points.append(direction * maxf(0.0, radius_limit))
+	return points
 
 
 func _build_arc_polygon(attack_range: float, arc_degrees: float, segments: int) -> PackedVector2Array:
@@ -3691,7 +3818,7 @@ func _update_ai_input(delta: float) -> void:
 		var desired_range := maxf(18.0, ai_follow_range)
 		var range_tolerance := maxf(2.0, ai_follow_range_tolerance)
 		var kite_min_range := maxf(8.0, ai_kite_min_range)
-		var melee_reach := maxf(12.0, basic_attack_range + 22.0)
+		var melee_reach := maxf(12.0, _get_effective_basic_attack_range() + 22.0)
 		var faceoff_depth_tolerance := maxf(8.0, ai_faceoff_depth_tolerance)
 		var faceoff_hold_max_distance := maxf(kite_min_range + 4.0, melee_reach + ai_faceoff_hold_distance_padding)
 		var in_faceoff_band := enemy_distance >= kite_min_range \
@@ -4080,6 +4207,10 @@ func _get_equipped_basic_attack_range_multiplier() -> float:
 	if not _is_extended_charge_sword_equipped():
 		return 1.0
 	return maxf(1.0, float(equipped_sword_definition.get("extended_basic_range_multiplier", 1.0)))
+
+
+func _get_effective_basic_attack_range() -> float:
+	return maxf(8.0, basic_attack_range * BASIC_ATTACK_RANGE_SCALE)
 
 
 func _get_equipped_sword_charge_preview_color(alpha: float = 0.35) -> Color:
@@ -4473,6 +4604,11 @@ func get_block_shield_half_extents() -> Vector2:
 	)
 
 
+func get_block_shield_radius() -> float:
+	var half_extents := get_block_shield_half_extents()
+	return maxf(half_extents.x, half_extents.y)
+
+
 func orient_block_toward(world_source: Vector2) -> void:
 	var to_source := world_source - global_position
 	if absf(to_source.x) <= 0.01:
@@ -4526,7 +4662,7 @@ func _draw_attack_debug() -> void:
 	if facing.length_squared() <= 0.0001:
 		facing = Vector2.RIGHT
 	var direction := facing
-	var attack_range := basic_attack_range
+	var attack_range := _get_effective_basic_attack_range()
 	var attack_arc := basic_attack_arc_degrees
 	var fill_color := Color(1.0, 0.68, 0.18, 0.13)
 	var outline_color := Color(1.0, 0.82, 0.42, 0.95)

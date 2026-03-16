@@ -28,6 +28,17 @@ var healer_tidal_wave_setup_done: bool = false
 var healer_respects_fear_setup_done: bool = false
 var healer_respects_fear_start_time: float = -1.0
 var healer_respects_fear_health_floor: float = -1.0
+var healer_ignores_dead_ally_setup_done: bool = false
+var healer_ai_quick_heal_setup_done: bool = false
+var healer_ai_quick_heal_health_floor: float = -1.0
+var healer_manual_self_target_setup_done: bool = false
+var healer_manual_self_target_player_health_before: float = -1.0
+var healer_manual_self_target_healer_health_before: float = -1.0
+var healer_manual_move_cancel_setup_done: bool = false
+var healer_manual_move_cancel_player_health_before: float = -1.0
+var healer_manual_move_cancel_healer_start_x: float = 0.0
+var adventure_companion_door_setup_done: bool = false
+var basic_block_behind_setup_done: bool = false
 var cacodemon_breath_setup_done: bool = false
 var cacodemon_breath_started: bool = false
 var cacodemon_breath_start_time: float = -1.0
@@ -51,6 +62,18 @@ var cacodemon_natural_fireball_seen: bool = false
 var cacodemon_natural_fireball_last_debug_second: int = -1
 var cacodemon_fireball_pressure_setup_done: bool = false
 var cacodemon_fireball_pressure_seen: bool = false
+var rat_manual_setup_done: bool = false
+var rat_manual_basic_seen: bool = false
+var rat_manual_enemy_health_floor: float = -1.0
+var rat_manual_cast_cancel_setup_done: bool = false
+var rat_manual_cast_cancel_start_x: float = 0.0
+var rat_manual_cast_cancel_apply_count: int = 0
+var rat_shadow_clone_range_setup_done: bool = false
+var lizard_manual_setup_done: bool = false
+var lizard_manual_basic_seen: bool = false
+var lizard_manual_flurry_started: bool = false
+var lizard_manual_flurry_seen: bool = false
+var lizard_manual_enemy_health_floor: float = -1.0
 var harpoon_pull_setup_done: bool = false
 var harpoon_pull_reel_seen: bool = false
 var harpoon_pull_initial_distance: float = -1.0
@@ -74,6 +97,17 @@ func _ready() -> void:
 	healer_respects_fear_setup_done = false
 	healer_respects_fear_start_time = -1.0
 	healer_respects_fear_health_floor = -1.0
+	healer_ignores_dead_ally_setup_done = false
+	healer_ai_quick_heal_setup_done = false
+	healer_ai_quick_heal_health_floor = -1.0
+	healer_manual_self_target_setup_done = false
+	healer_manual_self_target_player_health_before = -1.0
+	healer_manual_self_target_healer_health_before = -1.0
+	healer_manual_move_cancel_setup_done = false
+	healer_manual_move_cancel_player_health_before = -1.0
+	healer_manual_move_cancel_healer_start_x = 0.0
+	adventure_companion_door_setup_done = false
+	basic_block_behind_setup_done = false
 	cacodemon_breath_setup_done = false
 	cacodemon_breath_started = false
 	cacodemon_breath_start_time = -1.0
@@ -97,6 +131,18 @@ func _ready() -> void:
 	cacodemon_natural_fireball_last_debug_second = -1
 	cacodemon_fireball_pressure_setup_done = false
 	cacodemon_fireball_pressure_seen = false
+	rat_manual_setup_done = false
+	rat_manual_basic_seen = false
+	rat_manual_enemy_health_floor = -1.0
+	rat_manual_cast_cancel_setup_done = false
+	rat_manual_cast_cancel_start_x = 0.0
+	rat_manual_cast_cancel_apply_count = 0
+	rat_shadow_clone_range_setup_done = false
+	lizard_manual_setup_done = false
+	lizard_manual_basic_seen = false
+	lizard_manual_flurry_started = false
+	lizard_manual_flurry_seen = false
+	lizard_manual_enemy_health_floor = -1.0
 	harpoon_pull_setup_done = false
 	harpoon_pull_reel_seen = false
 	harpoon_pull_initial_distance = -1.0
@@ -106,7 +152,7 @@ func _ready() -> void:
 	var charge_hold_env := OS.get_environment("AUTOPLAY_CHARGE_HOLD").strip_edges()
 	if charge_hold_env.is_valid_float():
 		charge_hold_duration = maxf(0.05, float(charge_hold_env))
-	if autoplay_scenario == "lunge_block" or autoplay_scenario == "basic_block" or autoplay_scenario == "shadow_fear" or autoplay_scenario == "shadow_fear_break" or autoplay_scenario == "shadow_fear_new_enemy" or autoplay_scenario == "healer_tidal_wave" or autoplay_scenario == "healer_respects_fear" or autoplay_scenario == "cacodemon_breath_block" or autoplay_scenario == "cacodemon_breath_stack" or autoplay_scenario == "cacodemon_fireball_block" or autoplay_scenario == "cacodemon_summon_imps" or autoplay_scenario == "cacodemon_player_hit" or autoplay_scenario == "cacodemon_fireball_natural" or autoplay_scenario == "cacodemon_fireball_pressure" or autoplay_scenario == "harpoon_pull":
+	if autoplay_scenario == "lunge_block" or autoplay_scenario == "basic_block" or autoplay_scenario == "basic_block_behind" or autoplay_scenario == "shadow_fear" or autoplay_scenario == "shadow_fear_break" or autoplay_scenario == "shadow_fear_new_enemy" or autoplay_scenario == "healer_tidal_wave" or autoplay_scenario == "healer_respects_fear" or autoplay_scenario == "healer_ignores_dead_ally" or autoplay_scenario == "healer_ai_quick_heal_cooldown" or autoplay_scenario == "healer_manual_self_target" or autoplay_scenario == "healer_manual_move_cancel" or autoplay_scenario == "adventure_companion_door" or autoplay_scenario == "cacodemon_breath_block" or autoplay_scenario == "cacodemon_breath_stack" or autoplay_scenario == "cacodemon_fireball_block" or autoplay_scenario == "cacodemon_summon_imps" or autoplay_scenario == "cacodemon_player_hit" or autoplay_scenario == "cacodemon_fireball_natural" or autoplay_scenario == "cacodemon_fireball_pressure" or autoplay_scenario == "rat_manual_basic" or autoplay_scenario == "rat_manual_cast_cancel" or autoplay_scenario == "rat_shadow_clone_range" or autoplay_scenario == "lizard_manual" or autoplay_scenario == "harpoon_pull":
 		timeout_seconds = maxf(timeout_seconds, 45.0)
 	autoplay_log_path = OS.get_environment("AUTOPLAY_LOG_PATH")
 	if autoplay_log_path.is_empty():
@@ -139,6 +185,9 @@ func _physics_process(delta: float) -> void:
 	if autoplay_scenario == "basic_block":
 		_step_basic_block_scenario()
 		return
+	if autoplay_scenario == "basic_block_behind":
+		_step_basic_block_behind_scenario()
+		return
 	if autoplay_scenario == "shadow_fear":
 		_step_shadow_fear_scenario()
 		return
@@ -153,6 +202,21 @@ func _physics_process(delta: float) -> void:
 		return
 	if autoplay_scenario == "healer_respects_fear":
 		_step_healer_respects_fear_scenario()
+		return
+	if autoplay_scenario == "healer_ignores_dead_ally":
+		_step_healer_ignores_dead_ally_scenario()
+		return
+	if autoplay_scenario == "healer_ai_quick_heal_cooldown":
+		_step_healer_ai_quick_heal_cooldown_scenario()
+		return
+	if autoplay_scenario == "healer_manual_self_target":
+		_step_healer_manual_self_target_scenario()
+		return
+	if autoplay_scenario == "healer_manual_move_cancel":
+		_step_healer_manual_move_cancel_scenario()
+		return
+	if autoplay_scenario == "adventure_companion_door":
+		_step_adventure_companion_door_scenario()
 		return
 	if autoplay_scenario == "cacodemon_breath_block":
 		_step_cacodemon_breath_block_scenario()
@@ -174,6 +238,18 @@ func _physics_process(delta: float) -> void:
 		return
 	if autoplay_scenario == "cacodemon_fireball_pressure":
 		_step_cacodemon_fireball_pressure_scenario()
+		return
+	if autoplay_scenario == "rat_manual_basic":
+		_step_rat_manual_basic_scenario()
+		return
+	if autoplay_scenario == "rat_manual_cast_cancel":
+		_step_rat_manual_cast_cancel_scenario()
+		return
+	if autoplay_scenario == "rat_shadow_clone_range":
+		_step_rat_shadow_clone_range_scenario()
+		return
+	if autoplay_scenario == "lizard_manual":
+		_step_lizard_manual_scenario()
 		return
 	if autoplay_scenario == "harpoon_pull":
 		_step_harpoon_pull_scenario()
@@ -254,6 +330,53 @@ func _step_basic_block_scenario() -> void:
 	else:
 		_set_move_inputs(Vector2.ZERO)
 		Input.action_press("block")
+
+
+func _step_basic_block_behind_scenario() -> void:
+	if not is_instance_valid(player) or not is_instance_valid(enemy):
+		return
+	if basic_block_behind_setup_done:
+		return
+
+	enemy.use_single_phase_loop = false
+	enemy.spin_attack_enabled = false
+	_set_move_inputs(Vector2.ZERO)
+	Input.action_release("block")
+
+	player.current_health = player.max_health
+	player.health_changed.emit(player.current_health, player.max_health)
+	player.facing_direction = Vector2.RIGHT
+	player.velocity = Vector2.ZERO
+	player.is_blocking = true
+	player.perfect_block_window_left = 0.0
+	player.block_stamina_broken = false
+	player.current_block_stamina = player.block_stamina_max
+
+	var attack_offset := maxf(36.0, enemy.attack_range - 8.0)
+	enemy.global_position = player.global_position + Vector2(-attack_offset, 0.0)
+	enemy.block_success_fx_count = 0
+
+	var health_before := player.current_health
+	var stamina_before := player.current_block_stamina
+	var landed := bool(enemy.call("_attempt_friendly_hit", player, 10.0, false, 0.0, 1.0, true, true))
+	enemy.call("_tick_pending_basic_block_success_fx", 1.0)
+	var health_loss := health_before - player.current_health
+	var stamina_loss := stamina_before - player.current_block_stamina
+	basic_block_behind_setup_done = true
+
+	if not landed:
+		_finish(1, "basic_block_behind_not_landed")
+		return
+	if int(enemy.get("block_success_fx_count")) <= 0:
+		_finish(1, "basic_block_behind_not_counted")
+		return
+	if health_loss >= 9.9:
+		_finish(1, "basic_block_behind_full_damage")
+		return
+	if stamina_loss <= 0.0:
+		_finish(1, "basic_block_behind_no_stamina_cost")
+		return
+	_finish(0, "basic_block_behind_ok")
 
 
 func _step_shadow_fear_scenario() -> void:
@@ -487,6 +610,346 @@ func _step_healer_respects_fear_scenario() -> void:
 			_finish(1, "healer_no_heal")
 			return
 		_finish(0, "healer_respects_fear")
+
+
+func _step_healer_ignores_dead_ally_scenario() -> void:
+	if not is_instance_valid(arena) or not is_instance_valid(player) or not is_instance_valid(enemy):
+		return
+	if not healer_ignores_dead_ally_setup_done:
+		if arena.has_method("set_party_member_enabled"):
+			arena.call("set_party_member_enabled", "healer", true)
+			arena.call("set_party_member_enabled", "ratfolk", true)
+			arena.call("set_party_member_enabled", "lizardfolk", false)
+		if not is_instance_valid(arena.healer) or not is_instance_valid(arena.ratfolk):
+			return
+		var healer := arena.healer as FriendlyHealer
+		var rat := arena.ratfolk as FriendlyRatfolk
+		if healer == null or healer.dead:
+			_finish(1, "healer_unavailable")
+			return
+		if rat == null or rat.dead:
+			_finish(1, "rat_unavailable")
+			return
+		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		player.global_position = arena.to_global(Vector2(max_x - 520.0, clampf(0.0, min_y + 8.0, max_y - 8.0)))
+		player.velocity = Vector2.ZERO
+		player.current_health = player.max_health
+		player.health_changed.emit(player.current_health, player.max_health)
+		healer.global_position = arena.to_global(Vector2(max_x - 360.0, clampf(-8.0, min_y + 8.0, max_y - 8.0)))
+		rat.global_position = arena.to_global(Vector2(max_x - 300.0, clampf(6.0, min_y + 8.0, max_y - 8.0)))
+		enemy.global_position = arena.to_global(Vector2(max_x - 140.0, clampf(14.0, min_y + 8.0, max_y - 8.0)))
+		healer.heal_timer_left = 0.0
+		healer.basic_heal_cooldown_left = 0.0
+		healer.big_heal_cooldown_left = 0.0
+		healer.pending_cast_target = null
+		healer.pending_cast_action = FriendlyHealer.CastAction.NONE
+		healer.healer_ai_target = null
+		rat.receive_hit(rat.max_health + 999.0, healer.global_position, false, 0.0, 1.0)
+		if not rat.dead:
+			_finish(1, "rat_not_dead")
+			return
+		healer_ignores_dead_ally_setup_done = true
+		phase = 1
+		phase_time = 0.0
+		_write_log("Healer dead ally setup complete")
+		return
+	var healer := arena.healer as FriendlyHealer
+	var rat := arena.ratfolk as FriendlyRatfolk
+	if healer == null or healer.dead:
+		_finish(1, "healer_unavailable")
+		return
+	if rat == null or not rat.dead:
+		_finish(1, "rat_not_dead")
+		return
+	var best_heal_target := healer.call("_find_best_heal_target", false) as Node2D
+	var resolved_dead_rat := healer.call("_resolve_heal_target", rat, false) as Node2D
+	if best_heal_target == rat or resolved_dead_rat == rat or healer.pending_cast_target == rat or healer.healer_ai_target == rat:
+		_finish(1, "healer_targeted_dead_ally")
+		return
+	if phase_time > 1.0:
+		_finish(0, "healer_ignores_dead_ally")
+		return
+
+
+func _step_healer_ai_quick_heal_cooldown_scenario() -> void:
+	if not is_instance_valid(arena) or not is_instance_valid(player) or not is_instance_valid(enemy):
+		return
+	if not healer_ai_quick_heal_setup_done:
+		if arena.has_method("set_party_member_enabled"):
+			arena.call("set_party_member_enabled", "healer", true)
+			arena.call("set_party_member_enabled", "ratfolk", false)
+			arena.call("set_party_member_enabled", "lizardfolk", false)
+		if not is_instance_valid(arena.healer):
+			return
+		var healer := arena.healer as FriendlyHealer
+		if healer == null or healer.dead:
+			_finish(1, "healer_unavailable")
+			return
+		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		player.global_position = arena.to_global(Vector2(max_x - 520.0, clampf(0.0, min_y + 8.0, max_y - 8.0)))
+		player.velocity = Vector2.ZERO
+		player.current_health = maxf(1.0, minf(player.max_health - 14.0, player.max_health * 0.35))
+		player.health_changed.emit(player.current_health, player.max_health)
+		healer.global_position = arena.to_global(Vector2(max_x - 360.0, clampf(-6.0, min_y + 8.0, max_y - 8.0)))
+		enemy.global_position = arena.to_global(Vector2(max_x - 80.0, clampf(14.0, min_y + 8.0, max_y - 8.0)))
+		healer.call("set_manual_control_enabled", false)
+		healer.light_bolt_enabled = false
+		healer.tidal_wave_enabled = false
+		healer.heal_timer_left = 0.0
+		healer.basic_heal_cooldown_left = 0.0
+		healer.big_heal_cooldown_left = 999.0
+		healer.tidal_wave_cooldown_left = 999.0
+		healer.light_bolt_cooldown_left = 999.0
+		healer.pending_cast_target = null
+		healer.pending_cast_action = FriendlyHealer.CastAction.NONE
+		healer.healer_ai_target = null
+		healer_ai_quick_heal_health_floor = player.current_health
+		healer_ai_quick_heal_setup_done = true
+		phase = 1
+		phase_time = 0.0
+		_write_log("Healer AI quick heal cooldown setup complete")
+		return
+	var healer := arena.healer as FriendlyHealer
+	if healer == null or healer.dead:
+		_finish(1, "healer_unavailable")
+		return
+	if player.current_health > healer_ai_quick_heal_health_floor + 0.1:
+		if healer.basic_heal_cooldown_left < 1.0:
+			_finish(1, "healer_ai_quick_heal_no_cooldown")
+			return
+		healer.call("set_manual_control_enabled", true)
+		var cooldown_state_variant: Variant = healer.call("get_manual_control_cooldown_state")
+		if cooldown_state_variant is Dictionary:
+			var cooldown_state := cooldown_state_variant as Dictionary
+			if absf(float(cooldown_state.get("quick_heal", -1.0))) > 0.01:
+				_finish(1, "healer_manual_quick_heal_not_zero")
+				return
+		_finish(0, "healer_ai_quick_heal_cooldown")
+		return
+	if phase_time > 4.0:
+		_finish(1, "healer_ai_quick_heal_missing")
+		return
+
+
+func _step_healer_manual_self_target_scenario() -> void:
+	if not is_instance_valid(arena) or not is_instance_valid(player) or not is_instance_valid(enemy):
+		return
+	if not healer_manual_self_target_setup_done:
+		if arena.has_method("set_party_member_enabled"):
+			arena.call("set_party_member_enabled", "healer", true)
+			arena.call("set_party_member_enabled", "ratfolk", false)
+			arena.call("set_party_member_enabled", "lizardfolk", false)
+		if not is_instance_valid(arena.healer):
+			return
+		var healer := arena.healer as FriendlyHealer
+		if healer == null or healer.dead:
+			_finish(1, "healer_unavailable")
+			return
+		if arena.has_method("set_controlled_character"):
+			arena.call("set_controlled_character", "healer")
+		if not arena.has_method("get_controlled_character_id") or String(arena.call("get_controlled_character_id")) != "healer":
+			_finish(1, "healer_control_unavailable")
+			return
+		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		player.global_position = arena.to_global(Vector2(max_x - 340.0, clampf(0.0, min_y + 8.0, max_y - 8.0)))
+		player.velocity = Vector2.ZERO
+		healer.global_position = arena.to_global(Vector2(max_x - 250.0, clampf(-8.0, min_y + 8.0, max_y - 8.0)))
+		healer.move_velocity = Vector2.ZERO
+		enemy.global_position = arena.to_global(Vector2(max_x - 80.0, clampf(18.0, min_y + 8.0, max_y - 8.0)))
+		enemy.velocity = Vector2.ZERO
+		player.current_health = maxf(1.0, minf(player.max_health - 18.0, player.max_health * 0.55))
+		player.health_changed.emit(player.current_health, player.max_health)
+		healer.current_health = maxf(1.0, minf(healer.max_health - 12.0, healer.max_health * 0.6))
+		healer.health_changed.emit(healer.current_health, healer.max_health)
+		healer.basic_heal_cooldown_left = 0.0
+		healer.pending_cast_target = null
+		healer.pending_cast_action = FriendlyHealer.CastAction.NONE
+		healer_manual_self_target_player_health_before = player.current_health
+		healer_manual_self_target_healer_health_before = healer.current_health
+		healer_manual_self_target_setup_done = true
+		phase = 1
+		phase_time = 0.0
+		_write_log("Healer manual self-target setup complete")
+		return
+	if not is_instance_valid(arena.healer):
+		_finish(1, "healer_despawned")
+		return
+	var healer := arena.healer as FriendlyHealer
+	if healer == null or healer.dead:
+		_finish(1, "healer_unavailable")
+		return
+	_set_move_inputs(Vector2.ZERO)
+	if phase == 1:
+		_set_shift_modifier_pressed(true)
+		if phase_time < 0.12:
+			Input.action_press("counter_strike")
+		else:
+			Input.action_release("counter_strike")
+		if healer.pending_cast_target == healer:
+			phase = 2
+			phase_time = 0.0
+			_write_log("Healer manual self-target queued")
+			return
+		if healer.pending_cast_target == player:
+			_finish(1, "healer_manual_shift_targeted_player")
+			return
+		if phase_time > 0.8:
+			_finish(1, "healer_manual_shift_not_queued")
+		return
+	_set_shift_modifier_pressed(false)
+	Input.action_release("counter_strike")
+	if healer.current_health > healer_manual_self_target_healer_health_before + 0.1:
+		if player.current_health > healer_manual_self_target_player_health_before + 0.1:
+			_finish(1, "healer_manual_shift_healed_both")
+			return
+		_finish(0, "healer_manual_self_target_ok")
+		return
+	if player.current_health > healer_manual_self_target_player_health_before + 0.1:
+		_finish(1, "healer_manual_shift_healed_player")
+		return
+	if phase_time > 4.0:
+		_finish(1, "healer_manual_shift_heal_missing")
+		return
+
+
+func _step_healer_manual_move_cancel_scenario() -> void:
+	if not is_instance_valid(arena) or not is_instance_valid(player) or not is_instance_valid(enemy):
+		return
+	if not healer_manual_move_cancel_setup_done:
+		if arena.has_method("set_party_member_enabled"):
+			arena.call("set_party_member_enabled", "healer", true)
+			arena.call("set_party_member_enabled", "ratfolk", false)
+			arena.call("set_party_member_enabled", "lizardfolk", false)
+		if not is_instance_valid(arena.healer):
+			return
+		var healer := arena.healer as FriendlyHealer
+		if healer == null or healer.dead:
+			_finish(1, "healer_unavailable")
+			return
+		if arena.has_method("set_controlled_character"):
+			arena.call("set_controlled_character", "healer")
+		if not arena.has_method("get_controlled_character_id") or String(arena.call("get_controlled_character_id")) != "healer":
+			_finish(1, "healer_control_unavailable")
+			return
+		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		player.global_position = arena.to_global(Vector2(max_x - 340.0, clampf(0.0, min_y + 8.0, max_y - 8.0)))
+		player.velocity = Vector2.ZERO
+		player.current_health = maxf(1.0, minf(player.max_health - 18.0, player.max_health * 0.55))
+		player.health_changed.emit(player.current_health, player.max_health)
+		healer.global_position = arena.to_global(Vector2(max_x - 250.0, clampf(-8.0, min_y + 8.0, max_y - 8.0)))
+		healer.move_velocity = Vector2.ZERO
+		enemy.global_position = arena.to_global(Vector2(max_x - 80.0, clampf(18.0, min_y + 8.0, max_y - 8.0)))
+		enemy.velocity = Vector2.ZERO
+		healer.big_heal_cooldown_left = 0.0
+		healer.pending_cast_target = null
+		healer.pending_cast_action = FriendlyHealer.CastAction.NONE
+		healer.is_casting = false
+		healer_manual_move_cancel_player_health_before = player.current_health
+		healer_manual_move_cancel_healer_start_x = healer.global_position.x
+		healer_manual_move_cancel_setup_done = true
+		phase = 1
+		phase_time = 0.0
+		_write_log("Healer manual move-cancel setup complete")
+		return
+	if not is_instance_valid(arena.healer):
+		_finish(1, "healer_despawned")
+		return
+	var healer := arena.healer as FriendlyHealer
+	if healer == null or healer.dead:
+		_finish(1, "healer_unavailable")
+		return
+	if player.current_health > healer_manual_move_cancel_player_health_before + 0.1:
+		_finish(1, "healer_manual_move_cancel_heal_resolved")
+		return
+	if phase == 1:
+		_set_move_inputs(Vector2.ZERO)
+		if phase_time < 0.12:
+			Input.action_press("block")
+		else:
+			Input.action_release("block")
+		if healer.is_casting:
+			phase = 2
+			phase_time = 0.0
+			_write_log("Healer manual move-cancel cast started")
+			return
+		if phase_time > 0.8:
+			_finish(1, "healer_manual_move_cancel_not_started")
+		return
+	Input.action_release("block")
+	_set_move_inputs(Vector2.RIGHT)
+	if healer.big_heal_cooldown_left > 0.01:
+		_finish(1, "healer_manual_move_cancel_spent_cooldown")
+		return
+	if not healer.is_casting and healer.global_position.x > healer_manual_move_cancel_healer_start_x + 1.0:
+		_finish(0, "healer_manual_move_cancel_ok")
+		return
+	if phase_time > 1.2:
+		if healer.is_casting:
+			_finish(1, "healer_manual_move_cancel_cast_persisted")
+		else:
+			_finish(1, "healer_manual_move_cancel_no_movement")
+		return
+
+
+func _step_adventure_companion_door_scenario() -> void:
+	if not is_instance_valid(arena) or not is_instance_valid(player):
+		return
+	if not arena.has_method("is_adventure_mode_active") or not bool(arena.call("is_adventure_mode_active")):
+		return
+	if not adventure_companion_door_setup_done:
+		arena.two_room_healer_released = true
+		if arena.has_method("_ensure_rescued_adventure_companions_spawned"):
+			arena.call("_ensure_rescued_adventure_companions_spawned")
+		if not is_instance_valid(arena.healer):
+			return
+		if arena.has_method("set_controlled_character"):
+			arena.call("set_controlled_character", "healer")
+		if not arena.has_method("get_controlled_character_id") or String(arena.call("get_controlled_character_id")) != "healer":
+			_finish(1, "adventure_healer_control_unavailable")
+			return
+		if not is_instance_valid(arena.two_room_exit_area):
+			_finish(1, "adventure_exit_missing")
+			return
+		var room_one_bounds := arena.call("_get_two_room_bounds", 1) as Rect2
+		var safe_player_position := Vector2(
+			room_one_bounds.position.x + 48.0,
+			room_one_bounds.position.y + (room_one_bounds.size.y * 0.5)
+		)
+		player.global_position = arena.to_global(safe_player_position)
+		player.velocity = Vector2.ZERO
+		var healer := arena.healer as Node2D
+		healer.global_position = arena.two_room_exit_area.global_position
+		adventure_companion_door_setup_done = true
+		phase = 1
+		phase_time = 0.0
+		_write_log("Adventure companion door setup complete")
+		return
+	if arena.two_room_test_room_index == 2:
+		_finish(0, "adventure_companion_door_ok")
+		return
+	if not is_instance_valid(arena.healer):
+		_finish(1, "adventure_healer_missing")
+		return
+	if not is_instance_valid(arena.two_room_exit_area):
+		_finish(1, "adventure_exit_missing")
+		return
+	var healer := arena.healer as Node2D
+	healer.global_position = arena.two_room_exit_area.global_position
+	_set_move_inputs(Vector2.ZERO)
+	if phase_time > 2.0:
+		_finish(1, "adventure_companion_door_not_triggered")
 		return
 
 
@@ -1122,6 +1585,302 @@ func _apply_healer_tidal_wave_layout(primary_enemy: EnemyBase) -> void:
 		enemy_body.velocity = Vector2.ZERO
 
 
+func _step_rat_manual_basic_scenario() -> void:
+	if not is_instance_valid(arena) or not is_instance_valid(player) or not is_instance_valid(enemy):
+		return
+	if not rat_manual_setup_done:
+		if arena.has_method("set_party_member_enabled"):
+			arena.call("set_party_member_enabled", "healer", false)
+			arena.call("set_party_member_enabled", "lizardfolk", false)
+			arena.call("set_party_member_enabled", "ratfolk", true)
+		if not is_instance_valid(arena.ratfolk):
+			return
+		var rat := arena.ratfolk as FriendlyRatfolk
+		if rat == null or rat.dead:
+			_finish(1, "rat_unavailable")
+			return
+		if arena.has_method("set_controlled_character"):
+			arena.call("set_controlled_character", "ratfolk")
+		if not arena.has_method("get_controlled_character_id") or String(arena.call("get_controlled_character_id")) != "ratfolk":
+			_finish(1, "rat_control_unavailable")
+			return
+		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		var player_pos := Vector2(max_x - 420.0, clampf(8.0, min_y + 8.0, max_y - 8.0))
+		var rat_pos := Vector2(max_x - 228.0, clampf(6.0, min_y + 8.0, max_y - 8.0))
+		var enemy_pos := Vector2(max_x - 158.0, clampf(10.0, min_y + 8.0, max_y - 8.0))
+		player.global_position = arena.to_global(player_pos)
+		player.velocity = Vector2.ZERO
+		rat.global_position = arena.to_global(rat_pos)
+		rat.velocity = Vector2.ZERO
+		enemy.global_position = arena.to_global(enemy_pos)
+		enemy.velocity = Vector2.ZERO
+		rat.attack_cooldown_left = 0.0
+		rat.target_enemy = enemy
+		rat_manual_enemy_health_floor = enemy.current_health
+		rat_manual_setup_done = true
+		phase = 1
+		phase_time = 0.0
+		_write_log("Rat manual basic setup complete")
+		return
+	if not is_instance_valid(arena.ratfolk):
+		_finish(1, "rat_despawned")
+		return
+	var rat := arena.ratfolk as FriendlyRatfolk
+	if rat == null or rat.dead:
+		_finish(1, "rat_unavailable")
+		return
+	_set_move_inputs(Vector2.ZERO)
+	if phase_time < 0.08:
+		Input.action_press("basic_attack")
+	else:
+		Input.action_release("basic_attack")
+	if enemy.current_health < rat_manual_enemy_health_floor - 0.01:
+		rat_manual_basic_seen = true
+		_finish(0, "rat_manual_basic_ok")
+		return
+	if phase_time > 2.2:
+		_finish(1, "rat_manual_basic_missing")
+
+
+func _step_rat_manual_cast_cancel_scenario() -> void:
+	if not is_instance_valid(arena) or not is_instance_valid(player) or not is_instance_valid(enemy):
+		return
+	if not rat_manual_cast_cancel_setup_done:
+		if arena.has_method("set_party_member_enabled"):
+			arena.call("set_party_member_enabled", "healer", false)
+			arena.call("set_party_member_enabled", "lizardfolk", false)
+			arena.call("set_party_member_enabled", "ratfolk", true)
+		if not is_instance_valid(arena.ratfolk):
+			return
+		var rat := arena.ratfolk as FriendlyRatfolk
+		if rat == null or rat.dead:
+			_finish(1, "rat_unavailable")
+			return
+		if arena.has_method("set_controlled_character"):
+			arena.call("set_controlled_character", "ratfolk")
+		if not arena.has_method("get_controlled_character_id") or String(arena.call("get_controlled_character_id")) != "ratfolk":
+			_finish(1, "rat_control_unavailable")
+			return
+		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		player.global_position = arena.to_global(Vector2(max_x - 420.0, clampf(8.0, min_y + 8.0, max_y - 8.0)))
+		player.velocity = Vector2.ZERO
+		rat.global_position = arena.to_global(Vector2(max_x - 280.0, clampf(6.0, min_y + 8.0, max_y - 8.0)))
+		rat.velocity = Vector2.ZERO
+		enemy.global_position = arena.to_global(Vector2(max_x - 140.0, clampf(10.0, min_y + 8.0, max_y - 8.0)))
+		enemy.velocity = Vector2.ZERO
+		rat.target_enemy = enemy
+		rat.shadow_fear_cooldown_left = 0.0
+		rat.shadow_fear_cast_active = false
+		rat.shadow_fear_cast_left = 0.0
+		rat.shadow_fear_cast_target = null
+		rat_manual_cast_cancel_start_x = rat.global_position.x
+		rat_manual_cast_cancel_apply_count = int(enemy.get("shadow_fear_apply_count"))
+		rat_manual_cast_cancel_setup_done = true
+		phase = 1
+		phase_time = 0.0
+		_write_log("Rat manual cast-cancel setup complete")
+		return
+	if not is_instance_valid(arena.ratfolk):
+		_finish(1, "rat_despawned")
+		return
+	var rat := arena.ratfolk as FriendlyRatfolk
+	if rat == null or rat.dead:
+		_finish(1, "rat_unavailable")
+		return
+	if int(enemy.get("shadow_fear_apply_count")) > rat_manual_cast_cancel_apply_count:
+		_finish(1, "rat_manual_cast_cancel_fear_applied")
+		return
+	if phase == 1:
+		_set_move_inputs(Vector2.ZERO)
+		if phase_time < 0.12:
+			Input.action_press("ability_1")
+		else:
+			Input.action_release("ability_1")
+		if rat.shadow_fear_cast_active:
+			phase = 2
+			phase_time = 0.0
+			_write_log("Rat manual cast-cancel cast started")
+			return
+		if phase_time > 0.8:
+			_finish(1, "rat_manual_cast_cancel_not_started")
+		return
+	Input.action_release("ability_1")
+	_set_move_inputs(Vector2.RIGHT)
+	if rat.shadow_fear_cooldown_left > 0.01:
+		_finish(1, "rat_manual_cast_cancel_spent_cooldown")
+		return
+	if not rat.shadow_fear_cast_active and rat.global_position.x > rat_manual_cast_cancel_start_x + 1.0:
+		_finish(0, "rat_manual_cast_cancel_ok")
+		return
+	if phase_time > 1.0:
+		if rat.shadow_fear_cast_active:
+			_finish(1, "rat_manual_cast_cancel_cast_persisted")
+		else:
+			_finish(1, "rat_manual_cast_cancel_no_movement")
+		return
+
+
+func _step_rat_shadow_clone_range_scenario() -> void:
+	if not is_instance_valid(arena) or not is_instance_valid(player) or not is_instance_valid(enemy):
+		return
+	if not rat_shadow_clone_range_setup_done:
+		if arena.has_method("set_party_member_enabled"):
+			arena.call("set_party_member_enabled", "healer", false)
+			arena.call("set_party_member_enabled", "lizardfolk", false)
+			arena.call("set_party_member_enabled", "ratfolk", true)
+		if not is_instance_valid(arena.ratfolk):
+			return
+		var rat := arena.ratfolk as FriendlyRatfolk
+		if rat == null or rat.dead:
+			_finish(1, "rat_unavailable")
+			return
+		if arena.has_method("set_controlled_character"):
+			arena.call("set_controlled_character", "ratfolk")
+		if not arena.has_method("get_controlled_character_id") or String(arena.call("get_controlled_character_id")) != "ratfolk":
+			_finish(1, "rat_control_unavailable")
+			return
+		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		var player_pos := Vector2(max_x - 430.0, clampf(8.0, min_y + 8.0, max_y - 8.0))
+		var rat_pos := Vector2(max_x - 224.0, clampf(6.0, min_y + 8.0, max_y - 8.0))
+		var enemy_pos := Vector2(max_x - 170.0, clampf(10.0, min_y + 8.0, max_y - 8.0))
+		player.global_position = arena.to_global(player_pos)
+		player.velocity = Vector2.ZERO
+		rat.global_position = arena.to_global(rat_pos)
+		rat.velocity = Vector2.ZERO
+		enemy.global_position = arena.to_global(enemy_pos)
+		enemy.velocity = Vector2.ZERO
+		rat.attack_cooldown_left = 0.0
+		rat.combo_point_count = maxi(rat.combo_point_count, rat.shadow_strike_combo_cost)
+		rat.target_enemy = enemy
+		rat_shadow_clone_range_setup_done = true
+		phase = 1
+		phase_time = 0.0
+		_write_log("Rat shadow clone range setup complete")
+		return
+	if not is_instance_valid(arena.ratfolk):
+		_finish(1, "rat_despawned")
+		return
+	var rat := arena.ratfolk as FriendlyRatfolk
+	if rat == null or rat.dead:
+		_finish(1, "rat_unavailable")
+		return
+	_set_move_inputs(Vector2.ZERO)
+	if phase_time < 0.08:
+		Input.action_press("ability_2")
+	else:
+		Input.action_release("ability_2")
+	for node in get_tree().get_nodes_in_group("shadow_clones"):
+		var clone := node as FriendlyRatfolk
+		if clone == null or not is_instance_valid(clone) or clone.dead:
+			continue
+		if absf(clone.attack_range - rat.attack_range) <= 0.01:
+			_finish(0, "rat_shadow_clone_range_ok")
+			return
+		_write_log("Rat shadow clone range mismatch rat=%.2f clone=%.2f" % [rat.attack_range, clone.attack_range])
+		_finish(1, "rat_shadow_clone_range_mismatch")
+		return
+	if phase_time > 2.4:
+		_finish(1, "rat_shadow_clone_range_missing")
+
+
+func _step_lizard_manual_scenario() -> void:
+	if not is_instance_valid(arena) or not is_instance_valid(player) or not is_instance_valid(enemy):
+		return
+	if not lizard_manual_setup_done:
+		if arena.has_method("set_party_member_enabled"):
+			arena.call("set_party_member_enabled", "healer", false)
+			arena.call("set_party_member_enabled", "ratfolk", false)
+			arena.call("set_party_member_enabled", "lizardfolk", true)
+		if not is_instance_valid(arena.lizardfolk):
+			return
+		var spawned_lizard := arena.lizardfolk as FriendlyLizardfolk
+		if spawned_lizard == null or spawned_lizard.dead:
+			_finish(1, "lizard_unavailable")
+			return
+		if arena.has_method("set_controlled_character"):
+			arena.call("set_controlled_character", "lizardfolk")
+		if not arena.has_method("get_controlled_character_id") or String(arena.call("get_controlled_character_id")) != "lizardfolk":
+			_finish(1, "lizard_control_unavailable")
+			return
+		var min_x := minf(arena.arena_min_x, arena.arena_max_x)
+		var max_x := maxf(arena.arena_min_x, arena.arena_max_x)
+		var min_y := minf(arena.arena_min_y, arena.arena_max_y)
+		var max_y := maxf(arena.arena_min_y, arena.arena_max_y)
+		var player_pos := Vector2(max_x - 480.0, clampf(16.0, min_y + 8.0, max_y - 8.0))
+		var lizard_pos := Vector2(max_x - 330.0, clampf(10.0, min_y + 8.0, max_y - 8.0))
+		var enemy_pos := Vector2(max_x - 130.0, clampf(34.0, min_y + 8.0, max_y - 8.0))
+		player.global_position = arena.to_global(player_pos)
+		player.velocity = Vector2.ZERO
+		spawned_lizard.global_position = arena.to_global(lizard_pos)
+		spawned_lizard.velocity = Vector2.ZERO
+		enemy.global_position = arena.to_global(enemy_pos)
+		enemy.velocity = Vector2.ZERO
+		spawned_lizard.attack_cooldown_left = 0.0
+		spawned_lizard.flurry_cooldown_left = 0.0
+		spawned_lizard.special_meter = 0.0
+		lizard_manual_enemy_health_floor = enemy.current_health
+		lizard_manual_setup_done = true
+		phase = 1
+		phase_time = 0.0
+		_write_log("Lizard manual setup complete")
+		return
+	if not is_instance_valid(arena.lizardfolk):
+		_finish(1, "lizard_despawned")
+		return
+	var lizard := arena.lizardfolk as FriendlyLizardfolk
+	if lizard == null or lizard.dead:
+		_finish(1, "lizard_unavailable")
+		return
+
+	_set_move_inputs(Vector2.ZERO)
+	if phase == 1:
+		if phase_time < 0.08:
+			Input.action_press("basic_attack")
+		else:
+			Input.action_release("basic_attack")
+		if enemy.current_health < lizard_manual_enemy_health_floor - 0.01:
+			lizard_manual_basic_seen = true
+			lizard_manual_enemy_health_floor = enemy.current_health
+			lizard.special_meter = lizard.special_meter_max
+			lizard.flurry_cooldown_left = 0.0
+			phase = 2
+			phase_time = 0.0
+			_write_log("Lizard manual basic connected")
+			return
+		if phase_time > 2.2:
+			_finish(1, "lizard_basic_missing")
+		return
+
+	if phase_time < 0.08:
+		Input.action_press("ability_2")
+	else:
+		Input.action_release("ability_2")
+	if lizard.flurry_sequence_active:
+		lizard_manual_flurry_started = true
+	if lizard_manual_flurry_started and lizard.special_meter > 0.01:
+		_finish(1, "lizard_flurry_generated_energy")
+		return
+	if enemy.current_health < lizard_manual_enemy_health_floor - 0.01:
+		lizard_manual_flurry_seen = true
+		lizard_manual_enemy_health_floor = enemy.current_health
+	if phase_time > 3.2:
+		if lizard_manual_flurry_started and lizard_manual_flurry_seen:
+			_finish(0, "lizard_manual_ok")
+		elif not lizard_manual_flurry_started:
+			_finish(1, "lizard_flurry_not_started")
+		else:
+			_finish(1, "lizard_flurry_missing")
+
+
 func _refresh_refs() -> void:
 	if not is_instance_valid(player):
 		if is_instance_valid(arena):
@@ -1228,6 +1987,16 @@ func _set_move_inputs(direction: Vector2) -> void:
 func _release_all_inputs() -> void:
 	for action in ["move_up", "move_down", "move_left", "move_right", "basic_attack", "ability_1", "counter_strike", "ability_2", "roll", "block"]:
 		Input.action_release(action)
+	_set_shift_modifier_pressed(false)
+
+
+func _set_shift_modifier_pressed(pressed: bool) -> void:
+	var event := InputEventKey.new()
+	event.keycode = KEY_SHIFT
+	event.physical_keycode = KEY_SHIFT
+	event.pressed = pressed
+	event.echo = false
+	Input.parse_input_event(event)
 
 
 func _finish(quit_code: int, reason: String) -> void:

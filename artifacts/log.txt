@@ -1,0 +1,26 @@
+﻿
+AUTOPLAY_TEST START
+Loaded test scene (scenario=charge_attack)
+AUTOPLAY_TEST START
+Loaded test scene (scenario=charge_attack)
+HITSTOP_START duration=0.040
+AUTOPLAY_TEST START
+Loaded test scene (scenario=charge_attack)
+HITSTOP_START duration=0.040
+AUTOPLAY_TEST END (quit=0 reason=ok)
+AUTOPLAY_TEST START
+Loaded test scene (scenario=healer_manual_move_cancel)
+Healer manual move-cancel setup complete
+Healer manual move-cancel cast started
+AUTOPLAY_TEST START
+Loaded test scene (scenario=rat_manual_cast_cancel)
+Rat manual cast-cancel setup complete
+AUTOPLAY_TEST END (quit=0 reason=healer_manual_move_cancel_ok)
+Rat manual cast-cancel cast started
+AUTOPLAY_TEST END (quit=0 reason=rat_manual_cast_cancel_ok)
+AUTOPLAY_TEST START
+Loaded test scene (scenario=charge_attack)
+AUTOPLAY_TEST START
+Loaded test scene (scenario=charge_attack)
+HITSTOP_START duration=0.040
+AUTOPLAY_TEST END (quit=0 reason=ok)

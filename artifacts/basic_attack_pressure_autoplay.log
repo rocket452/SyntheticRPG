@@ -1,0 +1,8 @@
+AUTOPLAY_TEST START
+Loaded test scene (scenario=cacodemon_fireball_pressure)
+Cacodemon pressure fireball setup applied
+STATE WINDUP
+STATE ACTIVE
+HITSTOP_START duration=0.055
+Cacodemon pressure fireball observed
+AUTOPLAY_TEST END (quit=0 reason=cacodemon_fireball_pressure)

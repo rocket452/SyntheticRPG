@@ -3,6 +3,8 @@ class_name HUD
 
 const ABILITY_LAYOUT_TANK: String = "tank"
 const ABILITY_LAYOUT_HEALER: String = "healer"
+const ABILITY_LAYOUT_RATFOLK: String = "ratfolk"
+const ABILITY_LAYOUT_LIZARDFOLK: String = "lizardfolk"
 const ABILITY_BAR_LAYOUTS: Dictionary = {
 	ABILITY_LAYOUT_TANK: [
 		{"id": "basic", "icon": "ATK", "name": "Swing", "key": "J", "accent": Color(0.94, 0.64, 0.33, 1.0), "uses_cooldown": true},
@@ -19,6 +21,22 @@ const ABILITY_BAR_LAYOUTS: Dictionary = {
 		{"id": "ability_2", "icon": "WAVE", "name": "Tidal", "key": "L", "accent": Color(0.52, 0.94, 1.0, 1.0), "uses_cooldown": true},
 		{"id": "roll", "icon": "RLL", "name": "Roll", "key": "Space", "accent": Color(0.78, 0.93, 1.0, 1.0), "uses_cooldown": true},
 		{"id": "block", "icon": "BHL", "name": "Big Heal", "key": "I", "accent": Color(0.66, 0.98, 0.84, 1.0), "uses_cooldown": true}
+	],
+	ABILITY_LAYOUT_RATFOLK: [
+		{"id": "basic", "icon": "STB", "name": "Stab", "key": "J", "accent": Color(0.98, 0.78, 0.46, 1.0), "uses_cooldown": true},
+		{"id": "ability_1", "icon": "FEAR", "name": "Fear", "key": "K", "accent": Color(0.74, 0.54, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "counter", "icon": "MRK", "name": "Mark", "key": "O", "accent": Color(0.62, 0.96, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "ability_2", "icon": "STRK", "name": "Strike", "key": "L", "accent": Color(0.86, 0.72, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "roll", "icon": "RLL", "name": "Roll", "key": "Space", "accent": Color(0.74, 0.9, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "block", "icon": "SURG", "name": "Surge", "key": "I", "accent": Color(0.92, 0.7, 1.0, 1.0), "uses_cooldown": true}
+	],
+	ABILITY_LAYOUT_LIZARDFOLK: [
+		{"id": "basic", "icon": "SHOT", "name": "Shot", "key": "J", "accent": Color(0.82, 0.98, 0.62, 1.0), "uses_cooldown": true},
+		{"id": "ability_1", "icon": "--", "name": "None", "key": "K", "accent": Color(0.42, 0.44, 0.52, 1.0), "uses_cooldown": true},
+		{"id": "counter", "icon": "--", "name": "None", "key": "O", "accent": Color(0.42, 0.44, 0.52, 1.0), "uses_cooldown": true},
+		{"id": "ability_2", "icon": "FLRY", "name": "Flurry", "key": "L", "accent": Color(0.74, 0.98, 0.66, 1.0), "uses_cooldown": true},
+		{"id": "roll", "icon": "RLL", "name": "Roll", "key": "Space", "accent": Color(0.76, 0.92, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "block", "icon": "--", "name": "None", "key": "I", "accent": Color(0.42, 0.44, 0.52, 1.0), "uses_cooldown": true}
 	]
 }
 
@@ -100,6 +118,12 @@ func update_cooldowns(values: Dictionary) -> void:
 	if current_ability_layout == ABILITY_LAYOUT_HEALER:
 		_update_healer_control_slots(values)
 		return
+	if current_ability_layout == ABILITY_LAYOUT_RATFOLK:
+		_update_ratfolk_control_slots(values)
+		return
+	if current_ability_layout == ABILITY_LAYOUT_LIZARDFOLK:
+		_update_lizardfolk_control_slots(values)
+		return
 	_update_tank_control_slots(values)
 
 
@@ -145,6 +169,41 @@ func _update_healer_control_slots(values: Dictionary) -> void:
 	_update_ability_slot("ability_2", wave_left, false, wave_unlocked)
 	_update_ability_slot("roll", float(values.get("roll", 0.0)), false, roll_unlocked)
 	_update_ability_slot("block", shield_left, false, true)
+
+
+func _update_ratfolk_control_slots(values: Dictionary) -> void:
+	var basic_left := float(values.get("basic", 0.0))
+	var basic_unlocked := bool(values.get("basic_unlocked", true))
+	var fear_left := float(values.get("ability_1", 0.0))
+	var fear_unlocked := bool(values.get("ability_1_unlocked", false))
+	var mark_left := maxf(0.0, float(values.get("counter", 0.0)))
+	var mark_unlocked := bool(values.get("counter_unlocked", false))
+	var clone_left := float(values.get("ability_2", 0.0))
+	var clone_unlocked := bool(values.get("ability_2_unlocked", false))
+	var roll_left := float(values.get("roll", 0.0))
+	var roll_unlocked := bool(values.get("roll_unlocked", false))
+	var block_unlocked := bool(values.get("block_unlocked", false))
+	_update_ability_slot("basic", basic_left, false, basic_unlocked)
+	_update_ability_slot("ability_1", fear_left, false, fear_unlocked)
+	_update_ability_slot("counter", mark_left, false, mark_unlocked)
+	_update_ability_slot("ability_2", clone_left, false, clone_unlocked)
+	_update_ability_slot("roll", roll_left, false, roll_unlocked)
+	_update_ability_slot("block", maxf(0.0, float(values.get("block_cooldown_left", 0.0))), false, block_unlocked)
+
+
+func _update_lizardfolk_control_slots(values: Dictionary) -> void:
+	var basic_left := float(values.get("basic", 0.0))
+	var basic_unlocked := bool(values.get("basic_unlocked", true))
+	var flurry_left := float(values.get("ability_2", 0.0))
+	var flurry_unlocked := bool(values.get("ability_2_unlocked", false))
+	var roll_left := float(values.get("roll", 0.0))
+	var roll_unlocked := bool(values.get("roll_unlocked", false))
+	_update_ability_slot("basic", basic_left, false, basic_unlocked)
+	_update_ability_slot("ability_1", 0.0, false, false)
+	_update_ability_slot("counter", 0.0, false, false)
+	_update_ability_slot("ability_2", flurry_left, false, flurry_unlocked)
+	_update_ability_slot("roll", roll_left, false, roll_unlocked)
+	_update_ability_slot("block", 0.0, false, false)
 
 
 func update_objective(text: String) -> void:
