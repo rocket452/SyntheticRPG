@@ -1,0 +1,4 @@
+AUTOPLAY_TEST START
+Loaded test scene (scenario=shadow_fear_new_enemy)
+Shadow fear layout variant=0
+AUTOPLAY_TEST END (quit=0 reason=shadow_fear_new_enemy)

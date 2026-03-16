@@ -1,0 +1,6 @@
+AUTOPLAY_TEST START
+Loaded test scene (scenario=healer_tidal_wave)
+Healer tidal wave setup applied
+AUTOPLAY_TEST START
+Loaded test scene (scenario=healer_tidal_wave)
+Healer tidal wave setup applied

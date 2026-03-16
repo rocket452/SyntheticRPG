@@ -1,0 +1,3 @@
+AUTOPLAY_TEST START
+Loaded test scene (scenario=shadow_fear)
+AUTOPLAY_TEST END (quit=0 reason=shadow_fear)

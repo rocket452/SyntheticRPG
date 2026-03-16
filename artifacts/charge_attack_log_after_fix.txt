@@ -1,0 +1,2 @@
+AUTOPLAY_TEST START
+Loaded test scene (scenario=charge_attack)

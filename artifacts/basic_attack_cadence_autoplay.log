@@ -1,0 +1,8 @@
+AUTOPLAY_TEST START
+Loaded test scene (scenario=cacodemon_player_hit)
+Cacodemon player-hit setup applied health=420.00
+STATE WINDUP
+STATE ACTIVE
+HITSTOP_START duration=0.055
+Cacodemon took player damage before=420.00 after=405.00
+AUTOPLAY_TEST END (quit=0 reason=cacodemon_player_hit)

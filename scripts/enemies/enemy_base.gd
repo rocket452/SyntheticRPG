@@ -346,8 +346,10 @@ const CACODEMON_HD_HFRAMES: int = 8
 const CACODEMON_HD_VFRAMES: int = 4
 const CACODEMON_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/cacodemon/Cacodaemon Sprite Sheet.png")
 const SHARDSOUL_HD_HFRAMES: int = 8
-const SHARDSOUL_HD_VFRAMES: int = 5
-const SHARDSOUL_SHEET_PATH: String = "res://assets/external/ElthenAssets/shardsoul/Shardsoul Slayer Sprite Sheet.png"
+const SHARDSOUL_HD_VFRAMES: int = 8
+const SHARDSOUL_SHEET_PATH: String = "res://assets/external/ElthenAssets/dragon/Elder Dragon Red Sprite Sheet.png"
+const SHARDSOUL_VISUAL_SCALE_MULTIPLIER: float = 0.74
+const SHARDSOUL_VISUAL_Y_OFFSET: float = -8.0
 const IMP_HD_HFRAMES: int = 8
 const IMP_HD_VFRAMES: int = 12
 const IMP_SHEET: Texture2D = preload("res://assets/external/ElthenAssets/imp/Imp Sprite Sheet.png")
@@ -435,7 +437,7 @@ const SHARDSOUL_ACTION_ROWS: Dictionary = {
 	"attack": 2,
 	"spin": 2,
 	"hurt": 3,
-	"death": 4
+	"death": 7
 }
 const IMP_ACTION_ROWS: Dictionary = {
 	"idle": 0,
@@ -480,10 +482,10 @@ const CACODEMON_ACTION_FRAME_COUNTS: Dictionary = {
 const SHARDSOUL_ACTION_FRAME_COUNTS: Dictionary = {
 	"idle": 8,
 	"run": 8,
-	"attack": 5,
-	"spin": 5,
+	"attack": 8,
+	"spin": 8,
 	"hurt": 4,
-	"death": 6
+	"death": 8
 }
 const IMP_ACTION_FRAME_COUNTS: Dictionary = {
 	"idle": 8,
@@ -518,10 +520,12 @@ const CACODEMON_ACTION_FRAME_COLUMNS: Dictionary = {
 	"death": [0, 1, 2, 3, 4, 5, 6]
 }
 const SHARDSOUL_ACTION_FRAME_COLUMNS: Dictionary = {
-	"attack": [0, 1, 2, 3, 4],
-	"spin": [0, 1, 2, 3, 4],
-	"hurt": [0, 1, 2, 3],
-	"death": [0, 1, 2, 3, 4, 5]
+	"idle": [0, 1, 2, 3, 4, 5, 6, 7],
+	"run": [0, 1, 2, 3, 4, 5, 6, 7],
+	"attack": [0, 1, 2, 3, 4, 5, 6, 7],
+	"spin": [0, 1, 2, 3, 4, 5, 6, 7],
+	"hurt": [4, 5, 6, 7],
+	"death": [0, 1, 2, 3, 4, 5, 6, 7]
 }
 const IMP_ACTION_FRAME_COLUMNS: Dictionary = {
 	"idle": [0, 1, 2, 3, 4, 5, 6, 7],
@@ -627,6 +631,7 @@ var spin_active_left: float = 0.0
 var spin_hit_tick_left: float = 0.0
 var spin_warning_area: Polygon2D = null
 var cobra_tongue_telegraph_area: Polygon2D = null
+var melee_attack_telegraph_area: Polygon2D = null
 var basic_attacks_since_last_spin: int = 0
 var boss_loop_state: BossLoopState = BossLoopState.IDLE
 var boss_state_time_left: float = 0.0
@@ -711,6 +716,7 @@ var soft_separation_last_applied: bool = false
 var approach_slot_last_applied: bool = false
 var approach_slot_last_offset: Vector2 = Vector2.ZERO
 var corpse_persist_on_ground: bool = false
+var boss_charge_lane_fill_area: Polygon2D = null
 var boss_charge_lane_telegraph: Line2D = null
 var boss_charge_target_marker_ring: Line2D = null
 var boss_charge_target_marker_arrow: Polygon2D = null
@@ -810,6 +816,7 @@ func _ready() -> void:
 	slash_effect.visible = false
 	_setup_spin_warning_area()
 	_setup_cobra_tongue_telegraph_area()
+	_setup_melee_attack_telegraph_area()
 	_setup_boss_charge_telegraph()
 	_setup_health_bar()
 	_update_health_bar()
@@ -1161,6 +1168,10 @@ func _exit_tree() -> void:
 	cacodemon_breath_vfx = null
 	if is_instance_valid(spin_warning_area):
 		spin_warning_area.queue_free()
+	if is_instance_valid(melee_attack_telegraph_area):
+		melee_attack_telegraph_area.queue_free()
+	if is_instance_valid(boss_charge_lane_fill_area):
+		boss_charge_lane_fill_area.queue_free()
 	if is_instance_valid(boss_charge_lane_telegraph):
 		boss_charge_lane_telegraph.queue_free()
 	if is_instance_valid(boss_charge_target_marker_ring):
@@ -4079,12 +4090,28 @@ func _setup_cobra_tongue_telegraph_area() -> void:
 	add_child(cobra_tongue_telegraph_area)
 
 
+func _setup_melee_attack_telegraph_area() -> void:
+	if is_instance_valid(melee_attack_telegraph_area):
+		return
+	melee_attack_telegraph_area = Polygon2D.new()
+	melee_attack_telegraph_area.visible = false
+	melee_attack_telegraph_area.z_index = 245
+	melee_attack_telegraph_area.color = Color(1.0, 0.42, 0.18, 0.22)
+	add_child(melee_attack_telegraph_area)
+
+
 func _setup_boss_charge_telegraph() -> void:
+	boss_charge_lane_fill_area = Polygon2D.new()
+	boss_charge_lane_fill_area.visible = false
+	boss_charge_lane_fill_area.z_index = 244
+	boss_charge_lane_fill_area.color = Color(1.0, 0.16, 0.12, 0.22)
+	add_child(boss_charge_lane_fill_area)
+
 	boss_charge_lane_telegraph = Line2D.new()
 	boss_charge_lane_telegraph.visible = false
-	boss_charge_lane_telegraph.z_index = 245
+	boss_charge_lane_telegraph.z_index = 246
 	boss_charge_lane_telegraph.default_color = Color(1.0, 0.18, 0.14, 0.78)
-	boss_charge_lane_telegraph.width = maxf(6.0, boss_charge_corridor_width)
+	boss_charge_lane_telegraph.width = 3.0
 	boss_charge_lane_telegraph.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	boss_charge_lane_telegraph.end_cap_mode = Line2D.LINE_CAP_ROUND
 	add_child(boss_charge_lane_telegraph)
@@ -4138,6 +4165,73 @@ func _build_ellipse_polygon(radius_x: float, radius_y: float, segments: int) -> 
 		var angle := (TAU * float(i)) / float(safe_segments)
 		points.append(Vector2(cos(angle) * radius_x, sin(angle) * radius_y))
 	return points
+
+
+func _segment_space_to_local(origin: Vector2, forward: Vector2, right: Vector2, x: float, y: float) -> Vector2:
+	return to_local(origin + (forward * x) + (right * y))
+
+
+func _append_segment_arc_points(points: PackedVector2Array, origin: Vector2, forward: Vector2, right: Vector2, center_x: float, radius: float, start_angle: float, end_angle: float, segments: int, include_first_point: bool = false) -> PackedVector2Array:
+	var safe_segments := maxi(4, segments)
+	for i in range(safe_segments + 1):
+		if i == 0 and not include_first_point:
+			continue
+		var progress := float(i) / float(safe_segments)
+		var angle := lerpf(start_angle, end_angle, progress)
+		points.append(_segment_space_to_local(
+			origin,
+			forward,
+			right,
+			center_x + (cos(angle) * radius),
+			sin(angle) * radius
+		))
+	return points
+
+
+func _build_segment_hitbox_polygon_local(segment_start: Vector2, segment_end: Vector2, half_width: float, tip_radius: float, arc_segments: int = 12) -> PackedVector2Array:
+	var safe_half_width := maxf(2.0, half_width)
+	var safe_tip_radius := maxf(safe_half_width, tip_radius)
+	var segment := segment_end - segment_start
+	var segment_length := segment.length()
+	var forward := segment / segment_length if segment_length > 0.0001 else Vector2.RIGHT
+	var right := Vector2(-forward.y, forward.x)
+	var tip_back_offset := sqrt(maxf(0.0, (safe_tip_radius * safe_tip_radius) - (safe_half_width * safe_half_width)))
+	var end_tangent_x := maxf(0.0, segment_length - tip_back_offset)
+	var tip_arc_angle := acos(clampf(tip_back_offset / maxf(0.001, safe_tip_radius), -1.0, 1.0))
+	var points := PackedVector2Array()
+	points.append(_segment_space_to_local(segment_start, forward, right, 0.0, safe_half_width))
+	points.append(_segment_space_to_local(segment_start, forward, right, end_tangent_x, safe_half_width))
+	points = _append_segment_arc_points(
+		points,
+		segment_start,
+		forward,
+		right,
+		segment_length,
+		safe_tip_radius,
+		PI - tip_arc_angle,
+		PI + tip_arc_angle,
+		arc_segments
+	)
+	points.append(_segment_space_to_local(segment_start, forward, right, 0.0, -safe_half_width))
+	points = _append_segment_arc_points(
+		points,
+		segment_start,
+		forward,
+		right,
+		0.0,
+		safe_half_width,
+		PI * 1.5,
+		PI * 2.5,
+		arc_segments
+	)
+	return points
+
+
+func _build_closed_polyline(points: PackedVector2Array) -> PackedVector2Array:
+	var closed := PackedVector2Array(points)
+	if closed.size() >= 2 and closed[0] != closed[closed.size() - 1]:
+		closed.append(closed[0])
+	return closed
 
 
 func _get_spin_attack_direction() -> Vector2:
@@ -4865,13 +4959,9 @@ func _is_target_blocking_attack(target: Node2D) -> bool:
 	var player_target := target as Player
 	if player_target == null:
 		return false
-	if not player_target.is_blocking:
-		return false
-	var incoming_direction := (global_position - player_target.global_position).normalized()
-	if incoming_direction == Vector2.ZERO:
-		incoming_direction = Vector2.LEFT if player_target.facing_direction.x >= 0.0 else Vector2.RIGHT
-	var block_threshold := cos(deg_to_rad(player_target.block_arc_degrees * 0.5))
-	return player_target.facing_direction.dot(incoming_direction) >= block_threshold
+	if player_target.has_method("is_block_shield_active"):
+		return bool(player_target.call("is_block_shield_active"))
+	return player_target.is_blocking
 
 
 func _apply_blocked_counter_stun() -> void:
@@ -5334,7 +5424,7 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		action_key = "hurt"
 	elif movement_ratio > 0.08:
 		action_key = "run"
-	if _is_cacodemon_visual_profile() and action_key == "run":
+	if _is_exact_cacodemon_visual_profile() and action_key == "run":
 		action_key = "idle"
 	var row := _get_active_monster_action_row(action_key)
 	debug_last_action = action_key
@@ -5345,7 +5435,7 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		return
 
 	monster_sprite.position = monster_sprite_base_position
-	if _is_cacodemon_visual_profile():
+	if _is_exact_cacodemon_visual_profile():
 		var base_sprite_scale := monster_sprite_default_scale
 		if base_sprite_scale == Vector2.ZERO:
 			base_sprite_scale = Vector2.ONE
@@ -5371,6 +5461,8 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 	else:
 		monster_sprite.rotation = 0.0
 		var non_cacodemon_scale := monster_sprite_default_scale
+		if monster_visual_profile == MonsterVisualProfile.SHARDSOUL:
+			non_cacodemon_scale *= SHARDSOUL_VISUAL_SCALE_MULTIPLIER
 		if _is_imp_visual_profile():
 			non_cacodemon_scale *= maxf(0.1, imp_visual_scale_multiplier)
 		elif _is_fire_elemental_visual_profile():
@@ -5441,7 +5533,7 @@ func _update_monster_sprite(delta: float, movement_ratio: float, to_player: Vect
 		elif holding_summon_cast_frame:
 			frame_index = _get_active_attack_hold_frame(frame_count)
 			monster_anim_time = float(frame_index)
-		elif _is_cacodemon_visual_profile() and attack_anim_left > 0.0:
+		elif _is_exact_cacodemon_visual_profile() and attack_anim_left > 0.0:
 			display_row = int(CACODEMON_ACTION_ROWS.get("idle", 0))
 			var headbutt_progress := 1.0 - (attack_anim_left / maxf(0.01, attack_anim_total))
 			var headbutt_frames := PackedInt32Array([2, 2, 1, 1])
@@ -5530,8 +5622,14 @@ func _apply_monster_visual_profile() -> void:
 		return
 	monster_anim_name = ""
 	if _is_air_boss_visual_profile():
-		monster_sprite_base_position = monster_sprite_default_position + Vector2(0.0, -16.0)
-		monster_sprite.scale = monster_sprite_default_scale
+		var air_boss_y_offset := -16.0
+		if monster_visual_profile == MonsterVisualProfile.SHARDSOUL:
+			air_boss_y_offset = SHARDSOUL_VISUAL_Y_OFFSET
+		monster_sprite_base_position = monster_sprite_default_position + Vector2(0.0, air_boss_y_offset)
+		var air_boss_scale := monster_sprite_default_scale
+		if monster_visual_profile == MonsterVisualProfile.SHARDSOUL:
+			air_boss_scale *= SHARDSOUL_VISUAL_SCALE_MULTIPLIER
+		monster_sprite.scale = air_boss_scale
 	elif _is_imp_visual_profile():
 		monster_sprite_base_position = monster_sprite_default_position + Vector2(0.0, -4.0)
 		monster_sprite.scale = monster_sprite_default_scale * maxf(0.1, imp_visual_scale_multiplier)
@@ -6038,6 +6136,11 @@ func _draw_segment_hitbox_debug(segment_start: Vector2, segment_end: Vector2, ha
 
 func _update_attack_telegraph(to_player: Vector2) -> void:
 	attack_telegraph.position = Vector2.ZERO
+	attack_telegraph.rotation = 0.0
+	if is_instance_valid(melee_attack_telegraph_area):
+		melee_attack_telegraph_area.position = Vector2.ZERO
+		melee_attack_telegraph_area.rotation = 0.0
+		melee_attack_telegraph_area.visible = false
 	if is_instance_valid(cobra_tongue_telegraph_area):
 		cobra_tongue_telegraph_area.position = Vector2.ZERO
 		cobra_tongue_telegraph_area.visible = false
@@ -6117,13 +6220,31 @@ func _update_attack_telegraph(to_player: Vector2) -> void:
 		aim_direction = Vector2.RIGHT
 	var safe_windup := maxf(0.01, attack_windup)
 	var progress := clampf(1.0 - (attack_windup_left / safe_windup), 0.0, 1.0)
-	attack_telegraph.rotation = aim_direction.angle()
-	attack_telegraph.width = lerpf(2.0, 7.0, progress)
-	attack_telegraph.default_color = Color(0.96, lerpf(0.64, 0.3, progress), lerpf(0.36, 0.18, progress), 0.9)
-	attack_telegraph.points = PackedVector2Array([
-		Vector2.ZERO,
-		Vector2(lerpf(12.0, attack_range + basic_attack_hit_end_bonus, progress), 0.0)
-	])
+	attack_telegraph.z_index = 246
+	attack_telegraph.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	attack_telegraph.end_cap_mode = Line2D.LINE_CAP_ROUND
+	attack_telegraph.width = lerpf(2.0, 3.2, progress)
+	attack_telegraph.default_color = Color(1.0, lerpf(0.82, 0.46, progress), lerpf(0.4, 0.2, progress), 0.96)
+	var attack_direction := aim_direction.normalized()
+	var segment_start := global_position + (attack_direction * basic_attack_hit_start_offset)
+	var segment_end := global_position + (attack_direction * (attack_range + basic_attack_hit_end_bonus))
+	var attack_polygon := _build_segment_hitbox_polygon_local(
+		segment_start,
+		segment_end,
+		maxf(6.0, basic_attack_hit_half_width),
+		maxf(8.0, basic_attack_tip_radius),
+		14
+	)
+	attack_telegraph.points = _build_closed_polyline(attack_polygon)
+	if is_instance_valid(melee_attack_telegraph_area):
+		melee_attack_telegraph_area.visible = true
+		melee_attack_telegraph_area.color = Color(
+			1.0,
+			lerpf(0.58, 0.28, progress),
+			lerpf(0.22, 0.14, progress),
+			lerpf(0.16, 0.34, progress)
+		)
+		melee_attack_telegraph_area.polygon = attack_polygon
 
 
 func _update_cacodemon_fireball_telegraph(to_player: Vector2) -> void:
@@ -6289,13 +6410,22 @@ func _update_boss_charge_telegraph(delta: float) -> void:
 
 	var pulse := 0.5 + (sin(anim_time * 10.5) * 0.5)
 	var lane_color := Color(1.0, lerpf(0.2, 0.08, pulse), lerpf(0.14, 0.05, pulse), lerpf(0.52, 0.82, pulse))
-	var local_start := to_local(lane_start)
-	var local_end := to_local(lane_end)
+	var lane_polygon := _build_segment_hitbox_polygon_local(
+		lane_start,
+		lane_end,
+		_get_boss_charge_corridor_half_width(),
+		_get_boss_charge_corridor_half_width(),
+		18
+	)
+	if is_instance_valid(boss_charge_lane_fill_area):
+		boss_charge_lane_fill_area.visible = true
+		boss_charge_lane_fill_area.color = Color(1.0, lerpf(0.16, 0.08, pulse), lerpf(0.12, 0.04, pulse), lerpf(0.18, 0.28, pulse))
+		boss_charge_lane_fill_area.polygon = lane_polygon
 	if is_instance_valid(boss_charge_lane_telegraph):
 		boss_charge_lane_telegraph.visible = true
-		boss_charge_lane_telegraph.width = maxf(5.0, boss_charge_corridor_width * lerpf(0.92, 1.08, pulse))
-		boss_charge_lane_telegraph.default_color = lane_color
-		boss_charge_lane_telegraph.points = PackedVector2Array([local_start, local_end])
+		boss_charge_lane_telegraph.width = lerpf(2.6, 3.4, pulse)
+		boss_charge_lane_telegraph.default_color = Color(lane_color.r, lane_color.g, lane_color.b, 0.96)
+		boss_charge_lane_telegraph.points = _build_closed_polyline(lane_polygon)
 
 	if is_instance_valid(boss_charge_target_marker_ring):
 		var marker_radius := lerpf(14.0, 18.0, pulse)
@@ -6317,6 +6447,8 @@ func _update_boss_charge_telegraph(delta: float) -> void:
 
 
 func _hide_boss_charge_telegraph() -> void:
+	if is_instance_valid(boss_charge_lane_fill_area):
+		boss_charge_lane_fill_area.visible = false
 	if is_instance_valid(boss_charge_lane_telegraph):
 		boss_charge_lane_telegraph.visible = false
 	if is_instance_valid(boss_charge_target_marker_ring):
@@ -6330,6 +6462,8 @@ func _die() -> void:
 	dead = true
 	knockback_velocity = Vector2.ZERO
 	heal_flash_left = 0.0
+	if is_instance_valid(melee_attack_telegraph_area):
+		melee_attack_telegraph_area.visible = false
 	_hide_boss_charge_telegraph()
 	shadow_fear_left = 0.0
 	_shadow_fear_teardown_vfx()
@@ -6360,6 +6494,8 @@ func _enter_persistent_corpse_state() -> void:
 	knockback_velocity = Vector2.ZERO
 	_hide_boss_charge_telegraph()
 	attack_telegraph.visible = false
+	if is_instance_valid(melee_attack_telegraph_area):
+		melee_attack_telegraph_area.visible = false
 	weapon_trail.visible = false
 	slash_effect.visible = false
 	if is_instance_valid(spin_warning_area):

@@ -81,7 +81,7 @@ enum CastAction {
 @export var pixel_snap_movement: bool = false
 @export var arena_padding: float = 26.0
 @export var tidal_wave_enabled: bool = true
-@export var basic_heal_cooldown: float = 0.0
+@export var basic_heal_cooldown: float = 1.5
 @export var basic_heal_range: float = 171.6
 @export var basic_heal_range_buffer: float = 10.0
 @export var quick_heal_cast_time_multiplier: float = 2.0
@@ -570,15 +570,17 @@ func _update_manual_control_movement(delta: float, attack_target: EnemyBase) -> 
 		if absf(move_velocity.x) > 2.0:
 			facing_left = move_velocity.x < 0.0
 		return
-	if is_casting:
-		move_velocity = Vector2.ZERO
-		return
 	var move_input := Vector2(
 		Input.get_action_strength("move_right") - Input.get_action_strength("move_left"),
 		Input.get_action_strength("move_down") - Input.get_action_strength("move_up")
 	)
 	if move_input.length_squared() > 1.0:
 		move_input = move_input.normalized()
+	if is_casting:
+		if move_input.length_squared() <= 0.0001:
+			move_velocity = Vector2.ZERO
+			return
+		_cancel_current_cast(false)
 	move_velocity = move_input * maxf(1.0, move_speed * _get_healer_move_speed_multiplier())
 	position += move_velocity * maxf(0.0, delta)
 	position = _clamp_to_bounds(position)
@@ -610,12 +612,12 @@ func _handle_manual_control_actions() -> void:
 		if _try_start_harpoon_charge():
 			return
 	if Input.is_action_just_pressed("counter_strike"):
-		var quick_heal_target := _resolve_heal_target(_find_best_heal_target(allow_full_health_heal_targets), allow_full_health_heal_targets)
+		var quick_heal_target := _get_manual_heal_cast_target(allow_full_health_heal_targets)
 		if basic_heal_cooldown_left <= 0.0 and _can_cast_basic_heal_on_target(quick_heal_target, allow_full_health_heal_targets):
 			_queue_cast_action(CastAction.QUICK_HEAL, quick_heal_target, 0.1)
 			return
 	if Input.is_action_just_pressed("block"):
-		var big_heal_target := _resolve_heal_target(_find_best_heal_target(allow_full_health_heal_targets), allow_full_health_heal_targets)
+		var big_heal_target := _get_manual_heal_cast_target(allow_full_health_heal_targets)
 		if big_heal_cooldown_left <= 0.0 and _can_cast_basic_heal_on_target(big_heal_target, allow_full_health_heal_targets):
 			_queue_cast_action(CastAction.BIG_HEAL, big_heal_target, 0.1)
 			return
@@ -680,6 +682,12 @@ func set_player(target_player: Player) -> void:
 		heal_timer_left = minf(heal_timer_left, react_heal_delay)
 
 
+func _get_quick_heal_cooldown_duration() -> float:
+	if manual_control_enabled:
+		return 0.0
+	return maxf(0.0, basic_heal_cooldown)
+
+
 func set_manual_control_enabled(enabled: bool) -> void:
 	manual_control_enabled = enabled
 	move_velocity = Vector2.ZERO
@@ -692,6 +700,7 @@ func set_manual_control_enabled(enabled: bool) -> void:
 		_cancel_harpoon_state()
 		healer_ai_decision_left = 0.0
 		return
+	basic_heal_cooldown_left = 0.0
 	healer_ai_state_name = "PLAYER_CONTROLLED"
 	pending_cast_action = CastAction.NONE
 	pending_cast_target = null
@@ -955,7 +964,7 @@ func get_manual_control_cooldown_state() -> Dictionary:
 		"ability_layout": "healer",
 		"basic": light_bolt_cooldown_left,
 		"basic_unlocked": light_bolt_enabled,
-		"quick_heal": basic_heal_cooldown_left,
+		"quick_heal": 0.0,
 		"quick_heal_unlocked": true,
 		"ability_1": harpoon_cooldown_left,
 		"ability_1_unlocked": harpoon_enabled,
@@ -1131,24 +1140,25 @@ func _is_breath_threat_active() -> bool:
 	return bool(breath_threat_snapshot.get("active", false))
 
 
-func _cancel_cast_for_breath() -> void:
+func _cancel_current_cast(reset_heal_timer: bool = true) -> void:
+	if not is_casting and pending_cast_action == CastAction.NONE and pending_cast_target == null:
+		return
 	is_casting = false
 	cast_anim_time = 0.0
 	heal_applied_this_cast = false
 	pending_cast_action = CastAction.NONE
 	pending_cast_target = null
 	_set_anim_frame("idle", 0)
-	heal_timer_left = minf(heal_timer_left, react_heal_delay)
+	if reset_heal_timer:
+		heal_timer_left = minf(heal_timer_left, react_heal_delay)
+
+
+func _cancel_cast_for_breath() -> void:
+	_cancel_current_cast(true)
 
 
 func _cancel_cast_for_lunge_mark() -> void:
-	is_casting = false
-	cast_anim_time = 0.0
-	heal_applied_this_cast = false
-	pending_cast_action = CastAction.NONE
-	pending_cast_target = null
-	_set_anim_frame("idle", 0)
-	heal_timer_left = minf(heal_timer_left, react_heal_delay)
+	_cancel_current_cast(true)
 
 
 func _get_enemy_marking_self_for_lunge() -> EnemyBase:
@@ -1365,11 +1375,9 @@ func _queue_cast_action(action: CastAction, target: Node2D, next_timer: float) -
 	var selected_target := target
 	if action == CastAction.QUICK_HEAL or action == CastAction.BIG_HEAL:
 		var allow_full_health_heal_targets := _should_allow_full_health_heal_targets()
-		var nearest_heal_target := _find_best_heal_target(allow_full_health_heal_targets)
-		if nearest_heal_target != null:
-			selected_target = nearest_heal_target
-		else:
-			selected_target = _resolve_heal_target(target, allow_full_health_heal_targets)
+		selected_target = _resolve_heal_target(target, allow_full_health_heal_targets)
+		if selected_target == null:
+			selected_target = _find_best_heal_target(allow_full_health_heal_targets)
 	pending_cast_action = action
 	pending_cast_target = selected_target
 	if action == CastAction.LIGHT_BOLT or action == CastAction.TIDAL_WAVE:
@@ -1468,8 +1476,20 @@ func _should_allow_full_health_heal_targets() -> bool:
 	return manual_control_enabled
 
 
+func _is_manual_self_heal_modifier_pressed() -> bool:
+	return manual_control_enabled and Input.is_key_pressed(KEY_SHIFT)
+
+
+func _get_manual_heal_cast_target(allow_full_health_targets: bool = true) -> Node2D:
+	if _is_manual_self_heal_modifier_pressed():
+		var self_target := _resolve_heal_target(self, allow_full_health_targets)
+		if self_target != null:
+			return self_target
+	return _resolve_heal_target(_find_best_heal_target(allow_full_health_targets), allow_full_health_targets)
+
+
 func _is_valid_heal_target(target: Node2D) -> bool:
-	if target == null or not is_instance_valid(target):
+	if not _is_valid_support_target(target):
 		return false
 	if not target.has_method("needs_healing"):
 		return false
@@ -1819,9 +1839,7 @@ func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = f
 	health_changed.emit(current_health, max_health)
 	_update_health_bar()
 	if is_casting and not _is_cast_uninterruptible_from_trinket():
-		is_casting = false
-		cast_anim_time = 0.0
-		heal_applied_this_cast = false
+		_cancel_current_cast(false)
 	_spawn_heal_burst(global_position + Vector2(0.0, -14.0), false)
 	if current_health <= 0.0:
 		_die()
@@ -1997,7 +2015,7 @@ func _trigger_healing_ability() -> void:
 	match pending_cast_action:
 		CastAction.QUICK_HEAL:
 			if basic_heal_cooldown_left <= 0.0 and _apply_heal_to_locked_target(cast_target):
-				basic_heal_cooldown_left = maxf(0.0, basic_heal_cooldown)
+				basic_heal_cooldown_left = _get_quick_heal_cooldown_duration()
 		CastAction.BIG_HEAL:
 			if big_heal_cooldown_left <= 0.0 and _apply_heal_to_locked_target(cast_target, maxf(0.0, big_heal_amount_multiplier)):
 				big_heal_cooldown_left = maxf(0.0, big_heal_cooldown)
@@ -2748,13 +2766,13 @@ func _find_best_tidal_wave_heal_target(attack_target: Node2D = null) -> Node2D:
 	var best_missing_health := -1.0
 	var best_id := INF
 	var candidates: Array[Node2D] = []
-	if is_instance_valid(player):
+	if _is_valid_support_target(player):
 		candidates.append(player)
 	for node in get_tree().get_nodes_in_group("friendly_npcs"):
 		var candidate := node as Node2D
 		if candidate == null or not is_instance_valid(candidate):
 			continue
-		if candidate != self and not _is_valid_support_target(candidate):
+		if not _is_valid_support_target(candidate):
 			continue
 		candidates.append(candidate)
 	for candidate in candidates:
@@ -2802,13 +2820,13 @@ func _evaluate_tidal_wave_targets(target: Node2D = null) -> Dictionary:
 	var target_in_lane := false
 	var seen_friendly_ids: Dictionary = {}
 	var ally_candidates: Array[Node2D] = []
-	if is_instance_valid(player):
+	if _is_valid_support_target(player):
 		ally_candidates.append(player)
 	for node in get_tree().get_nodes_in_group("friendly_npcs"):
 		var candidate := node as Node2D
 		if candidate == null or not is_instance_valid(candidate):
 			continue
-		if candidate != self and not _is_valid_support_target(candidate):
+		if not _is_valid_support_target(candidate):
 			continue
 		ally_candidates.append(candidate)
 	for ally in ally_candidates:
@@ -3557,13 +3575,13 @@ func _apply_echo_prism_harpoon_pulse(pulse_origin: Vector2) -> void:
 		return
 	var pulse_radius_sq := pulse_radius * pulse_radius
 	var candidates: Array[Node2D] = []
-	if is_instance_valid(player):
+	if _is_valid_support_target(player):
 		candidates.append(player)
 	for node in get_tree().get_nodes_in_group("friendly_npcs"):
 		var candidate := node as Node2D
 		if candidate == null or not is_instance_valid(candidate):
 			continue
-		if candidate != self and not _is_valid_support_target(candidate):
+		if not _is_valid_support_target(candidate):
 			continue
 		candidates.append(candidate)
 	var seen_ids: Dictionary = {}
@@ -4075,6 +4093,8 @@ func _spawn_damage_number_popup(world_position: Vector2, damage_amount: float) -
 
 
 func _spawn_heal_number_popup(world_position: Vector2, heal_amount: float) -> void:
+	if not _should_show_heal_number_popups():
+		return
 	_spawn_combat_number_popup(
 		world_position,
 		heal_amount,
@@ -4082,6 +4102,10 @@ func _spawn_heal_number_popup(world_position: Vector2, heal_amount: float) -> vo
 		Color(0.04, 0.12, 0.04, 0.95),
 		"+"
 	)
+
+
+func _should_show_heal_number_popups() -> bool:
+	return manual_control_enabled
 
 
 func _spawn_combat_number_popup(
