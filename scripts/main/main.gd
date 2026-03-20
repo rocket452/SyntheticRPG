@@ -48,6 +48,7 @@ const ADVENTURE_DEATH_POPUP_MIN_CLOSE_DELAY_MS: int = 120
 @onready var hud: HUD = $HUD
 
 var encounter_picker_layer: CanvasLayer = null
+var adventure_start_picker_layer: CanvasLayer = null
 var inventory_menu_layer: CanvasLayer = null
 var chest_item_popup_layer: CanvasLayer = null
 var chest_item_popup_opened_at_ms: int = 0
@@ -84,6 +85,21 @@ func _unhandled_input(event: InputEvent) -> void:
 			var elapsed := Time.get_ticks_msec() - chest_item_popup_opened_at_ms
 			if elapsed >= CHEST_POPUP_MIN_CLOSE_DELAY_MS:
 				_close_chest_item_popup()
+			get_viewport().set_input_as_handled()
+		return
+	if _has_active_adventure_start_picker():
+		var pick_event := event as InputEventKey
+		if pick_event != null and pick_event.pressed and not pick_event.echo:
+			if pick_event.keycode == KEY_1 or pick_event.keycode == KEY_KP_1:
+				_start_adventure_with_character("tank")
+			elif pick_event.keycode == KEY_2 or pick_event.keycode == KEY_KP_2:
+				_start_adventure_with_character("healer")
+			elif pick_event.keycode == KEY_3 or pick_event.keycode == KEY_KP_3:
+				_start_adventure_with_character("ratfolk")
+			elif pick_event.keycode == KEY_ESCAPE:
+				_close_adventure_start_picker()
+			get_viewport().set_input_as_handled()
+		else:
 			get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("inventory_toggle"):
@@ -297,13 +313,112 @@ func _show_encounter_picker() -> void:
 func _start_selected_encounter(encounter_type: int) -> void:
 	if not is_instance_valid(arena):
 		return
+	if encounter_type == Arena.EncounterType.COBRA_TWO_ROOM_TEST:
+		_show_adventure_start_picker()
+		return
+	_begin_encounter(encounter_type)
+
+
+func _begin_encounter(encounter_type: int) -> void:
+	if not is_instance_valid(arena):
+		return
 	_close_chest_item_popup()
 	_close_adventure_death_popup()
 	_close_inventory_menu()
+	_close_adventure_start_picker()
 	if _has_active_encounter_picker():
 		encounter_picker_layer.queue_free()
 		encounter_picker_layer = null
 	arena.start_demo_with_encounter(encounter_type)
+
+
+func _has_active_adventure_start_picker() -> bool:
+	return is_instance_valid(adventure_start_picker_layer)
+
+
+func _show_adventure_start_picker() -> void:
+	if _has_active_adventure_start_picker():
+		return
+	var layer := CanvasLayer.new()
+	layer.name = "AdventureStartPicker"
+	add_child(layer)
+	adventure_start_picker_layer = layer
+
+	var backdrop := ColorRect.new()
+	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
+	backdrop.color = Color(0.02, 0.02, 0.04, 0.82)
+	layer.add_child(backdrop)
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(center)
+
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(560.0, 0.0)
+	center.add_child(panel)
+
+	var content := VBoxContainer.new()
+	content.custom_minimum_size = Vector2(0.0, 300.0)
+	content.add_theme_constant_override("separation", 10)
+	panel.add_child(content)
+
+	var title := Label.new()
+	title.text = "Adventure Start"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	content.add_child(title)
+
+	var subtitle := Label.new()
+	subtitle.text = "Choose who you control in Room 1."
+	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(subtitle)
+
+	var tank_button := Button.new()
+	tank_button.text = "1. Play as Tank"
+	tank_button.custom_minimum_size = Vector2(0.0, 44.0)
+	tank_button.pressed.connect(func() -> void:
+		_start_adventure_with_character("tank")
+	)
+	content.add_child(tank_button)
+
+	var healer_button := Button.new()
+	healer_button.text = "2. Play as Healer"
+	healer_button.custom_minimum_size = Vector2(0.0, 44.0)
+	healer_button.pressed.connect(func() -> void:
+		_start_adventure_with_character("healer")
+	)
+	content.add_child(healer_button)
+
+	var rat_button := Button.new()
+	rat_button.text = "3. Play as Ratfolk"
+	rat_button.custom_minimum_size = Vector2(0.0, 44.0)
+	rat_button.pressed.connect(func() -> void:
+		_start_adventure_with_character("ratfolk")
+	)
+	content.add_child(rat_button)
+
+	var hint := Label.new()
+	hint.text = "Press 1-3 to select, or Esc to go back."
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	content.add_child(hint)
+
+	tank_button.grab_focus()
+
+
+func _close_adventure_start_picker() -> void:
+	if not _has_active_adventure_start_picker():
+		return
+	if is_instance_valid(adventure_start_picker_layer):
+		adventure_start_picker_layer.queue_free()
+	adventure_start_picker_layer = null
+
+
+func _start_adventure_with_character(control_id: String) -> void:
+	if not is_instance_valid(arena):
+		return
+	if arena.has_method("set_adventure_start_character"):
+		arena.call("set_adventure_start_character", control_id)
+	_begin_encounter(Arena.EncounterType.COBRA_TWO_ROOM_TEST)
 
 
 func _has_active_encounter_picker() -> bool:

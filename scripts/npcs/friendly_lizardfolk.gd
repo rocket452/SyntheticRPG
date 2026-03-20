@@ -202,6 +202,7 @@ func _ready() -> void:
 	attack_impact_vfx_scale = 1.0
 	outgoing_hit_stun_duration = 0.2
 	attack_knockback_scale = 0.72
+	move_speed *= 0.7
 	super._ready()
 	flurry_cooldown_left = maxf(0.0, flurry_cooldown * clampf(flurry_opening_cooldown_ratio, 0.0, 1.0))
 	flurry_windup_left = 0.0

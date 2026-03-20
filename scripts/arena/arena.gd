@@ -30,6 +30,7 @@ const DEFAULT_DUNGEON_TILESET_TEXTURE: Texture2D = preload("res://assets/externa
 const ARENA_TILESET_TEXTURE: Texture2D = preload("res://assets/external/ElthenAssets/tilesets/arena/Arena Tileset.png")
 const COMPANION_BREATH_RESPONSE_SCRIPT := preload("res://ai/CompanionBreathResponse.gd")
 const IMP_SUMMON_PENTAGRAM_EFFECT_SCRIPT := preload("res://scripts/effects/imp_summon_pentagram.gd")
+const PARTY_MEMBER_TANK: String = "tank"
 const PARTY_MEMBER_HEALER: String = "healer"
 const PARTY_MEMBER_RATFOLK: String = "ratfolk"
 const PARTY_MEMBER_LIZARDFOLK: String = "lizardfolk"
@@ -39,11 +40,13 @@ const CONTROLLED_CHARACTER_RATFOLK: String = "ratfolk"
 const CONTROLLED_CHARACTER_LIZARDFOLK: String = "lizardfolk"
 const MAX_PARTY_SIZE: int = 3
 const PARTY_MEMBER_LABELS: Dictionary = {
+	PARTY_MEMBER_TANK: "Tank",
 	PARTY_MEMBER_HEALER: "Healer",
 	PARTY_MEMBER_RATFOLK: "Ratfolk Rogue",
 	PARTY_MEMBER_LIZARDFOLK: "Lizardfolk Archer"
 }
 const PARTY_MEMBER_DESCRIPTIONS: Dictionary = {
+	PARTY_MEMBER_TANK: "Frontline fighter (disable only while controlling another ally).",
 	PARTY_MEMBER_HEALER: "Sustains the party with healing and support.",
 	PARTY_MEMBER_RATFOLK: "Mobile DPS that marks enemies and pressures targets.",
 	PARTY_MEMBER_LIZARDFOLK: "Ranged skirmisher companion with agile positioning."
@@ -174,6 +177,10 @@ var player: Player = null
 var healer: Node2D = null
 var ratfolk: Node2D = null
 var lizardfolk: Node2D = null
+var tank_party_enabled: bool = true
+var tank_collision_layer_cache: int = 0
+var tank_collision_mask_cache: int = 0
+var tank_state_cached: bool = false
 var party_member_enabled_by_id: Dictionary = {
 	PARTY_MEMBER_HEALER: true,
 	PARTY_MEMBER_RATFOLK: true,
@@ -181,6 +188,7 @@ var party_member_enabled_by_id: Dictionary = {
 }
 var party_member_toggle_failure_reason: String = ""
 var controlled_character_id: String = CONTROLLED_CHARACTER_TANK
+var adventure_start_control_id: String = CONTROLLED_CHARACTER_TANK
 var control_target_failure_reason: String = ""
 var alive_regular_enemies: int = 0
 var demo_started: bool = false
@@ -211,6 +219,7 @@ var two_room_cage_area: Area2D = null
 var two_room_caged_healer: Node2D = null
 var two_room_caged_rat: Node2D = null
 var two_room_caged_lizard: Node2D = null
+var two_room_caged_tank: Node2D = null
 var two_room_chest_root: Node2D = null
 var two_room_chest_area: Area2D = null
 var two_room_return_portal_root: Node2D = null
@@ -220,6 +229,9 @@ var two_room_rat_released: bool = false
 var two_room_lizard_released: bool = false
 var two_room_final_chest_opened: bool = false
 var two_room_loot_drop_count: int = 0
+var tank_caged_active: bool = false
+var adventure_tank_cage_room_index: int = 0
+var party_defeat_emitted: bool = false
 var default_floor_tileset_texture: Texture2D = null
 
 
@@ -250,6 +262,7 @@ func _process(delta: float) -> void:
 	_maybe_log_opening_spacing()
 	_try_spawn_timed_extra_minotaur()
 	_sync_control_mode_availability()
+	_sync_tank_proxy_position()
 	_emit_combat_debug()
 	_emit_manual_control_cooldowns()
 	_try_auto_activate_two_room_exit_if_ready()
@@ -292,6 +305,20 @@ func get_control_target_failure_reason() -> String:
 
 func get_controlled_character_id() -> String:
 	return controlled_character_id
+
+
+func get_adventure_start_character_id() -> String:
+	return adventure_start_control_id
+
+
+func set_adventure_start_character(control_id: String) -> bool:
+	var normalized := control_id.strip_edges().to_lower()
+	if normalized == "rat":
+		normalized = CONTROLLED_CHARACTER_RATFOLK
+	if normalized != CONTROLLED_CHARACTER_TANK and normalized != CONTROLLED_CHARACTER_HEALER and normalized != CONTROLLED_CHARACTER_RATFOLK:
+		return false
+	adventure_start_control_id = normalized
+	return true
 
 
 func get_controlled_inventory_actor() -> Object:
@@ -340,7 +367,7 @@ func get_control_target_entries() -> Array[Dictionary]:
 		"id": CONTROLLED_CHARACTER_TANK,
 		"name": "Tank",
 		"description": "Directly control the tank fighter.",
-		"available": is_instance_valid(player),
+		"available": is_instance_valid(player) and tank_party_enabled,
 		"selected": controlled_character_id == CONTROLLED_CHARACTER_TANK
 	})
 	var healer_available := _is_healer_control_available()
@@ -376,6 +403,9 @@ func set_controlled_character(control_id: String) -> bool:
 	if normalized_control_id != CONTROLLED_CHARACTER_TANK and normalized_control_id != CONTROLLED_CHARACTER_HEALER and normalized_control_id != CONTROLLED_CHARACTER_RATFOLK and normalized_control_id != CONTROLLED_CHARACTER_LIZARDFOLK:
 		control_target_failure_reason = "Unknown controlled character."
 		return false
+	if normalized_control_id == CONTROLLED_CHARACTER_TANK and not tank_party_enabled:
+		control_target_failure_reason = "Tank is locked in a cage." if tank_caged_active else "Tank is disabled while controlling another ally."
+		return false
 	if normalized_control_id == CONTROLLED_CHARACTER_HEALER and not _is_healer_control_available():
 		control_target_failure_reason = "Healer control is unavailable right now."
 		return false
@@ -400,7 +430,10 @@ func _get_enabled_companion_count() -> int:
 	var count := 0
 	for member_id_variant in [PARTY_MEMBER_HEALER, PARTY_MEMBER_RATFOLK, PARTY_MEMBER_LIZARDFOLK]:
 		var member_id := String(member_id_variant)
-		if bool(party_member_enabled_by_id.get(member_id, false)):
+		if two_room_test_active:
+			if _is_party_member_active(member_id):
+				count += 1
+		elif bool(party_member_enabled_by_id.get(member_id, false)):
 			count += 1
 	return count
 
@@ -421,7 +454,7 @@ func _is_party_member_unlocked_for_menu(member_id: String) -> bool:
 
 func get_party_member_entries() -> Array[Dictionary]:
 	var entries: Array[Dictionary] = []
-	var companions_available_now := _encounter_uses_companions() and not two_room_test_active
+	var companions_available_now := _encounter_uses_companions()
 	var visible_member_ids: Array[String] = []
 	for member_id_variant in [PARTY_MEMBER_HEALER, PARTY_MEMBER_RATFOLK, PARTY_MEMBER_LIZARDFOLK]:
 		var member_id := String(member_id_variant)
@@ -437,6 +470,21 @@ func get_party_member_entries() -> Array[Dictionary]:
 	var max_companion_count := _get_max_companion_count()
 	var display_enabled_companion_count := enabled_companion_count if companions_available_now or two_room_test_active else 0
 	var active_party_size := 1 + display_enabled_companion_count
+	if controlled_character_id != CONTROLLED_CHARACTER_TANK:
+		var tank_available := is_instance_valid(player) and not tank_caged_active
+		entries.append({
+			"id": PARTY_MEMBER_TANK,
+			"name": String(PARTY_MEMBER_LABELS.get(PARTY_MEMBER_TANK, "Tank")),
+			"description": String(PARTY_MEMBER_DESCRIPTIONS.get(PARTY_MEMBER_TANK, "Frontline fighter.")),
+			"enabled": tank_party_enabled,
+			"active": tank_party_enabled and tank_available,
+			"available": tank_available,
+			"blocked_by_party_limit": false,
+			"enabled_companion_count": display_enabled_companion_count,
+			"max_companion_count": max_companion_count,
+			"active_party_size": active_party_size,
+			"max_party_size": MAX_PARTY_SIZE
+		})
 	for member_id in visible_member_ids:
 		var member_name := String(PARTY_MEMBER_LABELS.get(member_id, member_id))
 		var member_description := String(PARTY_MEMBER_DESCRIPTIONS.get(member_id, "Companion option."))
@@ -466,6 +514,22 @@ func set_party_member_enabled(member_id: String, enabled: bool) -> bool:
 	if not PARTY_MEMBER_LABELS.has(normalized_member_id):
 		party_member_toggle_failure_reason = "Unknown party member."
 		return false
+	if normalized_member_id == PARTY_MEMBER_TANK:
+		if not is_instance_valid(player):
+			party_member_toggle_failure_reason = "Tank is unavailable."
+			return false
+		if tank_caged_active and bool(enabled):
+			party_member_toggle_failure_reason = "Tank is locked in a cage."
+			return false
+		if controlled_character_id == CONTROLLED_CHARACTER_TANK and not bool(enabled):
+			party_member_toggle_failure_reason = "Switch control before disabling the tank."
+			return false
+		var next_tank_enabled := bool(enabled)
+		if tank_party_enabled == next_tank_enabled:
+			return false
+		tank_party_enabled = next_tank_enabled
+		_apply_tank_party_state()
+		return true
 	var next_enabled := bool(enabled)
 	var previous_enabled := bool(party_member_enabled_by_id.get(normalized_member_id, true))
 	if previous_enabled == next_enabled:
@@ -474,8 +538,23 @@ func set_party_member_enabled(member_id: String, enabled: bool) -> bool:
 		party_member_toggle_failure_reason = "Party is full (max 3 total including Player)."
 		return false
 	party_member_enabled_by_id[normalized_member_id] = next_enabled
-	if demo_started and _encounter_uses_companions() and not two_room_test_active:
-		_apply_party_selection_runtime()
+	if demo_started and _encounter_uses_companions():
+		if two_room_test_active:
+			if not _is_party_member_unlocked_for_menu(normalized_member_id):
+				party_member_toggle_failure_reason = "Companion not rescued yet."
+				party_member_enabled_by_id[normalized_member_id] = previous_enabled
+				return false
+			if next_enabled:
+				if normalized_member_id == PARTY_MEMBER_HEALER and not is_instance_valid(healer):
+					_spawn_friendly_healer()
+				elif normalized_member_id == PARTY_MEMBER_RATFOLK and not is_instance_valid(ratfolk):
+					_spawn_friendly_ratfolk()
+				elif normalized_member_id == PARTY_MEMBER_LIZARDFOLK and not is_instance_valid(lizardfolk):
+					_spawn_friendly_lizardfolk()
+			else:
+				_despawn_companion(normalized_member_id)
+		else:
+			_apply_party_selection_runtime()
 	return true
 
 
@@ -530,6 +609,64 @@ func _apply_party_selection_runtime() -> void:
 	_sync_hitbox_debug_mode()
 
 
+func _cache_tank_runtime_state() -> void:
+	if tank_state_cached:
+		return
+	if not is_instance_valid(player):
+		return
+	tank_collision_layer_cache = player.collision_layer
+	tank_collision_mask_cache = player.collision_mask
+	tank_state_cached = true
+
+
+func _disable_tank_actor() -> void:
+	if not is_instance_valid(player):
+		return
+	_cache_tank_runtime_state()
+	if player.is_in_group("player"):
+		player.remove_from_group("player")
+	player.visible = false
+	player.collision_layer = 0
+	player.collision_mask = 0
+	player.set_process(false)
+	player.set_physics_process(false)
+	player.set_process_input(false)
+
+
+func _enable_tank_actor() -> void:
+	if not is_instance_valid(player):
+		return
+	_cache_tank_runtime_state()
+	if not player.is_in_group("player"):
+		player.add_to_group("player")
+	player.visible = true
+	if tank_state_cached:
+		player.collision_layer = tank_collision_layer_cache
+		player.collision_mask = tank_collision_mask_cache
+	player.set_process(true)
+	player.set_physics_process(true)
+	player.set_process_input(true)
+
+
+func _apply_tank_party_state() -> void:
+	if tank_party_enabled:
+		_enable_tank_actor()
+	else:
+		_disable_tank_actor()
+	_apply_control_mode_runtime()
+
+
+func _sync_tank_proxy_position() -> void:
+	if tank_party_enabled:
+		return
+	if not is_instance_valid(player):
+		return
+	var proxy := get_controlled_inventory_actor() as Node2D
+	if proxy == null or proxy == player:
+		return
+	player.global_position = proxy.global_position
+
+
 func _despawn_companion(member_id: String) -> void:
 	if member_id == PARTY_MEMBER_HEALER:
 		if is_instance_valid(healer):
@@ -569,6 +706,7 @@ func start_demo() -> void:
 	timed_extra_minotaur_spawned = false
 	initial_minotaur_spawn_on_left = false
 	spawned_minotaurs_total = 0
+	party_defeat_emitted = false
 	two_room_test_active = false
 	two_room_test_room_index = 0
 	two_room_test_transition_in_progress = false
@@ -578,6 +716,8 @@ func start_demo() -> void:
 	two_room_lizard_released = false
 	two_room_final_chest_opened = false
 	two_room_loot_drop_count = 0
+	tank_caged_active = false
+	adventure_tank_cage_room_index = 0
 	_teardown_two_room_exit()
 	_teardown_two_room_cage()
 	_teardown_two_room_chest()
@@ -627,6 +767,11 @@ func _spawn_player() -> void:
 	player.died.connect(_on_player_died)
 	if player.has_signal("combat_status_message"):
 		player.combat_status_message.connect(_on_player_combat_status_message)
+	_cache_tank_runtime_state()
+	_apply_tank_party_state()
+	if player.has_method("set_level_up_full_heal_enabled"):
+		var enable_full_heal := selected_encounter != EncounterType.COBRA_TWO_ROOM_TEST
+		player.call("set_level_up_full_heal_enabled", enable_full_heal)
 
 
 func _spawn_friendly_healer() -> void:
@@ -639,6 +784,7 @@ func _spawn_friendly_healer() -> void:
 	actors.add_child(healer)
 	healer.global_position = healer_spawn.global_position
 	_apply_hitbox_debug_to_node(healer)
+	_connect_companion_died(healer)
 	if healer.has_method("set_player") and is_instance_valid(player):
 		healer.set_player(player)
 	if healer.has_method("set_manual_control_enabled"):
@@ -656,6 +802,7 @@ func _spawn_friendly_ratfolk() -> void:
 	actors.add_child(ratfolk)
 	ratfolk.global_position = ratfolk_spawn.global_position
 	_apply_hitbox_debug_to_node(ratfolk)
+	_connect_companion_died(ratfolk)
 	if ratfolk.has_method("set_player") and is_instance_valid(player):
 		ratfolk.set_player(player)
 	if ratfolk.has_method("set_arena_bounds"):
@@ -678,6 +825,7 @@ func _spawn_friendly_lizardfolk() -> void:
 	else:
 		lizardfolk.global_position = _get_fallback_lizard_spawn_position()
 	_apply_hitbox_debug_to_node(lizardfolk)
+	_connect_companion_died(lizardfolk)
 	if lizardfolk.has_method("set_player") and is_instance_valid(player):
 		lizardfolk.call("set_player", player)
 	if lizardfolk.has_method("set_arena_bounds"):
@@ -821,6 +969,7 @@ func _configure_cobra_enemy(enemy: EnemyBase, as_miniboss: bool = false) -> void
 	enemy.cobra_spacing_pause_duration = 0.2
 	enemy.cobra_heavy_attack_windup = 0.62
 	enemy.cobra_heavy_attack_cooldown = 1.28
+	enemy.cobra_close_attack_enabled = false
 	enemy.cobra_heavy_bait_range_band = 16.0 * cobra_range_scale * cobra_attack_range_multiplier
 	enemy.cobra_attack_recovery_on_hit = 0.18
 	enemy.cobra_attack_recovery_on_block = 0.68
@@ -836,6 +985,60 @@ func _configure_cobra_enemy(enemy: EnemyBase, as_miniboss: bool = false) -> void
 	enemy.max_health = maxf(1.0, enemy.max_health * clampf(cobra_health_scale, 0.0, 1000.0))
 	enemy.current_health = enemy.max_health
 	enemy.attack_damage = maxf(0.0, enemy.attack_damage * clampf(cobra_damage_scale, 0.0, 1000.0))
+
+
+func _apply_adventure_start_selection(room_one_bounds: Rect2, start_position: Vector2) -> void:
+	var normalized := adventure_start_control_id.strip_edges().to_lower()
+	if normalized == "rat":
+		normalized = CONTROLLED_CHARACTER_RATFOLK
+	if normalized != CONTROLLED_CHARACTER_TANK and normalized != CONTROLLED_CHARACTER_HEALER and normalized != CONTROLLED_CHARACTER_RATFOLK:
+		normalized = CONTROLLED_CHARACTER_TANK
+		adventure_start_control_id = normalized
+	tank_caged_active = false
+	adventure_tank_cage_room_index = 0
+	if normalized == CONTROLLED_CHARACTER_HEALER:
+		controlled_character_id = CONTROLLED_CHARACTER_HEALER
+		two_room_healer_released = true
+		if not is_instance_valid(healer):
+			_spawn_friendly_healer()
+		if is_instance_valid(healer):
+			healer.position = start_position
+			if healer.has_method("set_arena_bounds"):
+				healer.call(
+					"set_arena_bounds",
+					room_one_bounds.position.x,
+					room_one_bounds.end.x,
+					room_one_bounds.position.y,
+					room_one_bounds.end.y
+				)
+		tank_party_enabled = false
+		tank_caged_active = true
+		adventure_tank_cage_room_index = 2
+		_apply_tank_party_state()
+		return
+	if normalized == CONTROLLED_CHARACTER_RATFOLK:
+		controlled_character_id = CONTROLLED_CHARACTER_RATFOLK
+		two_room_rat_released = true
+		if not is_instance_valid(ratfolk):
+			_spawn_friendly_ratfolk()
+		if is_instance_valid(ratfolk):
+			ratfolk.position = start_position
+			if ratfolk.has_method("set_arena_bounds"):
+				ratfolk.call(
+					"set_arena_bounds",
+					room_one_bounds.position.x,
+					room_one_bounds.end.x,
+					room_one_bounds.position.y,
+					room_one_bounds.end.y
+				)
+		tank_party_enabled = false
+		tank_caged_active = true
+		adventure_tank_cage_room_index = 3
+		_apply_tank_party_state()
+		return
+	controlled_character_id = CONTROLLED_CHARACTER_TANK
+	tank_party_enabled = true
+	_apply_tank_party_state()
 
 
 func _spawn_two_room_cobra_test() -> void:
@@ -866,11 +1069,12 @@ func _spawn_two_room_cobra_test() -> void:
 	_setup_two_room_fifth_play_area(room_five_bounds)
 	_setup_two_room_sixth_play_area(room_six_bounds)
 	var room_center_y := room_one_bounds.position.y + (room_one_bounds.size.y * 0.5)
+	var start_position := Vector2(
+		room_one_bounds.position.x + maxf(24.0, two_room_test_spawn_margin_x),
+		room_center_y
+	)
 	if is_instance_valid(player):
-		player.position = Vector2(
-			room_one_bounds.position.x + maxf(24.0, two_room_test_spawn_margin_x),
-			room_center_y
-		)
+		player.position = start_position
 		_apply_local_bounds_to_player(
 			player,
 			room_one_bounds.position.x,
@@ -879,6 +1083,7 @@ func _spawn_two_room_cobra_test() -> void:
 			room_one_bounds.end.y,
 			true
 		)
+	_apply_adventure_start_selection(room_one_bounds, start_position)
 
 	_spawn_two_room_room_content(1, room_one_bounds)
 	_refresh_two_room_exits_for_room(1, room_one_bounds)
@@ -945,6 +1150,401 @@ func _setup_two_room_third_play_area(room_three_bounds: Rect2) -> void:
 	third_floor.position = room_three_bounds.position + (room_three_bounds.size * 0.5)
 	two_room_third_floor_root = third_floor
 	_apply_floor_tileset_to_node(two_room_third_floor_root, _get_default_floor_tileset_texture())
+
+
+func _duplicate_floor_template_chunk(parent_node: Node, chunk_name: String, local_position: Vector2 = Vector2.ZERO) -> Node2D:
+	if parent_node == null or not is_instance_valid(parent_node):
+		return null
+	if not is_instance_valid(floor_root):
+		return null
+	var duplicate_flags := Node.DUPLICATE_GROUPS | Node.DUPLICATE_SIGNALS | Node.DUPLICATE_SCRIPTS
+	var chunk := floor_root.duplicate(duplicate_flags) as Node2D
+	if chunk == null:
+		return null
+	chunk.name = chunk_name
+	chunk.position = local_position
+	parent_node.add_child(chunk)
+	return chunk
+
+
+func _configure_floor_chunk_visual(
+	target_floor: Node2D,
+	size: Vector2,
+	tileset_texture: Texture2D,
+	floor_coords: Array,
+	sidewalk_height: float,
+	top_border_rows: int,
+	bottom_border_rows: int,
+	border_columns: int,
+	decor_spawn_chance: float,
+	floor_variation_chance: float,
+	wall_variation_chance: float,
+	bottom_border_align_to_playable_area: bool
+) -> void:
+	if target_floor == null or not is_instance_valid(target_floor):
+		return
+	target_floor.set("arena_width", maxf(96.0, size.x))
+	target_floor.set("arena_height", maxf(96.0, size.y))
+	target_floor.set("sidewalk_height", maxf(0.0, sidewalk_height))
+	target_floor.set("top_border_rows", maxi(0, top_border_rows))
+	target_floor.set("bottom_border_rows", maxi(0, bottom_border_rows))
+	target_floor.set("border_columns", maxi(0, border_columns))
+	target_floor.set("bottom_border_align_to_playable_area", bottom_border_align_to_playable_area)
+	target_floor.set("decor_spawn_chance", clampf(decor_spawn_chance, 0.0, 1.0))
+	target_floor.set("floor_tile_variation_chance", clampf(floor_variation_chance, 0.0, 1.0))
+	target_floor.set("wall_tile_variation_chance", clampf(wall_variation_chance, 0.0, 1.0))
+	if not floor_coords.is_empty():
+		target_floor.set("floor_tile_coords", floor_coords.duplicate())
+	_apply_floor_tileset_to_node(target_floor, tileset_texture)
+
+
+func _get_floor_chunk_visible_cell_counts(target_floor: Node2D) -> Vector2i:
+	if target_floor == null or not is_instance_valid(target_floor):
+		return Vector2i.ONE
+	var tile_size_variant: Variant = target_floor.get("dungeon_tile_size")
+	var tile_size: Vector2i = tile_size_variant if tile_size_variant is Vector2i else Vector2i(32, 32)
+	var tile_w := maxi(4, tile_size.x)
+	var tile_h := maxi(4, tile_size.y)
+	var chunk_width := maxf(32.0, float(target_floor.get("arena_width")))
+	var chunk_height := maxf(32.0, float(target_floor.get("arena_height")))
+	var visible_columns := maxi(1, int(floor((chunk_width - 0.001) / float(tile_w))) + 1)
+	var visible_rows := maxi(1, int(floor((chunk_height - 0.001) / float(tile_h))) + 1)
+	return Vector2i(visible_columns, visible_rows)
+
+
+func _decorate_room_three_platform_chunk(target_floor: Node2D, is_left_platform: bool) -> void:
+	if target_floor == null or not is_instance_valid(target_floor):
+		return
+	var decor_layer := target_floor.get_node_or_null("DungeonDecorLayer") as TileMapLayer
+	if decor_layer == null or not is_instance_valid(decor_layer):
+		return
+	var visible_cells := _get_floor_chunk_visible_cell_counts(target_floor)
+	var source_id := int(target_floor.get("dungeon_tileset_source_id"))
+	var top_row := 1
+	var bottom_row := maxi(top_row + 1, visible_cells.y - 2)
+	var mid_row := mini(bottom_row - 1, maxi(top_row + 1, int(floor(float(visible_cells.y) * 0.5))))
+	var inner_edge_x := maxi(1, visible_cells.x - 2) if is_left_platform else 1
+	var outer_edge_x := 1 if is_left_platform else maxi(1, visible_cells.x - 2)
+	decor_layer.set_cell(Vector2i(inner_edge_x, top_row), source_id, Vector2i(0, 13))
+	decor_layer.set_cell(Vector2i(inner_edge_x, bottom_row), source_id, Vector2i(1, 13))
+	decor_layer.set_cell(Vector2i(outer_edge_x, mid_row), source_id, Vector2i(2, 13))
+	var brace_x := clampi(inner_edge_x + (-1 if is_left_platform else 1), 1, maxi(1, visible_cells.x - 2))
+	decor_layer.set_cell(Vector2i(brace_x, top_row + 1), source_id, Vector2i(4, 13))
+	decor_layer.set_cell(Vector2i(brace_x, max(top_row + 1, bottom_row - 1)), source_id, Vector2i(4, 14))
+
+
+func _decorate_room_three_bridge_chunk(target_floor: Node2D) -> void:
+	if target_floor == null or not is_instance_valid(target_floor):
+		return
+	var decor_layer := target_floor.get_node_or_null("DungeonDecorLayer") as TileMapLayer
+	if decor_layer == null or not is_instance_valid(decor_layer):
+		return
+	var visible_cells := _get_floor_chunk_visible_cell_counts(target_floor)
+	var source_id := int(target_floor.get("dungeon_tileset_source_id"))
+	var top_row := 1
+	var bottom_row := maxi(top_row + 1, visible_cells.y - 2)
+	for x in range(1, maxi(2, visible_cells.x - 1)):
+		if x % 2 == 0:
+			continue
+		decor_layer.set_cell(Vector2i(x, top_row), source_id, Vector2i(4, 13))
+		decor_layer.set_cell(Vector2i(x, bottom_row), source_id, Vector2i(4, 14))
+	var anchor_row := mini(bottom_row, maxi(top_row, int(floor(float(visible_cells.y) * 0.5))))
+	var center_x := maxi(1, mini(visible_cells.x - 2, int(floor(float(visible_cells.x) * 0.5))))
+	decor_layer.set_cell(Vector2i(1, anchor_row), source_id, Vector2i(5, 13))
+	decor_layer.set_cell(Vector2i(maxi(1, visible_cells.x - 2), anchor_row), source_id, Vector2i(5, 13))
+	decor_layer.set_cell(Vector2i(center_x, top_row), source_id, Vector2i(5, 13))
+	decor_layer.set_cell(Vector2i(center_x, bottom_row), source_id, Vector2i(5, 13))
+
+
+func _decorate_room_three_boss_dais_chunk(target_floor: Node2D) -> void:
+	if target_floor == null or not is_instance_valid(target_floor):
+		return
+	var decor_layer := target_floor.get_node_or_null("DungeonDecorLayer") as TileMapLayer
+	if decor_layer == null or not is_instance_valid(decor_layer):
+		return
+	var visible_cells := _get_floor_chunk_visible_cell_counts(target_floor)
+	var source_id := int(target_floor.get("dungeon_tileset_source_id"))
+	var top_row := 1
+	var bottom_row := maxi(top_row + 2, visible_cells.y - 2)
+	var mid_row := mini(bottom_row - 1, maxi(top_row + 1, int(floor(float(visible_cells.y) * 0.5))))
+	var left_x := 1
+	var right_x := maxi(1, visible_cells.x - 2)
+	var center_x := maxi(left_x, mini(right_x, int(floor(float(visible_cells.x) * 0.5))))
+	decor_layer.set_cell(Vector2i(left_x, top_row), source_id, Vector2i(0, 13))
+	decor_layer.set_cell(Vector2i(left_x, bottom_row), source_id, Vector2i(1, 13))
+	decor_layer.set_cell(Vector2i(right_x, top_row), source_id, Vector2i(0, 13))
+	decor_layer.set_cell(Vector2i(right_x, bottom_row), source_id, Vector2i(1, 13))
+	decor_layer.set_cell(Vector2i(center_x, top_row), source_id, Vector2i(5, 13))
+	decor_layer.set_cell(Vector2i(center_x, bottom_row), source_id, Vector2i(5, 13))
+	decor_layer.set_cell(Vector2i(center_x, mid_row), source_id, Vector2i(2, 13))
+	var inner_left := clampi(center_x - 2, left_x, right_x)
+	var inner_right := clampi(center_x + 2, left_x, right_x)
+	decor_layer.set_cell(Vector2i(inner_left, top_row + 1), source_id, Vector2i(4, 13))
+	decor_layer.set_cell(Vector2i(inner_left, max(top_row + 1, bottom_row - 1)), source_id, Vector2i(4, 14))
+	decor_layer.set_cell(Vector2i(inner_right, top_row + 1), source_id, Vector2i(4, 13))
+	decor_layer.set_cell(Vector2i(inner_right, max(top_row + 1, bottom_row - 1)), source_id, Vector2i(4, 14))
+	if right_x - left_x >= 6:
+		decor_layer.set_cell(Vector2i(left_x + 2, mid_row), source_id, Vector2i(5, 13))
+		decor_layer.set_cell(Vector2i(right_x - 2, mid_row), source_id, Vector2i(5, 13))
+
+
+func _build_room_three_ellipse_polygon(center: Vector2, radii: Vector2, segments: int = 18) -> PackedVector2Array:
+	var safe_segments := maxi(8, segments)
+	var radius_x := maxf(1.0, radii.x)
+	var radius_y := maxf(1.0, radii.y)
+	var points := PackedVector2Array()
+	for index in range(safe_segments):
+		var angle := (TAU * float(index)) / float(safe_segments)
+		points.append(center + Vector2(cos(angle) * radius_x, sin(angle) * radius_y))
+	return points
+
+
+func _spawn_room_three_bridge_ambience(parent_node: Node2D, bridge_width: float, bridge_height: float, boss_spawn_local: Vector2) -> void:
+	if parent_node == null or not is_instance_valid(parent_node):
+		return
+	var bridge_shadow := Polygon2D.new()
+	bridge_shadow.z_index = -95
+	bridge_shadow.color = Color(0.0, 0.0, 0.0, 0.26)
+	bridge_shadow.polygon = PackedVector2Array([
+		Vector2(-bridge_width * 0.56, -bridge_height * 0.36),
+		Vector2(bridge_width * 0.48, -bridge_height * 0.36),
+		Vector2(bridge_width * 0.58, 0.0),
+		Vector2(bridge_width * 0.48, bridge_height * 0.36),
+		Vector2(-bridge_width * 0.56, bridge_height * 0.36),
+		Vector2(-bridge_width * 0.64, 0.0)
+	])
+	parent_node.add_child(bridge_shadow)
+
+	for rail_y in [-bridge_height * 0.42, bridge_height * 0.42]:
+		var bridge_rail := Line2D.new()
+		bridge_rail.z_index = -89
+		bridge_rail.width = 2.0
+		bridge_rail.default_color = Color(0.48, 0.42, 0.32, 0.84)
+		bridge_rail.begin_cap_mode = Line2D.LINE_CAP_ROUND
+		bridge_rail.end_cap_mode = Line2D.LINE_CAP_ROUND
+		bridge_rail.points = PackedVector2Array([
+			Vector2(-bridge_width * 0.46, rail_y),
+			Vector2(bridge_width * 0.46, rail_y)
+		])
+		parent_node.add_child(bridge_rail)
+
+	var outer_glow := Polygon2D.new()
+	outer_glow.z_index = -89
+	outer_glow.color = Color(1.0, 0.36, 0.12, 0.08)
+	outer_glow.polygon = _build_room_three_ellipse_polygon(boss_spawn_local + Vector2(0.0, 8.0), Vector2(90.0, 48.0), 22)
+	parent_node.add_child(outer_glow)
+
+	var inner_glow := Polygon2D.new()
+	inner_glow.z_index = -88
+	inner_glow.color = Color(1.0, 0.5, 0.18, 0.12)
+	inner_glow.polygon = _build_room_three_ellipse_polygon(boss_spawn_local + Vector2(0.0, 8.0), Vector2(54.0, 28.0), 18)
+	parent_node.add_child(inner_glow)
+
+
+func _spawn_room_three_rift_visuals(parent_node: Node2D, room_size: Vector2, bridge_height: float, rift_half_width: float) -> void:
+	if parent_node == null or not is_instance_valid(parent_node):
+		return
+	var half_room_h := room_size.y * 0.5
+	var bridge_shoulder := maxf(bridge_height * 0.58, 74.0)
+	var left_edge := PackedVector2Array([
+		Vector2(-rift_half_width * 1.02, -half_room_h + 18.0),
+		Vector2(-rift_half_width * 0.82, -bridge_shoulder - 36.0),
+		Vector2(-rift_half_width * 0.66, -bridge_shoulder + 14.0),
+		Vector2(-rift_half_width * 0.74, bridge_shoulder - 18.0),
+		Vector2(-rift_half_width * 0.92, half_room_h - 18.0)
+	])
+	var right_edge := PackedVector2Array([
+		Vector2(rift_half_width * 0.88, half_room_h - 14.0),
+		Vector2(rift_half_width * 0.7, bridge_shoulder + 28.0),
+		Vector2(rift_half_width * 0.62, bridge_shoulder - 12.0),
+		Vector2(rift_half_width * 0.74, -bridge_shoulder + 20.0),
+		Vector2(rift_half_width * 0.96, -half_room_h + 14.0)
+	])
+	var outer_polygon_points := PackedVector2Array()
+	for point in left_edge:
+		outer_polygon_points.append(point)
+	for point in right_edge:
+		outer_polygon_points.append(point)
+	var outer_rift := Polygon2D.new()
+	outer_rift.z_index = -100
+	outer_rift.color = Color(0.12, 0.09, 0.08, 0.96)
+	outer_rift.polygon = outer_polygon_points
+	parent_node.add_child(outer_rift)
+
+	var inner_rift := Polygon2D.new()
+	inner_rift.z_index = -100
+	inner_rift.color = Color(0.05, 0.04, 0.04, 0.98)
+	inner_rift.polygon = PackedVector2Array([
+		Vector2(-rift_half_width * 0.58, -half_room_h + 32.0),
+		Vector2(-rift_half_width * 0.46, -bridge_shoulder - 10.0),
+		Vector2(-rift_half_width * 0.36, bridge_shoulder - 8.0),
+		Vector2(-rift_half_width * 0.52, half_room_h - 28.0),
+		Vector2(rift_half_width * 0.54, half_room_h - 24.0),
+		Vector2(rift_half_width * 0.38, bridge_shoulder + 10.0),
+		Vector2(rift_half_width * 0.34, -bridge_shoulder + 8.0),
+		Vector2(rift_half_width * 0.48, -half_room_h + 28.0)
+	])
+	parent_node.add_child(inner_rift)
+
+	var ember_glow := Polygon2D.new()
+	ember_glow.z_index = -99
+	ember_glow.color = Color(0.72, 0.18, 0.08, 0.14)
+	ember_glow.polygon = PackedVector2Array([
+		Vector2(-rift_half_width * 0.32, -half_room_h + 44.0),
+		Vector2(-rift_half_width * 0.22, -bridge_shoulder - 12.0),
+		Vector2(-rift_half_width * 0.18, bridge_shoulder - 8.0),
+		Vector2(-rift_half_width * 0.28, half_room_h - 40.0),
+		Vector2(rift_half_width * 0.28, half_room_h - 36.0),
+		Vector2(rift_half_width * 0.16, bridge_shoulder + 6.0),
+		Vector2(rift_half_width * 0.2, -bridge_shoulder + 4.0),
+		Vector2(rift_half_width * 0.34, -half_room_h + 40.0)
+	])
+	parent_node.add_child(ember_glow)
+
+	var ember_core := Polygon2D.new()
+	ember_core.z_index = -98
+	ember_core.color = Color(1.0, 0.32, 0.08, 0.08)
+	ember_core.polygon = PackedVector2Array([
+		Vector2(-rift_half_width * 0.16, -half_room_h + 56.0),
+		Vector2(-rift_half_width * 0.1, -bridge_shoulder + 6.0),
+		Vector2(-rift_half_width * 0.08, bridge_shoulder - 4.0),
+		Vector2(-rift_half_width * 0.14, half_room_h - 52.0),
+		Vector2(rift_half_width * 0.14, half_room_h - 48.0),
+		Vector2(rift_half_width * 0.08, bridge_shoulder + 4.0),
+		Vector2(rift_half_width * 0.09, -bridge_shoulder - 2.0),
+		Vector2(rift_half_width * 0.18, -half_room_h + 52.0)
+	])
+	parent_node.add_child(ember_core)
+
+	var left_rim := Line2D.new()
+	left_rim.z_index = -100
+	left_rim.width = 2.4
+	left_rim.default_color = Color(0.34, 0.3, 0.24, 0.82)
+	left_rim.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	left_rim.end_cap_mode = Line2D.LINE_CAP_ROUND
+	left_rim.points = left_edge
+	parent_node.add_child(left_rim)
+
+	var right_rim_points := PackedVector2Array()
+	for idx in range(right_edge.size() - 1, -1, -1):
+		right_rim_points.append(right_edge[idx])
+	var right_rim := Line2D.new()
+	right_rim.z_index = -100
+	right_rim.width = 2.4
+	right_rim.default_color = Color(0.34, 0.3, 0.24, 0.82)
+	right_rim.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	right_rim.end_cap_mode = Line2D.LINE_CAP_ROUND
+	right_rim.points = right_rim_points
+	parent_node.add_child(right_rim)
+
+
+func _get_room_three_walkable_rects(room_three_bounds: Rect2) -> Array[Rect2]:
+	var template_width := room_three_bounds.size.x
+	var template_height := room_three_bounds.size.y
+	if is_instance_valid(floor_root):
+		template_width = maxf(template_width, float(floor_root.get("arena_width")))
+		template_height = maxf(template_height, float(floor_root.get("arena_height")))
+	var full_room_size := Vector2(
+		maxf(room_three_bounds.size.x + 24.0, template_width),
+		maxf(room_three_bounds.size.y + 48.0, template_height)
+	)
+	var platform_width := clampf(room_three_bounds.size.x * 0.34, 272.0, full_room_size.x * 0.4)
+	var platform_height := clampf(room_three_bounds.size.y + 68.0, room_three_bounds.size.y + 28.0, full_room_size.y - 44.0)
+	var bridge_width := clampf(room_three_bounds.size.x * 0.42, 320.0, full_room_size.x * 0.52)
+	var bridge_height := clampf(room_three_bounds.size.y * 0.62, 150.0, platform_height - 72.0)
+	var platform_offset_x := room_three_bounds.size.x * 0.26
+	var center := room_three_bounds.position + (room_three_bounds.size * 0.5)
+	var bridge_clearance := 10.0
+	var platform_clearance := 8.0
+	var west_platform := Rect2(
+		center + Vector2(-platform_offset_x - (platform_width * 0.5), -(platform_height * 0.5)),
+		Vector2(platform_width, platform_height)
+	).grow(-platform_clearance)
+	var east_platform := Rect2(
+		center + Vector2(platform_offset_x - (platform_width * 0.5), -(platform_height * 0.5)),
+		Vector2(platform_width, platform_height)
+	).grow(-platform_clearance)
+	var bridge_rect := Rect2(
+		center + Vector2(-(bridge_width * 0.5), -(bridge_height * 0.5)),
+		Vector2(bridge_width, bridge_height)
+	).grow(-bridge_clearance)
+	return [west_platform, east_platform, bridge_rect]
+
+
+func _get_room_three_boss_spawn_position(room_three_bounds: Rect2) -> Vector2:
+	var walkable_rects := _get_room_three_walkable_rects(room_three_bounds)
+	if walkable_rects.size() < 3:
+		return room_three_bounds.position + (room_three_bounds.size * 0.5)
+	var east_platform := walkable_rects[1]
+	var bridge_rect := walkable_rects[2]
+	var spawn_x := clampf(
+		bridge_rect.end.x + maxf(18.0, east_platform.size.x * 0.08),
+		bridge_rect.end.x - 2.0,
+		east_platform.end.x - 28.0
+	)
+	var spawn_y := clampf(
+		bridge_rect.position.y + (bridge_rect.size.y * 0.5),
+		east_platform.position.y + 18.0,
+		east_platform.end.y - 18.0
+	)
+	return Vector2(spawn_x, spawn_y)
+
+
+func _get_nearest_point_in_rect(point: Vector2, rect: Rect2) -> Vector2:
+	return Vector2(
+		clampf(point.x, rect.position.x, rect.end.x),
+		clampf(point.y, rect.position.y, rect.end.y)
+	)
+
+
+func _clamp_global_position_to_room_three_walkway(world_position: Vector2, room_three_bounds: Rect2) -> Vector2:
+	var local_position := to_local(world_position)
+	if not room_three_bounds.grow(18.0).has_point(local_position):
+		return world_position
+	var walkable_rects := _get_room_three_walkable_rects(room_three_bounds)
+	if walkable_rects.is_empty():
+		return world_position
+	for rect in walkable_rects:
+		if rect.has_point(local_position):
+			return world_position
+	var nearest_point := local_position
+	var nearest_distance_sq := INF
+	for rect in walkable_rects:
+		var candidate := _get_nearest_point_in_rect(local_position, rect)
+		var distance_sq := local_position.distance_squared_to(candidate)
+		if distance_sq >= nearest_distance_sq:
+			continue
+		nearest_distance_sq = distance_sq
+		nearest_point = candidate
+	return to_global(nearest_point)
+
+
+func _clamp_room_three_actor_to_walkway(actor: Node) -> void:
+	var actor_2d := actor as Node2D
+	if actor_2d == null or not is_instance_valid(actor_2d):
+		return
+	var room_three_bounds := _get_two_room_bounds(3)
+	var clamped_position := _clamp_global_position_to_room_three_walkway(actor_2d.global_position, room_three_bounds)
+	if actor_2d.global_position.distance_squared_to(clamped_position) <= 0.0001:
+		return
+	actor_2d.global_position = clamped_position
+
+
+func _enforce_room_three_bridge_walkway() -> void:
+	if not two_room_test_active:
+		return
+	_clamp_room_three_actor_to_walkway(player)
+	_clamp_room_three_actor_to_walkway(healer)
+	_clamp_room_three_actor_to_walkway(ratfolk)
+	_clamp_room_three_actor_to_walkway(lizardfolk)
+	var tree := get_tree()
+	if tree == null:
+		return
+	for node in tree.get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		_clamp_room_three_actor_to_walkway(enemy)
 
 
 func _teardown_two_room_third_play_area() -> void:
@@ -1159,6 +1759,48 @@ func _teardown_two_room_exit() -> void:
 	two_room_exit_area = null
 
 
+func _is_tank_caged_for_room(room_index: int) -> bool:
+	return tank_caged_active and adventure_tank_cage_room_index == room_index
+
+
+func _spawn_two_room_caged_tank(cage_position: Vector2, room_bounds: Rect2) -> void:
+	if is_instance_valid(two_room_caged_tank):
+		two_room_caged_tank.queue_free()
+	two_room_caged_tank = null
+	var caged := PLAYER_SCENE.instantiate() as Node2D
+	if caged == null:
+		return
+	actors.add_child(caged)
+	caged.global_position = to_global(cage_position + Vector2(0.0, 8.0))
+	caged.set_process(false)
+	caged.set_physics_process(false)
+	caged.set_process_input(false)
+	var caged_player := caged as Player
+	if caged_player != null:
+		caged_player.collision_layer = 0
+		caged_player.collision_mask = 0
+		if caged_player.has_method("_set_health_bar_visible"):
+			caged_player.call("_set_health_bar_visible", false)
+		if caged_player.has_method("set_ai_control_enabled"):
+			caged_player.call("set_ai_control_enabled", false)
+	caged.call_deferred("remove_from_group", "player")
+	caged.call_deferred("remove_from_group", "hitbox_debuggable")
+	var camera := caged.get_node_or_null("Camera2D") as Camera2D
+	if camera != null:
+		camera.enabled = false
+		camera.set_process(false)
+		camera.set_physics_process(false)
+	if caged.has_method("set_arena_bounds"):
+		caged.call(
+			"set_arena_bounds",
+			room_bounds.position.x,
+			room_bounds.end.x,
+			room_bounds.position.y,
+			room_bounds.end.y
+		)
+	two_room_caged_tank = caged
+
+
 func _spawn_two_room_healer_cage(room_two_bounds: Rect2) -> void:
 	_teardown_two_room_cage()
 	var center_y := room_two_bounds.position.y + (room_two_bounds.size.y * 0.5)
@@ -1226,6 +1868,10 @@ func _spawn_two_room_healer_cage(room_two_bounds: Rect2) -> void:
 		])
 		root.add_child(bar)
 
+	if _is_tank_caged_for_room(2):
+		_spawn_two_room_caged_tank(cage_position, room_two_bounds)
+		return
+
 	var caged := FRIENDLY_HEALER_SCENE.instantiate() as Node2D
 	if caged != null:
 		actors.add_child(caged)
@@ -1246,7 +1892,7 @@ func _spawn_two_room_healer_cage(room_two_bounds: Rect2) -> void:
 
 
 func _spawn_two_room_rat_cage(room_bounds: Rect2) -> void:
-	if two_room_rat_released:
+	if two_room_rat_released and not _is_tank_caged_for_room(3):
 		return
 	_teardown_two_room_cage()
 	var center_y := room_bounds.position.y + (room_bounds.size.y * 0.5)
@@ -1313,6 +1959,10 @@ func _spawn_two_room_rat_cage(room_bounds: Rect2) -> void:
 			Vector2(bar_x, half_h)
 		])
 		root.add_child(bar)
+
+	if _is_tank_caged_for_room(3):
+		_spawn_two_room_caged_tank(cage_position, room_bounds)
+		return
 
 	var caged := FRIENDLY_RATFOLK_SCENE.instantiate() as Node2D
 	if caged != null:
@@ -1435,6 +2085,9 @@ func _teardown_two_room_cage() -> void:
 	if is_instance_valid(two_room_caged_lizard):
 		two_room_caged_lizard.queue_free()
 	two_room_caged_lizard = null
+	if is_instance_valid(two_room_caged_tank):
+		two_room_caged_tank.queue_free()
+	two_room_caged_tank = null
 
 
 func _spawn_two_room_final_reward_chest(room_bounds: Rect2) -> void:
@@ -1622,11 +2275,29 @@ func _teardown_two_room_return_portal() -> void:
 func _on_two_room_cage_body_entered(body: Node) -> void:
 	if not two_room_test_active:
 		return
-	if body == null or not is_instance_valid(player) or body != player:
+	var interaction_actor := _get_controlled_adventure_interaction_actor()
+	if body == null or interaction_actor == null or not is_instance_valid(interaction_actor) or body != interaction_actor:
 		return
 	if _is_two_room_cage_locked():
 		var room_label := "Room %d" % clampi(two_room_test_room_index, 1, TWO_ROOM_TEST_TOTAL_ROOMS)
 		status_message.emit("%s cage locked - defeat enemies first (%d remaining)." % [room_label, maxi(1, alive_regular_enemies)], 1.1)
+		_update_objective()
+		return
+	if _is_tank_caged_for_room(two_room_test_room_index):
+		if not tank_caged_active:
+			return
+		tank_caged_active = false
+		adventure_tank_cage_room_index = 0
+		tank_party_enabled = true
+		_apply_tank_party_state()
+		if is_instance_valid(two_room_caged_tank):
+			two_room_caged_tank.queue_free()
+		two_room_caged_tank = null
+		if is_instance_valid(two_room_cage_root):
+			two_room_cage_root.queue_free()
+		two_room_cage_root = null
+		two_room_cage_area = null
+		status_message.emit("Tank rescued! Companion joined.", 1.2)
 		_update_objective()
 		return
 	if two_room_test_room_index == 2:
@@ -1636,6 +2307,7 @@ func _on_two_room_cage_body_entered(body: Node) -> void:
 		if is_instance_valid(two_room_caged_healer):
 			healer = two_room_caged_healer
 			two_room_caged_healer = null
+			_connect_companion_died(healer)
 			if healer.has_method("set_player") and is_instance_valid(player):
 				healer.call("set_player", player)
 			var room_two_bounds := _get_two_room_bounds(2)
@@ -1665,6 +2337,7 @@ func _on_two_room_cage_body_entered(body: Node) -> void:
 		if is_instance_valid(two_room_caged_rat):
 			ratfolk = two_room_caged_rat
 			two_room_caged_rat = null
+			_connect_companion_died(ratfolk)
 			if ratfolk.has_method("set_player") and is_instance_valid(player):
 				ratfolk.call("set_player", player)
 			var room_three_bounds := _get_two_room_bounds(3)
@@ -1695,6 +2368,7 @@ func _on_two_room_cage_body_entered(body: Node) -> void:
 	if is_instance_valid(two_room_caged_lizard):
 		lizardfolk = two_room_caged_lizard
 		two_room_caged_lizard = null
+		_connect_companion_died(lizardfolk)
 		if lizardfolk.has_method("set_player") and is_instance_valid(player):
 			lizardfolk.call("set_player", player)
 		var room_six_bounds := _get_two_room_bounds(6)
@@ -1721,6 +2395,8 @@ func _on_two_room_cage_body_entered(body: Node) -> void:
 func _is_two_room_cage_locked() -> bool:
 	if not two_room_test_active:
 		return false
+	if _is_tank_caged_for_room(two_room_test_room_index):
+		return alive_regular_enemies > 0
 	if two_room_test_room_index == 2 and not two_room_healer_released:
 		return alive_regular_enemies > 0
 	if two_room_test_room_index == 3 and not two_room_rat_released:
@@ -1733,14 +2409,14 @@ func _is_two_room_cage_locked() -> bool:
 func _try_auto_release_two_room_cage_if_ready() -> void:
 	if _is_two_room_cage_locked():
 		return
-	if not is_instance_valid(player):
-		return
 	if not is_instance_valid(two_room_cage_area):
 		return
-	for body in two_room_cage_area.get_overlapping_bodies():
-		if body == player:
-			_on_two_room_cage_body_entered(player)
-			return
+	var interaction_actor := _get_controlled_adventure_interaction_actor()
+	if interaction_actor == null or not is_instance_valid(interaction_actor):
+		return
+	if not _is_actor_inside_trigger_area(interaction_actor, two_room_cage_area):
+		return
+	_on_two_room_cage_body_entered(interaction_actor)
 
 
 func _on_two_room_chest_body_entered(body: Node) -> void:
@@ -1750,7 +2426,8 @@ func _on_two_room_chest_body_entered(body: Node) -> void:
 		return
 	if two_room_final_chest_opened:
 		return
-	if body == null or not is_instance_valid(player) or body != player:
+	var interaction_actor := _get_controlled_adventure_interaction_actor()
+	if body == null or interaction_actor == null or not is_instance_valid(interaction_actor) or body != interaction_actor:
 		return
 	if _is_two_room_chest_locked():
 		status_message.emit("Treasure chest locked - defeat enemies first (%d remaining)." % maxi(1, alive_regular_enemies), 1.1)
@@ -1787,14 +2464,14 @@ func _is_two_room_chest_locked() -> bool:
 func _try_auto_open_two_room_chest_if_ready() -> void:
 	if _is_two_room_chest_locked():
 		return
-	if not is_instance_valid(player):
-		return
 	if not is_instance_valid(two_room_chest_area):
 		return
-	for body in two_room_chest_area.get_overlapping_bodies():
-		if body == player:
-			_on_two_room_chest_body_entered(player)
-			return
+	var interaction_actor := _get_controlled_adventure_interaction_actor()
+	if interaction_actor == null or not is_instance_valid(interaction_actor):
+		return
+	if not _is_actor_inside_trigger_area(interaction_actor, two_room_chest_area):
+		return
+	_on_two_room_chest_body_entered(interaction_actor)
 
 
 func _is_controlled_actor_inside_trigger_area(area: Area2D) -> bool:
@@ -1973,11 +2650,11 @@ func _spawn_two_room_room_content(room_index: int, room_bounds: Rect2) -> void:
 			_spawn_two_room_first_room_cobra(room_bounds)
 		2:
 			_spawn_two_room_second_room_cobras(room_bounds)
-			if not two_room_healer_released:
+			if not two_room_healer_released or _is_tank_caged_for_room(2):
 				_spawn_two_room_healer_cage(room_bounds)
 		3:
 			_spawn_two_room_third_room_minotaur(room_bounds)
-			if not two_room_rat_released:
+			if not two_room_rat_released or _is_tank_caged_for_room(3):
 				_spawn_two_room_rat_cage(room_bounds)
 		4:
 			_spawn_two_room_fourth_room_minotaurs(room_bounds)
@@ -2063,6 +2740,12 @@ func _sync_two_room_rescued_companions(room_bounds: Rect2) -> void:
 		rescued_allies.append(ratfolk)
 	if is_instance_valid(lizardfolk):
 		rescued_allies.append(lizardfolk)
+	var controlled_actor := _get_controlled_adventure_interaction_actor() as Node2D
+	if controlled_actor != null and rescued_allies.has(controlled_actor):
+		rescued_allies.erase(controlled_actor)
+		rescued_allies.insert(0, controlled_actor)
+	var center_x := room_bounds.position.x + (room_bounds.size.x * 0.5)
+	var offset_sign := 1.0 if player.position.x <= center_x else -1.0
 	for ally in rescued_allies:
 		if ally == null or not is_instance_valid(ally):
 			continue
@@ -2070,8 +2753,12 @@ func _sync_two_room_rescued_companions(room_bounds: Rect2) -> void:
 			ally.call("set_player", player)
 		if ally.has_method("set_arena_bounds"):
 			ally.call("set_arena_bounds", local_min_x, local_max_x, local_min_y, local_max_y)
-		var offset_x := -spacing - (float(slot) * spacing * 0.55)
-		var offset_y := (float(slot % 2) * 2.0 - 1.0) * (spacing * 0.35)
+		var offset_x := 0.0
+		var offset_y := 0.0
+		if ally != controlled_actor:
+			offset_x = offset_sign * (spacing + (float(slot) * spacing * 0.55))
+			offset_y = (float(slot % 2) * 2.0 - 1.0) * (spacing * 0.35)
+			slot += 1
 		ally.position = Vector2(
 			clampf(player.position.x + offset_x, local_min_x + 10.0, local_max_x - 10.0),
 			clampf(player.position.y + offset_y, local_min_y + 10.0, local_max_y - 10.0)
@@ -2080,7 +2767,6 @@ func _sync_two_room_rescued_companions(room_bounds: Rect2) -> void:
 		ally.set_physics_process(true)
 		ally.set_process_input(false)
 		_apply_hitbox_debug_to_node(ally)
-		slot += 1
 
 
 func _spawn_two_room_third_room_minotaur(room_three_bounds: Rect2) -> void:
@@ -2762,29 +3448,39 @@ func _update_objective() -> void:
 				objective_changed.emit("Objective: Proceed through the door")
 			return
 		if two_room_test_room_index == 2:
+			var tank_caged_here := _is_tank_caged_for_room(2)
 			if alive_regular_enemies > 0:
-				if two_room_healer_released:
+				if tank_caged_here:
+					objective_changed.emit("Objective: Room 2 - Defeat cobras to unlock Tank cage (%d remaining)" % alive_regular_enemies)
+				elif two_room_healer_released:
 					objective_changed.emit("Objective: Room 2 - Defeat cobras (%d remaining)" % alive_regular_enemies)
 				else:
 					objective_changed.emit("Objective: Room 2 - Defeat cobras to unlock Healer cage (%d remaining)" % alive_regular_enemies)
 			elif two_room_test_transition_in_progress:
 				objective_changed.emit("Objective: Transitioning to room 3...")
 			else:
-				if two_room_healer_released:
+				if tank_caged_here:
+					objective_changed.emit("Objective: Room 2 clear - Rescue the Tank (cage unlocked)")
+				elif two_room_healer_released:
 					objective_changed.emit("Objective: Room 2 clear - Proceed through the door")
 				else:
 					objective_changed.emit("Objective: Room 2 clear - Rescue the Healer (cage unlocked)")
 			return
 		if two_room_test_room_index == 3:
+			var tank_caged_here := _is_tank_caged_for_room(3)
 			if alive_regular_enemies > 0:
-				if two_room_rat_released:
+				if tank_caged_here:
+					objective_changed.emit("Objective: Room 3 - Defeat the Minotaur to unlock Tank cage")
+				elif two_room_rat_released:
 					objective_changed.emit("Objective: Room 3 - Defeat the Minotaur")
 				else:
 					objective_changed.emit("Objective: Room 3 - Defeat the Minotaur to unlock Rat cage")
 			elif two_room_test_transition_in_progress:
 				objective_changed.emit("Objective: Transitioning to room 4...")
 			else:
-				if two_room_rat_released:
+				if tank_caged_here:
+					objective_changed.emit("Objective: Room 3 clear - Rescue the Tank (cage unlocked)")
+				elif two_room_rat_released:
 					objective_changed.emit("Objective: Room 3 clear - Proceed through the door")
 				else:
 					objective_changed.emit("Objective: Room 3 clear - Rescue Rat (cage unlocked)")
@@ -3049,6 +3745,7 @@ func recover_from_adventure_death() -> bool:
 	_ensure_rescued_adventure_companions_spawned()
 	_revive_active_adventure_companions()
 	_apply_control_mode_runtime()
+	party_defeat_emitted = false
 	two_room_force_next_transition_spawn_on_left = true
 	if two_room_test_room_index > 1:
 		_transition_two_room_to_room(1)
@@ -3147,16 +3844,32 @@ func _is_lizardfolk_control_available() -> bool:
 	return _is_party_member_enabled(PARTY_MEMBER_LIZARDFOLK, true)
 
 
+func _get_next_available_control_id() -> String:
+	if _is_healer_control_available():
+		return CONTROLLED_CHARACTER_HEALER
+	if _is_ratfolk_control_available():
+		return CONTROLLED_CHARACTER_RATFOLK
+	if _is_lizardfolk_control_available():
+		return CONTROLLED_CHARACTER_LIZARDFOLK
+	return CONTROLLED_CHARACTER_TANK
+
+
 func _apply_control_mode_runtime() -> void:
+	if controlled_character_id == CONTROLLED_CHARACTER_HEALER and not _is_healer_control_available():
+		controlled_character_id = _get_next_available_control_id()
+	if controlled_character_id == CONTROLLED_CHARACTER_RATFOLK and not _is_ratfolk_control_available():
+		controlled_character_id = _get_next_available_control_id()
+	if controlled_character_id == CONTROLLED_CHARACTER_LIZARDFOLK and not _is_lizardfolk_control_available():
+		controlled_character_id = _get_next_available_control_id()
+	if controlled_character_id == CONTROLLED_CHARACTER_TANK and not tank_party_enabled:
+		if tank_caged_active:
+			controlled_character_id = _get_next_available_control_id()
+		else:
+			tank_party_enabled = true
+			_enable_tank_actor()
 	var manual_healer_control := controlled_character_id == CONTROLLED_CHARACTER_HEALER and _is_healer_control_available()
 	var manual_ratfolk_control := controlled_character_id == CONTROLLED_CHARACTER_RATFOLK and _is_ratfolk_control_available()
 	var manual_lizardfolk_control := controlled_character_id == CONTROLLED_CHARACTER_LIZARDFOLK and _is_lizardfolk_control_available()
-	if not manual_healer_control and controlled_character_id == CONTROLLED_CHARACTER_HEALER:
-		controlled_character_id = CONTROLLED_CHARACTER_TANK
-	if not manual_ratfolk_control and controlled_character_id == CONTROLLED_CHARACTER_RATFOLK:
-		controlled_character_id = CONTROLLED_CHARACTER_TANK
-	if not manual_lizardfolk_control and controlled_character_id == CONTROLLED_CHARACTER_LIZARDFOLK:
-		controlled_character_id = CONTROLLED_CHARACTER_TANK
 	if is_instance_valid(player) and player.has_method("set_ai_control_enabled"):
 		player.call("set_ai_control_enabled", manual_healer_control or manual_ratfolk_control or manual_lizardfolk_control)
 	if is_instance_valid(healer) and healer.has_method("set_manual_control_enabled"):
@@ -3328,7 +4041,6 @@ func _sync_hitbox_debug_mode() -> void:
 	var tree := get_tree()
 	if tree == null:
 		return
-	tree.debug_collisions_hint = hitbox_debug_mode_enabled
 	tree.set_meta("debug_hitbox_mode_enabled", hitbox_debug_mode_enabled)
 	_apply_hitbox_debug_to_node(player)
 	_apply_hitbox_debug_to_node(healer)
@@ -3416,7 +4128,7 @@ func _clamp_global_position_to_arena(world_position: Vector2) -> Vector2:
 
 func _get_alive_party_nodes() -> Array[Node2D]:
 	var party_nodes: Array[Node2D] = []
-	if is_instance_valid(player):
+	if tank_party_enabled and is_instance_valid(player):
 		party_nodes.append(player)
 	if is_instance_valid(healer):
 		party_nodes.append(healer)
@@ -3571,6 +4283,69 @@ func _on_player_combat_status_message(text: String, duration: float = 0.9) -> vo
 
 
 func _on_player_died() -> void:
+	_try_emit_party_defeat()
+
+
+func _on_party_member_died(_member: Node) -> void:
+	_try_emit_party_defeat()
+
+
+func _connect_companion_died(companion: Node) -> void:
+	if companion == null or not is_instance_valid(companion):
+		return
+	if not companion.has_signal("died"):
+		return
+	var died_callable := Callable(self, "_on_party_member_died")
+	if companion.is_connected("died", died_callable):
+		return
+	companion.connect("died", died_callable)
+
+
+func _is_tank_alive() -> bool:
+	if not tank_party_enabled:
+		return false
+	if not is_instance_valid(player):
+		return false
+	return not player.is_dead
+
+
+func _is_healer_alive() -> bool:
+	if not is_instance_valid(healer):
+		return false
+	var healer_ref := healer as FriendlyHealer
+	if healer_ref == null:
+		return false
+	return not healer_ref.dead
+
+
+func _is_ratfolk_alive() -> bool:
+	if not is_instance_valid(ratfolk):
+		return false
+	var rat_ref := ratfolk as FriendlyRatfolk
+	if rat_ref == null:
+		return false
+	return not rat_ref.dead
+
+
+func _is_lizardfolk_alive() -> bool:
+	if not is_instance_valid(lizardfolk):
+		return false
+	var lizard_ref := lizardfolk as FriendlyRatfolk
+	if lizard_ref == null:
+		return false
+	return not lizard_ref.dead
+
+
+func _has_any_alive_team_member() -> bool:
+	return _is_tank_alive() or _is_healer_alive() or _is_ratfolk_alive() or _is_lizardfolk_alive()
+
+
+func _try_emit_party_defeat() -> void:
+	if party_defeat_emitted:
+		return
+	if _has_any_alive_team_member():
+		return
+	party_defeat_emitted = true
 	objective_changed.emit("Objective: Defeat")
 	player_died.emit()
 

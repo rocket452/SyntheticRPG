@@ -129,6 +129,7 @@ const BASIC_ATTACK_RANGE_SCALE: float = 0.6
 @export var outgoing_hit_stun_duration: float = 0.2
 @export var hit_effect_duration: float = 0.14
 @export var heal_flash_duration: float = 0.16
+@export var level_up_full_heal_enabled: bool = true
 @export var hit_knockback_speed: float = 250.0
 @export var hit_knockback_decay: float = 1300.0
 @export var blocked_knockback_move_scale: float = 0.6
@@ -1280,6 +1281,10 @@ func set_ai_control_enabled(enabled: bool) -> void:
 		return
 	ai_strafe_direction = 1.0
 	ai_strafe_swap_left = randf_range(0.35, maxf(0.4, ai_strafe_direction_swap_interval))
+
+
+func set_level_up_full_heal_enabled(enabled: bool) -> void:
+	level_up_full_heal_enabled = bool(enabled)
 
 
 func is_ai_control_enabled() -> bool:
@@ -4461,7 +4466,10 @@ func _level_up() -> void:
 	level += 1
 	xp_to_next_level = int(ceil(float(xp_to_next_level) * 1.35))
 	max_health += 14.0
-	current_health = max_health
+	if level_up_full_heal_enabled:
+		current_health = max_health
+	else:
+		current_health = minf(current_health, max_health)
 	basic_attack_damage += 1.4
 	ability_1_damage += 2.2
 	ability_2_damage += 2.6

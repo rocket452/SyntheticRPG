@@ -16,7 +16,8 @@ enum DPSAIState {
 
 enum AttackMode {
 	BASIC,
-	SHADOW_STRIKE
+	SHADOW_STRIKE,
+	BACKSTAB
 }
 
 const DPS_AI_STATE_NAMES: Dictionary = {
@@ -46,6 +47,7 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var preferred_attack_spacing_tolerance: float = 6.0
 @export var attack_range_indicator_duration: float = 0.14
 @export var attack_range_indicator_width: float = 2.6
+@export var basic_attack_hitbox_active_duration: float = 0.08
 @export var run_anim_start_speed: float = 28.0
 @export var run_anim_stop_speed: float = 16.0
 @export var run_anim_displacement_deadzone: float = 0.42
@@ -55,6 +57,14 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var attack_knockback_scale: float = 0.82
 @export var attack_hitstop_duration: float = 0.045
 @export var attack_impact_vfx_scale: float = 1.15
+@export var backstab_enabled: bool = true
+@export var backstab_damage_multiplier: float = 2.85
+@export var backstab_range: float = 34.0
+@export var backstab_arc_degrees: float = 135.0
+@export var backstab_cooldown: float = 5.0
+@export var backstab_windup_scale: float = 0.62
+@export var backstab_enemy_stun_multiplier: float = 1.45
+@export var backstab_hitstop_multiplier: float = 1.55
 @export var manual_roll_speed: float = 276.0
 @export var manual_roll_duration: float = 0.2
 @export var manual_roll_cooldown: float = 3.2
@@ -293,6 +303,7 @@ var shadow_clone_cast_left: float = 0.0
 var shadow_clone_cast_active: bool = false
 var shadow_clone_cooldown_left: float = 0.0
 var boss_mark_cooldown_left: float = 0.0
+var backstab_cooldown_left: float = 0.0
 var shadow_clone_lifetime_left: float = 0.0
 var shadow_clone_scatter_left: float = 0.0
 var shadow_clone_scatter_direction: Vector2 = Vector2.ZERO
@@ -380,6 +391,10 @@ var rng := RandomNumberGenerator.new()
 @onready var sprite: Sprite2D = $Sprite2D
 @onready var shadow_visual: Polygon2D = get_node_or_null("Shadow") as Polygon2D
 @onready var collision_shape: CollisionShape2D = get_node_or_null("CollisionShape2D") as CollisionShape2D
+@onready var basic_attack_hitbox: Area2D = get_node_or_null("BasicAttackHitbox") as Area2D
+@onready var basic_attack_hitbox_polygon: CollisionPolygon2D = get_node_or_null("BasicAttackHitbox/CollisionPolygon2D") as CollisionPolygon2D
+var basic_attack_hitbox_shape: ConvexPolygonShape2D = ConvexPolygonShape2D.new()
+var basic_attack_hitbox_active_left: float = 0.0
 
 
 func _ready() -> void:
@@ -396,6 +411,7 @@ func _ready() -> void:
 		rng.seed = 4242
 	else:
 		rng.randomize()
+	_configure_basic_attack_hitbox()
 	_configure_sprite()
 	if is_instance_valid(sprite):
 		sprite_base_scale = sprite.scale
@@ -501,8 +517,8 @@ func get_manual_control_cooldown_state() -> Dictionary:
 		"basic_unlocked": true,
 		"ability_1": shadow_fear_cooldown_left,
 		"ability_1_unlocked": shadow_fear_enabled and not is_shadow_clone,
-		"counter": boss_mark_cooldown_left,
-		"counter_unlocked": not is_shadow_clone,
+		"counter": backstab_cooldown_left,
+		"counter_unlocked": backstab_enabled and not is_shadow_clone,
 		"ability_2": 0.0,
 		"ability_2_unlocked": shadow_clone_enabled and shadow_clone_count > 0 and _can_pay_combo_points(shadow_strike_combo_cost) and not is_shadow_clone,
 		"roll": manual_roll_cooldown_left,
@@ -1024,6 +1040,7 @@ func _physics_process(delta: float) -> void:
 			_tick_combat_logic(delta)
 			velocity = _apply_player_like_movement_velocity(velocity)
 			velocity += knockback_velocity
+	_sync_basic_attack_hitbox_transform()
 
 	move_and_slide()
 	_apply_miniboss_soft_separation(delta)
@@ -1100,6 +1117,7 @@ func _tick_timers(delta: float) -> void:
 	if shadow_clone_cast_active:
 		shadow_clone_cast_left = maxf(0.0, shadow_clone_cast_left - delta)
 	shadow_clone_cooldown_left = maxf(0.0, shadow_clone_cooldown_left - delta)
+	backstab_cooldown_left = maxf(0.0, backstab_cooldown_left - delta)
 	shadow_surge_left = maxf(0.0, shadow_surge_left - delta)
 	boss_mark_cooldown_left = maxf(0.0, boss_mark_cooldown_left - delta)
 	shadow_clone_scatter_left = maxf(0.0, shadow_clone_scatter_left - delta)
@@ -1113,6 +1131,10 @@ func _tick_timers(delta: float) -> void:
 	hit_flash_left = maxf(0.0, hit_flash_left - delta)
 	heal_flash_left = maxf(0.0, heal_flash_left - delta)
 	breath_safe_indicator_left = maxf(0.0, breath_safe_indicator_left - delta)
+	if basic_attack_hitbox_active_left > 0.0:
+		basic_attack_hitbox_active_left = maxf(0.0, basic_attack_hitbox_active_left - delta)
+		if basic_attack_hitbox_active_left <= 0.0:
+			_deactivate_basic_attack_hitbox()
 	knockback_velocity = knockback_velocity.move_toward(Vector2.ZERO, maxf(0.0, hit_knockback_decay) * delta)
 	if is_instance_valid(sprite):
 		var base_modulate := shadow_clone_tint if is_shadow_clone else Color(1.0, 1.0, 1.0, 1.0)
@@ -1125,6 +1147,8 @@ func _tick_timers(delta: float) -> void:
 			base_modulate = base_modulate.lerp(Color(0.72, 1.0, 0.72, base_modulate.a), 0.78)
 		elif shadow_surge_left > 0.0:
 			base_modulate = base_modulate.lerp(Color(0.92, 0.62, 1.0, base_modulate.a), 0.64)
+		elif current_attack_mode == AttackMode.BACKSTAB and (attack_windup_left > 0.0 or attack_recovery_left > 0.0):
+			base_modulate = base_modulate.lerp(Color(1.0, 0.58, 0.5, base_modulate.a), 0.56)
 		elif current_attack_mode == AttackMode.SHADOW_STRIKE and (attack_windup_left > 0.0 or attack_recovery_left > 0.0):
 			base_modulate = base_modulate.lerp(Color(0.86, 0.58, 1.0, base_modulate.a), 0.58)
 		sprite.modulate = base_modulate
@@ -1140,6 +1164,8 @@ func _tick_timers(delta: float) -> void:
 			sprite.scale = sprite_base_scale * Vector2(1.16, 0.9)
 		elif manual_roll_left > 0.0:
 			sprite.scale = sprite_base_scale * Vector2(1.08, 0.92)
+		elif current_attack_mode == AttackMode.BACKSTAB and (attack_windup_left > 0.0 or attack_recovery_left > 0.0):
+			sprite.scale = sprite_base_scale * Vector2(1.08, 0.98)
 		elif current_attack_mode == AttackMode.SHADOW_STRIKE and (attack_windup_left > 0.0 or attack_recovery_left > 0.0):
 			sprite.scale = sprite_base_scale * Vector2(1.06, 1.02)
 		else:
@@ -1562,15 +1588,14 @@ func _handle_manual_control_actions() -> void:
 			_start_shadow_fear_cast(fear_target)
 			return
 	if Input.is_action_just_pressed("counter_strike"):
-		var mark_target := _find_manual_boss_target(maxf(32.0, boss_mark_range))
-		if mark_target != null:
-			var mark_distance := global_position.distance_to(mark_target.global_position)
-			if _can_apply_boss_mark(mark_target, mark_distance):
-				target_enemy = mark_target
-				_set_dps_ai_state(DPSAIState.MARKING, mark_target)
-				_apply_boss_mark(mark_target)
-				velocity = Vector2.ZERO
-				return
+		var backstab_target := _find_manual_backstab_target()
+		if _can_start_manual_backstab(backstab_target):
+			target_enemy = backstab_target
+			_set_dps_ai_state(DPSAIState.ATTACKING, backstab_target)
+			_update_facing(backstab_target.global_position - global_position)
+			_start_backstab("manual")
+			velocity = Vector2.ZERO
+			return
 	if Input.is_action_just_pressed("ability_2"):
 		var strike_target := _find_manual_shadow_strike_target()
 		if _can_start_manual_shadow_strike(strike_target):
@@ -1591,7 +1616,7 @@ func _handle_manual_control_actions() -> void:
 			var attack_target := _find_manual_basic_attack_target()
 			target_enemy = attack_target
 			if attack_target != null:
-				var to_enemy := attack_target.global_position - global_position
+				var to_enemy := _get_manual_attack_target_point(attack_target, global_position) - global_position
 				_set_dps_ai_state(DPSAIState.ATTACKING, attack_target)
 				_update_facing(to_enemy)
 			_start_attack_windup("manual")
@@ -1600,7 +1625,7 @@ func _handle_manual_control_actions() -> void:
 
 func _find_manual_basic_attack_target() -> EnemyBase:
 	if target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead and not _is_enemy_shadow_feared(target_enemy):
-		var current_delta := target_enemy.global_position - global_position
+		var current_delta := _get_manual_attack_target_point(target_enemy, global_position) - global_position
 		if _is_attack_connect_window(current_delta, target_enemy):
 			return target_enemy
 	var nearest_enemy: EnemyBase = null
@@ -1611,7 +1636,7 @@ func _find_manual_basic_attack_target() -> EnemyBase:
 			continue
 		if _is_enemy_shadow_feared(enemy):
 			continue
-		var to_enemy := enemy.global_position - global_position
+		var to_enemy := _get_manual_attack_target_point(enemy, global_position) - global_position
 		if not _is_attack_connect_window(to_enemy, enemy):
 			continue
 		var distance_sq := to_enemy.length_squared()
@@ -1623,6 +1648,64 @@ func _find_manual_basic_attack_target() -> EnemyBase:
 
 func _find_manual_shadow_strike_target() -> EnemyBase:
 	return _find_manual_basic_attack_target()
+
+
+func _is_backstab_target_in_range(enemy: EnemyBase) -> bool:
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+		return false
+	var target_point := _get_enemy_attack_target_point(enemy, global_position)
+	var target_radius := _get_manual_attack_target_radius(enemy)
+	var to_enemy := target_point - global_position
+	var effective_depth_tolerance := maxf(8.0, attack_depth_tolerance * 0.95) + target_radius
+	if absf(to_enemy.y) > effective_depth_tolerance:
+		return false
+	var effective_range := _get_backstab_hit_radius() + target_radius
+	return to_enemy.length_squared() <= effective_range * effective_range
+
+
+func _is_backstab_target_usable(enemy: EnemyBase) -> bool:
+	if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+		return false
+	if _is_enemy_shadow_feared(enemy):
+		return false
+	if not _is_backstab_target_in_range(enemy):
+		return false
+	return _is_position_behind_enemy(enemy, global_position)
+
+
+func _find_manual_backstab_target() -> EnemyBase:
+	if _is_backstab_target_usable(target_enemy):
+		return target_enemy
+	var nearest_enemy: EnemyBase = null
+	var nearest_distance_sq := INF
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if not _is_backstab_target_usable(enemy):
+			continue
+		var distance_sq := enemy.global_position.distance_squared_to(global_position)
+		if nearest_enemy == null or distance_sq < nearest_distance_sq:
+			nearest_enemy = enemy
+			nearest_distance_sq = distance_sq
+	return nearest_enemy
+
+
+func _find_closest_shadow_surge_enemy() -> EnemyBase:
+	var nearest_enemy: EnemyBase = null
+	var nearest_distance_sq := INF
+	var nearest_enemy_id := INF
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if _is_enemy_shadow_feared(enemy):
+			continue
+		var distance_sq := enemy.global_position.distance_squared_to(global_position)
+		var enemy_id := enemy.get_instance_id()
+		if nearest_enemy == null or distance_sq < nearest_distance_sq or (is_equal_approx(distance_sq, nearest_distance_sq) and enemy_id < nearest_enemy_id):
+			nearest_enemy = enemy
+			nearest_distance_sq = distance_sq
+			nearest_enemy_id = enemy_id
+	return nearest_enemy
 
 
 func _find_manual_shadow_fear_target() -> EnemyBase:
@@ -1645,6 +1728,24 @@ func _can_start_manual_shadow_fear_cast(enemy: EnemyBase) -> bool:
 	if shadow_clone_cast_active or backstab_dash_left > 0.0:
 		return false
 	return true
+
+
+func _can_start_manual_backstab(enemy: EnemyBase = null) -> bool:
+	if is_shadow_clone or not backstab_enabled:
+		return false
+	if backstab_cooldown_left > 0.0:
+		return false
+	if attack_windup_left > 0.0 or attack_recovery_left > 0.0:
+		return false
+	if stun_left > 0.0:
+		return false
+	if shadow_fear_cast_active or shadow_clone_cast_active:
+		return false
+	if shadow_surge_left > 0.0 or manual_roll_left > 0.0:
+		return false
+	if backstab_dash_left > 0.0:
+		return false
+	return _is_backstab_target_usable(enemy)
 
 
 func _can_start_manual_shadow_strike(enemy: EnemyBase = null) -> bool:
@@ -1752,6 +1853,10 @@ func _start_shadow_strike(reason: String = "manual") -> void:
 	_start_attack_windup("shadow_strike_%s" % reason, shadow_strike_windup_scale, AttackMode.SHADOW_STRIKE)
 
 
+func _start_backstab(reason: String = "manual") -> void:
+	_start_attack_windup("backstab_%s" % reason, backstab_windup_scale, AttackMode.BACKSTAB)
+
+
 func _start_shadow_surge(reason: String = "manual", direction_override: Vector2 = Vector2.ZERO) -> bool:
 	if not _can_pay_combo_points(shadow_surge_combo_cost):
 		return false
@@ -1770,6 +1875,16 @@ func _start_shadow_surge(reason: String = "manual", direction_override: Vector2 
 func trigger_shadow_surge_as_clone(direction_override: Vector2 = Vector2.ZERO) -> void:
 	if not is_shadow_clone or dead:
 		return
+	var closest_enemy := _find_closest_shadow_surge_enemy()
+	if closest_enemy != null:
+		target_enemy = closest_enemy
+		_set_dps_ai_state(DPSAIState.DASHING, closest_enemy)
+		var pass_through_point := _get_shadow_surge_pass_through_point(closest_enemy, direction_override)
+		var surge_direction_to_target := pass_through_point - global_position
+		if surge_direction_to_target.length_squared() > 0.0001:
+			var duration_override := _get_shadow_surge_duration_for_target_point(pass_through_point)
+			_begin_shadow_surge(surge_direction_to_target.normalized(), true, "clone", duration_override)
+			return
 	var surge_direction := _resolve_shadow_surge_direction(direction_override)
 	if surge_direction.length_squared() <= 0.0001:
 		return
@@ -1789,12 +1904,36 @@ func _resolve_shadow_surge_direction(direction_override: Vector2 = Vector2.ZERO)
 	return surge_direction.normalized()
 
 
-func _begin_shadow_surge(direction: Vector2, expire_on_finish: bool = false, reason: String = "manual") -> void:
+func _get_shadow_surge_pass_through_point(enemy: EnemyBase, fallback_direction: Vector2 = Vector2.ZERO) -> Vector2:
+	if enemy == null or not is_instance_valid(enemy):
+		return global_position
+	var dash_direction := enemy.global_position - global_position
+	if dash_direction.length_squared() <= 0.0001:
+		dash_direction = fallback_direction
+	if dash_direction.length_squared() <= 0.0001:
+		dash_direction = Vector2.LEFT if facing_left else Vector2.RIGHT
+	if dash_direction.length_squared() <= 0.0001:
+		return enemy.global_position
+	var pass_through_distance := maxf(24.0, shadow_surge_hit_radius * 2.4)
+	return _clamp_world_position_to_bounds(enemy.global_position + (dash_direction.normalized() * pass_through_distance))
+
+
+func _get_shadow_surge_duration_for_target_point(target_point: Vector2) -> float:
+	var base_duration := maxf(0.05, shadow_surge_duration)
+	var dash_speed := maxf(64.0, shadow_surge_speed)
+	var distance_to_target := global_position.distance_to(target_point)
+	if distance_to_target <= 0.0001:
+		return base_duration
+	var max_duration := maxf(base_duration, shadow_surge_duration * 2.35)
+	return clampf(distance_to_target / dash_speed, base_duration, max_duration)
+
+
+func _begin_shadow_surge(direction: Vector2, expire_on_finish: bool = false, reason: String = "manual", duration_override: float = -1.0) -> void:
 	_interrupt_attack()
 	shadow_clone_scatter_left = 0.0
 	shadow_clone_scatter_direction = Vector2.ZERO
 	shadow_surge_direction = direction.normalized()
-	shadow_surge_left = maxf(0.05, shadow_surge_duration)
+	shadow_surge_left = maxf(0.05, duration_override if duration_override > 0.0 else shadow_surge_duration)
 	shadow_surge_hit_enemy_ids.clear()
 	shadow_surge_clone_expire_on_finish = expire_on_finish
 	velocity = shadow_surge_direction * maxf(64.0, shadow_surge_speed)
@@ -2772,8 +2911,12 @@ func _is_attack_connect_window(to_enemy: Vector2, enemy: EnemyBase = null) -> bo
 	var connect_delta := to_enemy
 	var target_radius := 0.0
 	if enemy != null and is_instance_valid(enemy) and not enemy.dead:
-		connect_delta = _get_enemy_attack_target_point(enemy, global_position) - global_position
-		target_radius = _get_enemy_attack_collision_radius(enemy)
+		if manual_control_enabled:
+			connect_delta = _get_manual_attack_target_point(enemy, global_position) - global_position
+			target_radius = _get_manual_attack_target_radius(enemy)
+		else:
+			connect_delta = _get_enemy_attack_target_point(enemy, global_position) - global_position
+			target_radius = _get_enemy_attack_collision_radius(enemy)
 	var effective_depth_tolerance := (attack_depth_tolerance * 1.35) + target_radius
 	if absf(connect_delta.y) > effective_depth_tolerance:
 		return false
@@ -2784,6 +2927,10 @@ func _is_attack_connect_window(to_enemy: Vector2, enemy: EnemyBase = null) -> bo
 func _start_attack_windup(reason: String, windup_scale: float = 1.0, attack_mode: AttackMode = AttackMode.BASIC) -> void:
 	current_attack_mode = attack_mode
 	attack_windup_left = maxf(0.01, attack_windup * maxf(0.1, windup_scale))
+	if attack_mode == AttackMode.BASIC:
+		_activate_basic_attack_hitbox()
+	else:
+		_deactivate_basic_attack_hitbox()
 	_spawn_attack_range_indicator(reason)
 
 
@@ -2862,22 +3009,27 @@ func _clamp_world_position_to_bounds(world_position: Vector2) -> Vector2:
 
 
 func _perform_attack() -> void:
+	var attempted_backstab := current_attack_mode == AttackMode.BACKSTAB
+	if attempted_backstab:
+		attack_cooldown_left = maxf(0.01, backstab_cooldown)
+		_perform_backstab_attack()
+		return
 	attack_cooldown_left = maxf(0.01, attack_cooldown)
 	var attempted_shadow_strike := current_attack_mode == AttackMode.SHADOW_STRIKE
 	var shadow_strike_ready := attempted_shadow_strike and _spend_combo_points(shadow_strike_combo_cost)
 	var facing_direction := Vector2.LEFT if facing_left else Vector2.RIGHT
-	if target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead:
+	if not manual_control_enabled and target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead:
 		var to_target := target_enemy.global_position - global_position
 		if to_target.length_squared() > 0.0001:
 			facing_direction = to_target.normalized()
 	if shadow_strike_ready:
 		_spawn_shadow_strike_swing_effect(facing_direction)
-		_spawn_shadow_clones()
 	var hit_any := false
-	var arc_threshold := cos(deg_to_rad(attack_arc_degrees * 0.5))
-	var attack_radius := _get_basic_attack_hit_radius()
-	var attack_radius_sq := attack_radius * attack_radius
-	var effective_depth_tolerance := attack_depth_tolerance * 1.35
+	var basic_hit_target_ids: Dictionary = {}
+	if not shadow_strike_ready:
+		for hit_target in _query_basic_attack_hitbox_targets():
+			if hit_target != null and is_instance_valid(hit_target) and not hit_target.dead:
+				basic_hit_target_ids[hit_target.get_instance_id()] = true
 	var hit_damage := attack_damage
 	var impact_color := Color(1.0, 0.8, 0.42, 0.95)
 	if shadow_strike_ready:
@@ -2889,23 +3041,36 @@ func _perform_attack() -> void:
 			continue
 		if _is_enemy_shadow_feared(enemy):
 			continue
-		var target_point := _get_enemy_attack_target_point(enemy, global_position)
-		var target_radius := _get_enemy_attack_collision_radius(enemy)
-		var to_enemy := target_point - global_position
-		if absf(to_enemy.y) > effective_depth_tolerance + target_radius:
-			continue
-		var effective_attack_radius := attack_radius + target_radius
-		if to_enemy.length_squared() > effective_attack_radius * effective_attack_radius:
-			continue
-		var direction_to_enemy := to_enemy.normalized() if to_enemy.length_squared() > 0.0001 else facing_direction
-		if to_enemy.length_squared() > 0.0001:
-			var distance_to_target := to_enemy.length()
-			var radius_arc_allowance := asin(clampf(target_radius / maxf(1.0, distance_to_target), 0.0, 0.99))
-			var alignment_threshold := cos(deg_to_rad(attack_arc_degrees * 0.5) + radius_arc_allowance + deg_to_rad(3.0))
-			if facing_direction.dot(direction_to_enemy) < alignment_threshold:
+		if not shadow_strike_ready:
+			if not basic_hit_target_ids.has(enemy.get_instance_id()):
 				continue
-		elif facing_direction.dot(direction_to_enemy) < arc_threshold:
-			continue
+		else:
+			var target_point := enemy.global_position
+			var target_radius := 0.0
+			if manual_control_enabled:
+				target_point = _get_manual_attack_target_point(enemy, global_position)
+				target_radius = _get_manual_attack_target_radius(enemy)
+			else:
+				target_point = _get_enemy_attack_target_point(enemy, global_position)
+				target_radius = _get_enemy_attack_collision_radius(enemy)
+			var to_enemy := target_point - global_position
+			var effective_depth_tolerance := attack_depth_tolerance * 1.35
+			if absf(to_enemy.y) > effective_depth_tolerance + target_radius:
+				continue
+			var attack_radius := _get_basic_attack_hit_radius()
+			var effective_attack_radius := attack_radius + target_radius
+			if to_enemy.length_squared() > effective_attack_radius * effective_attack_radius:
+				continue
+			var arc_threshold := cos(deg_to_rad(attack_arc_degrees * 0.5))
+			var direction_to_enemy := to_enemy.normalized() if to_enemy.length_squared() > 0.0001 else facing_direction
+			if to_enemy.length_squared() > 0.0001:
+				var distance_to_target := to_enemy.length()
+				var radius_arc_allowance := asin(clampf(target_radius / maxf(1.0, distance_to_target), 0.0, 0.99))
+				var alignment_threshold := cos(deg_to_rad(attack_arc_degrees * 0.5) + radius_arc_allowance + deg_to_rad(3.0))
+				if facing_direction.dot(direction_to_enemy) < alignment_threshold:
+					continue
+			elif facing_direction.dot(direction_to_enemy) < arc_threshold:
+				continue
 		if not enemy.has_method("receive_hit"):
 			continue
 		var enemy_hit_damage := hit_damage
@@ -2927,11 +3092,41 @@ func _perform_attack() -> void:
 		_add_combo_points(1)
 
 	if hit_any:
+		if shadow_strike_ready:
+			_spawn_shadow_clones()
 		var swing_scale := maxf(0.6, attack_impact_vfx_scale)
 		var swing_color := Color(0.94, 0.78, 0.36, 0.95)
 		if shadow_strike_ready:
 			swing_color = Color(0.9, 0.54, 1.0, 0.95)
 		_spawn_hit_effect(global_position + (facing_direction * 14.0) + Vector2(0.0, -10.0), swing_color, 8.0 * swing_scale)
+
+	if not shadow_strike_ready:
+		basic_attack_hitbox_active_left = maxf(basic_attack_hitbox_active_left, maxf(0.01, basic_attack_hitbox_active_duration))
+
+
+func _perform_backstab_attack() -> void:
+	var backstab_target := target_enemy
+	if not _is_backstab_target_usable(backstab_target):
+		backstab_target = _find_manual_backstab_target()
+	if backstab_target == null:
+		return
+	var facing_direction := backstab_target.global_position - global_position
+	if facing_direction.length_squared() <= 0.0001:
+		facing_direction = Vector2.LEFT if facing_left else Vector2.RIGHT
+	_update_facing(facing_direction)
+	_spawn_shadow_strike_swing_effect(facing_direction)
+	if not backstab_target.has_method("receive_hit"):
+		return
+	var backstab_damage := attack_damage * maxf(0.1, backstab_damage_multiplier)
+	var enemy_stun := maxf(outgoing_hit_stun_duration, outgoing_hit_stun_duration * maxf(1.0, backstab_enemy_stun_multiplier))
+	var landed := bool(backstab_target.call("receive_hit", backstab_damage, global_position, enemy_stun, true, attack_knockback_scale, self))
+	if not landed:
+		return
+	if backstab_target.has_method("apply_hitstop"):
+		backstab_target.apply_hitstop(maxf(0.0, attack_hitstop_duration * maxf(1.0, backstab_hitstop_multiplier)))
+	var impact_scale := maxf(0.8, attack_impact_vfx_scale * 1.22)
+	_spawn_hit_effect(backstab_target.global_position + Vector2(0.0, -12.0), Color(1.0, 0.52, 0.44, 0.96), 8.4 * impact_scale)
+	_spawn_hit_effect(global_position + (facing_direction.normalized() * 14.0) + Vector2(0.0, -10.0), Color(1.0, 0.76, 0.54, 0.94), 9.2 * impact_scale)
 
 
 func _apply_shadow_surge_hits(segment_start: Vector2, segment_end: Vector2) -> void:
@@ -3028,6 +3223,7 @@ func revive_at_full_health() -> void:
 	shadow_fear_cast_target = null
 	shadow_clone_cast_active = false
 	shadow_clone_cast_left = 0.0
+	backstab_cooldown_left = 0.0
 	shadow_surge_left = 0.0
 	shadow_surge_direction = Vector2.ZERO
 	shadow_surge_hit_enemy_ids.clear()
@@ -3039,6 +3235,7 @@ func revive_at_full_health() -> void:
 	backstab_dash_left = 0.0
 	backstab_dash_target_enemy = null
 	target_enemy = null
+	_deactivate_basic_attack_hitbox()
 	velocity = Vector2.ZERO
 	knockback_velocity = Vector2.ZERO
 	visual_motion_velocity = Vector2.ZERO
@@ -3087,6 +3284,7 @@ func _interrupt_attack() -> void:
 	attack_windup_left = 0.0
 	attack_recovery_left = 0.0
 	current_attack_mode = AttackMode.BASIC
+	_deactivate_basic_attack_hitbox()
 	shadow_fear_cast_active = false
 	shadow_fear_cast_left = 0.0
 	shadow_fear_cast_target = null
@@ -3115,6 +3313,7 @@ func _die() -> void:
 	attack_windup_left = 0.0
 	attack_recovery_left = 0.0
 	current_attack_mode = AttackMode.BASIC
+	_deactivate_basic_attack_hitbox()
 	shadow_surge_left = 0.0
 	shadow_surge_direction = Vector2.ZERO
 	shadow_surge_hit_enemy_ids.clear()
@@ -3698,16 +3897,20 @@ func _spawn_attack_range_indicator(reason: String = "") -> void:
 		return
 
 	var facing_direction := Vector2.LEFT if facing_left else Vector2.RIGHT
-	if target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead:
+	var manual_locked_facing := manual_control_enabled and reason.find("manual") != -1
+	if not manual_locked_facing and target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead:
 		var to_target := target_enemy.global_position - global_position
 		if to_target.length_squared() > 0.0001:
 			facing_direction = to_target.normalized()
 	var telegraph_target := _get_attack_indicator_target()
-	var target_radius := _get_enemy_attack_collision_radius(telegraph_target) if telegraph_target != null else 0.0
-	var attack_radius := _get_basic_attack_hit_radius() + target_radius
-	var telegraph_arc_degrees := clampf(attack_arc_degrees, 10.0, 179.0)
-	var effective_depth_tolerance := maxf(4.0, attack_depth_tolerance * 1.35) + target_radius
-	if telegraph_target != null:
+	var show_backstab_telegraph := reason.begins_with("backstab") or current_attack_mode == AttackMode.BACKSTAB
+	var target_radius := 0.0
+	if telegraph_target != null and not manual_locked_facing:
+		target_radius = _get_enemy_attack_collision_radius(telegraph_target)
+	var attack_radius := (_get_backstab_hit_radius() if show_backstab_telegraph else _get_basic_attack_hit_radius()) + target_radius
+	var telegraph_arc_degrees := clampf(backstab_arc_degrees if show_backstab_telegraph else attack_arc_degrees, 10.0, 179.0)
+	var effective_depth_tolerance := maxf(4.0, attack_depth_tolerance * (0.95 if show_backstab_telegraph else 1.35)) + target_radius
+	if telegraph_target != null and not manual_locked_facing:
 		var target_point := _get_enemy_attack_target_point(telegraph_target, global_position)
 		var distance_to_target := target_point.distance_to(global_position)
 		if target_radius > 0.01 and distance_to_target > 0.0001:
@@ -3726,7 +3929,18 @@ func _spawn_attack_range_indicator(reason: String = "") -> void:
 	var arc_color := Color(1.0, 0.82, 0.42, 0.84)
 	var guide_color := Color(1.0, 0.92, 0.58, 0.62)
 	var duration := maxf(0.06, attack_range_indicator_duration)
-	if show_shadow_strike_telegraph:
+	if show_backstab_telegraph:
+		arc_color = Color(1.0, 0.52, 0.42, 0.96)
+		guide_color = Color(1.0, 0.78, 0.62, 0.8)
+		duration = maxf(duration, attack_range_indicator_duration * 1.15)
+		var backstab_wedge := Polygon2D.new()
+		backstab_wedge.color = Color(0.86, 0.22, 0.16, 0.18)
+		var backstab_wedge_points := PackedVector2Array([Vector2.ZERO])
+		for point in _build_attack_hitbox_arc_points(attack_radius, telegraph_arc_degrees, effective_depth_tolerance, 15):
+			backstab_wedge_points.append(point)
+		backstab_wedge.polygon = backstab_wedge_points
+		indicator.add_child(backstab_wedge)
+	elif show_shadow_strike_telegraph:
 		arc_color = Color(0.9, 0.52, 1.0, 0.96)
 		guide_color = Color(0.96, 0.78, 1.0, 0.82)
 		duration = maxf(duration, attack_range_indicator_duration * 1.3)
@@ -3751,7 +3965,7 @@ func _spawn_attack_range_indicator(reason: String = "") -> void:
 
 	var arc := Line2D.new()
 	arc.default_color = arc_color
-	arc.width = maxf(1.4, attack_range_indicator_width * (1.16 if show_shadow_strike_telegraph else (1.12 if show_manual_range_telegraph else 1.0)))
+	arc.width = maxf(1.4, attack_range_indicator_width * (1.18 if show_backstab_telegraph else (1.16 if show_shadow_strike_telegraph else (1.12 if show_manual_range_telegraph else 1.0))))
 	arc.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	arc.end_cap_mode = Line2D.LINE_CAP_ROUND
 	arc.points = _build_attack_hitbox_arc_points(attack_radius, telegraph_arc_degrees, effective_depth_tolerance, 13)
@@ -3759,7 +3973,7 @@ func _spawn_attack_range_indicator(reason: String = "") -> void:
 
 	var guide := Line2D.new()
 	guide.default_color = guide_color
-	guide.width = maxf(1.0, attack_range_indicator_width * (0.7 if show_shadow_strike_telegraph else (0.62 if show_manual_range_telegraph else 0.45)))
+	guide.width = maxf(1.0, attack_range_indicator_width * (0.74 if show_backstab_telegraph else (0.7 if show_shadow_strike_telegraph else (0.62 if show_manual_range_telegraph else 0.45))))
 	guide.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	guide.end_cap_mode = Line2D.LINE_CAP_ROUND
 	guide.points = PackedVector2Array([Vector2.ZERO, Vector2(attack_radius, 0.0)])
@@ -3774,9 +3988,17 @@ func _spawn_attack_range_indicator(reason: String = "") -> void:
 
 
 func _get_attack_indicator_target() -> EnemyBase:
+	if current_attack_mode == AttackMode.BACKSTAB:
+		if _is_backstab_target_usable(target_enemy):
+			return target_enemy
+		return _find_manual_backstab_target()
 	if target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead and not _is_enemy_shadow_feared(target_enemy):
 		return target_enemy
 	return _find_manual_basic_attack_target()
+
+
+func _get_backstab_hit_radius() -> float:
+	return maxf(12.0, backstab_range)
 
 
 func _get_basic_attack_hit_radius() -> float:
@@ -3804,6 +4026,23 @@ func _get_enemy_attack_target_point(enemy: EnemyBase, attack_origin: Vector2) ->
 	return target_point - (to_enemy / distance) * clamped_inset
 
 
+func _get_manual_attack_target_point(enemy: EnemyBase, attack_origin: Vector2) -> Vector2:
+	if enemy == null or not is_instance_valid(enemy):
+		return attack_origin
+	var target_point := enemy.global_position
+	var collision_shape := enemy.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if collision_shape == null:
+		return target_point
+	target_point = collision_shape.global_position
+	var hit_radius := _get_manual_attack_target_radius(enemy)
+	var to_enemy := target_point - attack_origin
+	var distance := to_enemy.length()
+	if distance <= 0.0001 or hit_radius <= 0.01:
+		return target_point
+	var clamped_inset := minf(hit_radius, distance * 0.8)
+	return target_point - (to_enemy / distance) * clamped_inset
+
+
 func _get_enemy_attack_collision_radius(enemy: EnemyBase) -> float:
 	if enemy == null or not is_instance_valid(enemy):
 		return 0.0
@@ -3815,6 +4054,16 @@ func _get_enemy_attack_collision_radius(enemy: EnemyBase) -> float:
 		return 0.0
 	var radius_scale := maxf(absf(collision_shape.global_scale.x), absf(collision_shape.global_scale.y))
 	return maxf(0.0, circle.radius * maxf(0.01, radius_scale))
+
+
+func _get_manual_attack_target_radius(enemy: EnemyBase) -> float:
+	if enemy == null or not is_instance_valid(enemy):
+		return 0.0
+	var base_radius := _get_enemy_attack_collision_radius(enemy)
+	if base_radius <= 0.0:
+		return 0.0
+	var cap := maxf(6.0, attack_range * 0.25)
+	return minf(base_radius, cap)
 
 
 func _spawn_shadow_strike_swing_effect(facing_direction: Vector2) -> void:
@@ -4063,6 +4312,89 @@ func _build_attack_hitbox_arc_points(radius: float, arc_degrees: float, depth_to
 	return points
 
 
+func _build_basic_attack_hitbox_polygon() -> PackedVector2Array:
+	var polygon := PackedVector2Array([Vector2.ZERO])
+	for point in _build_attack_hitbox_arc_points(_get_basic_attack_hit_radius(), attack_arc_degrees, attack_depth_tolerance * 1.35, 19):
+		polygon.append(point)
+	return polygon
+
+
+func _configure_basic_attack_hitbox() -> void:
+	if not is_instance_valid(basic_attack_hitbox_polygon):
+		return
+	_deactivate_basic_attack_hitbox()
+
+
+func _activate_basic_attack_hitbox() -> void:
+	if not is_instance_valid(basic_attack_hitbox_polygon):
+		return
+	var polygon := _build_basic_attack_hitbox_polygon()
+	if polygon.size() < 3:
+		_deactivate_basic_attack_hitbox()
+		return
+	basic_attack_hitbox_shape.points = polygon
+	basic_attack_hitbox_polygon.polygon = polygon
+	basic_attack_hitbox_polygon.disabled = false
+	basic_attack_hitbox_active_left = attack_windup_left + maxf(0.01, basic_attack_hitbox_active_duration)
+	_sync_basic_attack_hitbox_transform()
+
+
+func _sync_basic_attack_hitbox_transform() -> void:
+	if not is_instance_valid(basic_attack_hitbox) or not is_instance_valid(basic_attack_hitbox_polygon):
+		return
+	if basic_attack_hitbox_polygon.disabled:
+		return
+	basic_attack_hitbox.position = Vector2.ZERO
+	basic_attack_hitbox.rotation = PI if facing_left else 0.0
+
+
+func _deactivate_basic_attack_hitbox() -> void:
+	basic_attack_hitbox_active_left = 0.0
+	if not is_instance_valid(basic_attack_hitbox_polygon):
+		return
+	basic_attack_hitbox_polygon.disabled = true
+
+
+func _query_basic_attack_hitbox_targets() -> Array[EnemyBase]:
+	var hit_targets: Array[EnemyBase] = []
+	if not is_instance_valid(basic_attack_hitbox):
+		return hit_targets
+	if basic_attack_hitbox_shape.points.size() < 3:
+		return hit_targets
+	_sync_basic_attack_hitbox_transform()
+	var world_2d := get_world_2d()
+	if world_2d == null:
+		return hit_targets
+	var space_state := world_2d.direct_space_state
+	if space_state == null:
+		return hit_targets
+	var query := PhysicsShapeQueryParameters2D.new()
+	query.shape = basic_attack_hitbox_shape
+	query.transform = basic_attack_hitbox.global_transform
+	query.collision_mask = 1
+	query.collide_with_bodies = true
+	query.collide_with_areas = false
+	query.exclude = [get_rid()]
+	var results := space_state.intersect_shape(query, 16)
+	var seen_enemy_ids: Dictionary = {}
+	for result_variant in results:
+		if not (result_variant is Dictionary):
+			continue
+		var result := result_variant as Dictionary
+		var collider := result.get("collider") as Node
+		var enemy := collider as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if _is_enemy_shadow_feared(enemy):
+			continue
+		var enemy_id := enemy.get_instance_id()
+		if seen_enemy_ids.has(enemy_id):
+			continue
+		seen_enemy_ids[enemy_id] = true
+		hit_targets.append(enemy)
+	return hit_targets
+
+
 func _distance_sq_to_segment(point: Vector2, segment_start: Vector2, segment_end: Vector2) -> float:
 	var segment := segment_end - segment_start
 	var segment_length_sq := segment.length_squared()
@@ -4102,12 +4434,11 @@ func _draw_rat_hurtbox_debug() -> void:
 
 
 func _draw_rat_attack_hitbox_debug() -> void:
-	var facing_direction := Vector2.LEFT if facing_left else Vector2.RIGHT
-	var attack_radius := maxf(8.0, attack_range * 1.12)
-	var points := PackedVector2Array([Vector2.ZERO])
-	var arc_points := _build_attack_arc_points(attack_radius, attack_arc_degrees, 28)
-	for point in arc_points:
-		points.append(point.rotated(facing_direction.angle()))
+	var points := PackedVector2Array()
+	var local_polygon := _build_basic_attack_hitbox_polygon()
+	var rotation := PI if facing_left else 0.0
+	for point in local_polygon:
+		points.append(point.rotated(rotation))
 	draw_colored_polygon(points, Color(1.0, 0.78, 0.3, 0.12))
 	draw_polyline(points, Color(1.0, 0.88, 0.5, 0.92), 1.8, true)
 

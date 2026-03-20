@@ -91,6 +91,7 @@ const THREAT_EPSILON: float = 0.001
 @export var cobra_close_attack_knockback_scale: float = 0.88
 @export var cobra_close_attack_recovery: float = 0.2
 @export var cobra_close_attack_cooldown: float = 0.82
+@export var cobra_close_attack_enabled: bool = true
 @export var cobra_attack_min_range: float = 62.0
 @export var cobra_attack_max_range: float = 122.0
 @export var cobra_approach_speed_scale: float = 0.62
@@ -241,7 +242,7 @@ const THREAT_EPSILON: float = 0.001
 @export var cacodemon_basic_attack_hold_frame: int = 1
 @export var cacodemon_basic_attack_bite_duration: float = 0.18
 @export var cacodemon_basic_attack_bite_hit_delay: float = 0.08
-@export var cacodemon_basic_attack_timing_multiplier: float = 1.4
+@export var cacodemon_basic_attack_timing_multiplier: float = 2.1
 @export var cacodemon_basic_attack_lunge_speed_scale: float = 0.92
 @export var cacodemon_player_bite_priority_range: float = 120.0
 @export var cacodemon_bite_telegraph_width: float = 6.0
@@ -1358,11 +1359,17 @@ func _physics_process(delta: float) -> void:
 	attack_cooldown_left = maxf(0.0, attack_cooldown_left - delta)
 
 	var distance_to_player := to_player.length()
-	if _hold_minotaur_until_player_aggro(distance_to_player):
+	if _hold_minotaur_until_player_aggro():
 		velocity = Vector2.ZERO
 	elif _is_cobra_visual_profile():
+		if is_instance_valid(player):
+			to_player = player.global_position - global_position
+			distance_to_player = to_player.length()
 		_tick_cobra_duel_loop(distance_to_player, to_player)
 	else:
+		if is_instance_valid(player):
+			to_player = player.global_position - global_position
+			distance_to_player = to_player.length()
 		if distance_to_player > attack_range * 0.9:
 			velocity = _get_spaced_approach_direction(to_player) * move_speed
 		else:
@@ -1448,7 +1455,7 @@ func _physics_process_single_phase(delta: float) -> void:
 		return
 
 	var distance_to_player := to_player.length()
-	if _hold_cacodemon_until_player_aggro(distance_to_player):
+	if _hold_cacodemon_until_player_aggro():
 		velocity = Vector2.ZERO
 		_move_and_slide_with_debuffs()
 		_apply_soft_enemy_separation(delta)
@@ -1457,6 +1464,9 @@ func _physics_process_single_phase(delta: float) -> void:
 		_update_visuals(delta, to_player)
 		_update_health_bar()
 		return
+	if is_instance_valid(player):
+		to_player = player.global_position - global_position
+		distance_to_player = to_player.length()
 
 	if _uses_breath_weapon_profile() and is_miniboss:
 		_tick_cacodemon_breath_loop(delta, to_player)
@@ -2018,12 +2028,15 @@ func _tick_single_phase_boss_loop(delta: float, to_player: Vector2) -> void:
 
 
 func _tick_boss_idle_state(to_player: Vector2) -> void:
+	var resolved_to_player := to_player
 	velocity = Vector2.ZERO
 	pending_attack = false
 	attack_windup_left = 0.0
 	attack_prestrike_hold_left = 0.0
-	if _hold_minotaur_until_player_aggro(to_player.length()):
+	if _hold_minotaur_until_player_aggro():
 		return
+	if is_instance_valid(player):
+		resolved_to_player = player.global_position - global_position
 	if attack_recovery_hold_left > 0.0:
 		return
 	if boss_can_summon_minions and boss_summon_count > 0 and boss_summon_cycle_left <= 0.0:
@@ -2031,15 +2044,15 @@ func _tick_boss_idle_state(to_player: Vector2) -> void:
 		boss_summon_cycle_left = maxf(1.0, boss_summon_interval)
 		return
 	if boss_mark_cycle_left > 0.0:
-		_tick_boss_idle_basic_pressure(to_player)
+		_tick_boss_idle_basic_pressure(resolved_to_player)
 		return
 	var required_basic_attacks_for_shockwave := _get_required_boss_shockwave_basic_attacks()
 	if monster_visual_profile == MonsterVisualProfile.MINOTAUR and boss_charge_basic_attacks_since_last_shockwave < required_basic_attacks_for_shockwave:
-		_tick_boss_idle_basic_pressure(to_player)
+		_tick_boss_idle_basic_pressure(resolved_to_player)
 		return
 	var preview_mark_target := _select_mark_target()
 	if preview_mark_target == null:
-		_tick_boss_idle_basic_pressure(to_player)
+		_tick_boss_idle_basic_pressure(resolved_to_player)
 		return
 	# Charge sequence order:
 	# 1) telegraph large local shockwave zone
@@ -2062,8 +2075,8 @@ func _tick_boss_idle_state(to_player: Vector2) -> void:
 		# Use a stable fallback facing instead of bailing out of the attack cycle.
 		if committed_attack_facing_direction.length_squared() > 0.0001:
 			to_marked = committed_attack_facing_direction
-		elif to_player.length_squared() > 0.0001:
-			to_marked = to_player
+		elif resolved_to_player.length_squared() > 0.0001:
+			to_marked = resolved_to_player
 		else:
 			to_marked = Vector2.RIGHT
 	committed_attack_facing_direction = to_marked.normalized()
@@ -3825,14 +3838,24 @@ func _get_spaced_approach_direction(raw_to_target: Vector2) -> Vector2:
 func _tick_cobra_duel_loop(distance_to_player: float, to_player: Vector2) -> void:
 	# Grunt duel loop: hold a readable threat range, commit one strike, then reset spacing.
 	# Cobra duels read better with direct movement, not anti-clump slot steering.
+	var resolved_distance_to_player := distance_to_player
+	var resolved_to_player := to_player
 	if not cobra_aggroed:
+		var aggro_target: Node2D = _get_nearest_aggro_probe_target()
+		if aggro_target == null:
+			velocity = Vector2.ZERO
+			return
 		var aggro_trigger_distance := _get_snake_style_aggro_trigger_distance()
-		if distance_to_player > aggro_trigger_distance:
+		var aggro_distance_sq := global_position.distance_squared_to(aggro_target.global_position)
+		if aggro_distance_sq > aggro_trigger_distance * aggro_trigger_distance:
 			velocity = Vector2.ZERO
 			return
 		cobra_aggroed = true
+		_assign_initial_aggro_target(aggro_target)
+		resolved_to_player = aggro_target.global_position - global_position
+		resolved_distance_to_player = resolved_to_player.length()
 
-	var approach_direction := to_player.normalized()
+	var approach_direction := resolved_to_player.normalized()
 	if approach_direction.length_squared() <= 0.0001:
 		approach_direction = external_sprite_facing_direction
 	if approach_direction.length_squared() <= 0.0001:
@@ -3843,19 +3866,24 @@ func _tick_cobra_duel_loop(distance_to_player: float, to_player: Vector2) -> voi
 	var retreat_threshold := desired_range - range_tolerance
 	var stalk_threshold := desired_range + range_tolerance
 	var attack_min := maxf(12.0, minf(cobra_attack_min_range, desired_range - (range_tolerance * 0.45)))
+	if not cobra_close_attack_enabled:
+		attack_min = 0.0
 	var attack_max := maxf(attack_min + 6.0, maxf(cobra_attack_max_range, desired_range + (range_tolerance * 0.35)))
-	var inside_attack_envelope := distance_to_player <= (attack_max + THREAT_EPSILON)
-	var close_attack_ready := attack_cooldown_left <= THREAT_EPSILON and cobra_spacing_pause_left <= THREAT_EPSILON and distance_to_player <= close_trigger
+	var inside_attack_envelope := resolved_distance_to_player <= (attack_max + THREAT_EPSILON)
+	var close_attack_ready := cobra_close_attack_enabled \
+		and attack_cooldown_left <= THREAT_EPSILON \
+		and cobra_spacing_pause_left <= THREAT_EPSILON \
+		and resolved_distance_to_player <= close_trigger
 
 	if close_attack_ready:
 		velocity = Vector2.ZERO
 	elif cobra_spacing_pause_left > THREAT_EPSILON:
 		velocity = Vector2.ZERO
-	elif distance_to_player > attack_max:
+	elif resolved_distance_to_player > attack_max:
 		velocity = approach_direction * move_speed * maxf(0.05, cobra_approach_speed_scale)
-	elif distance_to_player > stalk_threshold:
+	elif resolved_distance_to_player > stalk_threshold:
 		velocity = approach_direction * move_speed * maxf(0.05, cobra_stalk_speed_scale)
-	elif distance_to_player < retreat_threshold and not inside_attack_envelope:
+	elif resolved_distance_to_player < retreat_threshold and not inside_attack_envelope:
 		velocity = -approach_direction * move_speed * maxf(0.05, cobra_retreat_speed_scale)
 	else:
 		velocity = Vector2.ZERO
@@ -3866,7 +3894,7 @@ func _tick_cobra_duel_loop(distance_to_player: float, to_player: Vector2) -> voi
 		attack_windup_left = maxf(0.06, cobra_close_attack_windup)
 		attack_prestrike_hold_left = 0.0
 		attack_recovery_hold_left = 0.0
-		var close_attack_facing := to_player.normalized()
+		var close_attack_facing := resolved_to_player.normalized()
 		if close_attack_facing.length_squared() <= 0.0001:
 			close_attack_facing = external_sprite_facing_direction
 		if close_attack_facing.length_squared() <= 0.0001:
@@ -3876,17 +3904,17 @@ func _tick_cobra_duel_loop(distance_to_player: float, to_player: Vector2) -> voi
 
 	var attack_window_open := attack_cooldown_left <= THREAT_EPSILON \
 		and cobra_spacing_pause_left <= THREAT_EPSILON \
-		and distance_to_player >= attack_min \
-		and distance_to_player <= attack_max
+		and resolved_distance_to_player >= attack_min \
+		and resolved_distance_to_player <= attack_max
 	if not attack_window_open:
 		return
 	cobra_pending_attack_mode = CobraAttackMode.HEAVY
-	cobra_last_heavy_start_distance = distance_to_player
+	cobra_last_heavy_start_distance = resolved_distance_to_player
 	pending_attack = true
 	attack_windup_left = maxf(0.08, cobra_heavy_attack_windup)
 	attack_prestrike_hold_left = 0.0
 	attack_recovery_hold_left = 0.0
-	var attack_facing := to_player.normalized()
+	var attack_facing := resolved_to_player.normalized()
 	if attack_facing.length_squared() <= 0.0001:
 		attack_facing = external_sprite_facing_direction
 	if attack_facing.length_squared() <= 0.0001:
@@ -3905,37 +3933,69 @@ func _get_snake_style_aggro_trigger_distance() -> float:
 	return aggro_trigger_distance * 4.0
 
 
-func _hold_cacodemon_until_player_aggro(distance_to_player: float) -> bool:
+func _get_nearest_aggro_probe_target() -> Node2D:
+	var best_target: Node2D = null
+	var best_distance_sq: float = INF
+	var best_id: int = 2147483647
+	for candidate in _get_friendly_threat_candidates():
+		if candidate == null or not is_instance_valid(candidate):
+			continue
+		var distance_sq := candidate.global_position.distance_squared_to(global_position)
+		var candidate_id := candidate.get_instance_id()
+		if best_target == null \
+			or distance_sq < best_distance_sq - 0.01 \
+			or (is_equal_approx(distance_sq, best_distance_sq) and candidate_id < best_id):
+			best_target = candidate
+			best_distance_sq = distance_sq
+			best_id = candidate_id
+	return best_target
+
+
+func _assign_initial_aggro_target(target: Node2D) -> void:
+	if not _is_valid_threat_target(target):
+		return
+	if _get_threat_for_target(target) <= THREAT_EPSILON:
+		_add_threat_for_target(target, 1.0)
+	player = target
+
+
+func _hold_cacodemon_until_player_aggro() -> bool:
 	if not _is_exact_cacodemon_visual_profile():
 		return false
 	if cacodemon_aggroed:
 		return false
-	if not is_instance_valid(player):
+	var aggro_target: Node2D = _get_nearest_aggro_probe_target()
+	if aggro_target == null:
 		return true
-	# Mirror snake-style one-way aggro: idle until the player enters aggro range,
+	# Mirror snake-style one-way aggro: idle until a party member enters aggro range,
 	# then stay aggressive for the rest of the encounter.
 	var aggro_trigger_distance := _get_snake_style_aggro_trigger_distance()
-	if distance_to_player > aggro_trigger_distance:
+	var aggro_distance_sq := global_position.distance_squared_to(aggro_target.global_position)
+	if aggro_distance_sq > aggro_trigger_distance * aggro_trigger_distance:
 		return true
 	cacodemon_aggroed = true
+	_assign_initial_aggro_target(aggro_target)
 	return false
 
 
-func _hold_minotaur_until_player_aggro(distance_to_player: float) -> bool:
+func _hold_minotaur_until_player_aggro() -> bool:
 	if monster_visual_profile != MonsterVisualProfile.MINOTAUR:
 		return false
 	if minotaur_aggroed:
 		return false
-	if not is_instance_valid(player):
+	var aggro_target: Node2D = _get_nearest_aggro_probe_target()
+	if aggro_target == null:
 		return true
-	# Mirror snake-style one-way aggro: stay planted until player enters close-combat range,
+	# Mirror snake-style one-way aggro: stay planted until a party member enters close-combat range,
 	# then stay aggressive for the rest of the encounter.
 	# Intentionally do NOT use boss_mark_start_range here (too large for room-entry gating).
 	var aggro_trigger_distance := maxf(24.0, attack_range * 1.3)
 	aggro_trigger_distance *= maxf(0.1, minotaur_aggro_distance_multiplier)
-	if distance_to_player > aggro_trigger_distance:
+	var aggro_distance_sq := global_position.distance_squared_to(aggro_target.global_position)
+	if aggro_distance_sq > aggro_trigger_distance * aggro_trigger_distance:
 		return true
 	minotaur_aggroed = true
+	_assign_initial_aggro_target(aggro_target)
 	return false
 
 
@@ -4164,6 +4224,23 @@ func _build_ellipse_polygon(radius_x: float, radius_y: float, segments: int) -> 
 	for i in range(safe_segments):
 		var angle := (TAU * float(i)) / float(safe_segments)
 		points.append(Vector2(cos(angle) * radius_x, sin(angle) * radius_y))
+	return points
+
+
+func _build_forward_oval_polygon_local(origin: Vector2, forward: Vector2, forward_offset: float, half_extents: Vector2, segments: int) -> PackedVector2Array:
+	var safe_forward := forward.normalized()
+	if safe_forward.length_squared() <= 0.0001:
+		safe_forward = Vector2.RIGHT
+	var right := Vector2(-safe_forward.y, safe_forward.x)
+	var center := origin + (safe_forward * maxf(0.0, forward_offset))
+	var safe_segments := maxi(10, segments)
+	var forward_radius := maxf(1.0, half_extents.x)
+	var side_radius := maxf(1.0, half_extents.y)
+	var points := PackedVector2Array()
+	for i in range(safe_segments):
+		var angle := (TAU * float(i)) / float(safe_segments)
+		var world_point := center + (safe_forward * (cos(angle) * forward_radius)) + (right * (sin(angle) * side_radius))
+		points.append(to_local(world_point))
 	return points
 
 
@@ -4436,6 +4513,8 @@ func _reacquire_player() -> void:
 	var next_target: Node2D = highest_threat_target
 	if next_target == null:
 		next_target = _get_tank_player_target()
+	if next_target == null:
+		next_target = _find_priority_companion_target()
 	player = next_target
 
 
@@ -4445,17 +4524,7 @@ func _find_priority_companion_target() -> Node2D:
 	var best_id := INF
 	for node in get_tree().get_nodes_in_group("friendly_npcs"):
 		var candidate := node as Node2D
-		if candidate == null or not is_instance_valid(candidate):
-			continue
-		if candidate.is_in_group("shadow_clones"):
-			continue
-		if candidate.has_method("is_shadow_clone_actor") and bool(candidate.call("is_shadow_clone_actor")):
-			continue
-		var healer_target := candidate as FriendlyHealer
-		var rat_target := candidate as FriendlyRatfolk
-		if healer_target == null and rat_target == null:
-			continue
-		if not _is_friendly_target_alive(candidate):
+		if not _is_valid_threat_target(candidate):
 			continue
 		var distance_sq := candidate.global_position.distance_squared_to(global_position)
 		var candidate_id := candidate.get_instance_id()
@@ -4524,7 +4593,7 @@ func _perform_attack() -> void:
 		_perform_imp_fireball_attack()
 		return
 	if _is_cobra_visual_profile():
-		if cobra_pending_attack_mode == CobraAttackMode.CLOSE:
+		if cobra_pending_attack_mode == CobraAttackMode.CLOSE and cobra_close_attack_enabled:
 			_perform_cobra_close_attack()
 		else:
 			_perform_cobra_tongue_attack()
@@ -5032,9 +5101,55 @@ func _distance_to_segment(point: Vector2, segment_start: Vector2, segment_end: V
 	return point.distance_to(closest)
 
 
+func _get_target_collision_center(target: Node2D) -> Vector2:
+	if target == null or not is_instance_valid(target):
+		return global_position
+	var target_collision := target.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if target_collision != null and is_instance_valid(target_collision):
+		return target_collision.global_position
+	return target.global_position
+
+
+func _is_point_inside_forward_oval_hitbox(point: Vector2, strike_origin: Vector2, strike_facing: Vector2, forward_offset: float, half_extents: Vector2, radius_padding: float = 0.0) -> bool:
+	var forward := strike_facing.normalized()
+	if forward.length_squared() <= 0.0001:
+		forward = Vector2.RIGHT
+	var side := Vector2(-forward.y, forward.x)
+	var center := strike_origin + (forward * maxf(0.0, forward_offset))
+	var local := point - center
+	var forward_distance := local.dot(forward)
+	var side_distance := local.dot(side)
+	var forward_radius := maxf(4.0, half_extents.x + maxf(0.0, radius_padding))
+	var side_radius := maxf(4.0, half_extents.y + maxf(0.0, radius_padding))
+	var normalized_forward := forward_distance / forward_radius
+	var normalized_side := side_distance / side_radius
+	return (normalized_forward * normalized_forward) + (normalized_side * normalized_side) <= 1.0
+
+
+func _get_minotaur_basic_attack_oval_half_extents() -> Vector2:
+	var reach_start := maxf(0.0, basic_attack_hit_start_offset)
+	var reach_end := maxf(reach_start + 12.0, attack_range + basic_attack_hit_end_bonus + (basic_attack_tip_radius * 0.65))
+	var forward_radius := maxf(18.0, (reach_end - reach_start) * 0.5)
+	var side_radius := maxf(10.0, maxf(basic_attack_hit_half_width, basic_attack_tip_radius * 0.9))
+	return Vector2(forward_radius, side_radius)
+
+
+func _get_minotaur_basic_attack_oval_forward_offset() -> float:
+	var reach_start := maxf(0.0, basic_attack_hit_start_offset)
+	return reach_start + _get_minotaur_basic_attack_oval_half_extents().x
+
+
 func _query_friendly_hits_for_basic() -> Array[Node2D]:
 	var hit_targets: Array[Node2D] = []
 	var attack_direction := _get_basic_attack_direction()
+	if monster_visual_profile == MonsterVisualProfile.MINOTAUR:
+		var oval_half_extents := _get_minotaur_basic_attack_oval_half_extents()
+		var oval_forward_offset := _get_minotaur_basic_attack_oval_forward_offset()
+		for candidate in _get_attackable_friendly_targets():
+			var target_center := _get_target_collision_center(candidate)
+			if _is_point_inside_forward_oval_hitbox(target_center, global_position, attack_direction, oval_forward_offset, oval_half_extents):
+				hit_targets.append(candidate)
+		return hit_targets
 	var segment_start := global_position + (attack_direction * basic_attack_hit_start_offset)
 	var segment_end := global_position + (attack_direction * (attack_range + basic_attack_hit_end_bonus))
 	for candidate in _get_attackable_friendly_targets():
@@ -5690,10 +5805,10 @@ func _apply_profile_hurtbox() -> void:
 			frame_width = float(monster_sprite.texture.get_width()) / float(max(1, monster_sprite.hframes))
 			frame_height = float(monster_sprite.texture.get_height()) / float(max(1, monster_sprite.vframes))
 		var sprite_scale := maxf(absf(monster_sprite.scale.x), absf(monster_sprite.scale.y))
-		var resolved_radius := maxf(minotaur_hurtbox_radius, minf(frame_width, frame_height) * sprite_scale * 0.20)
-		var resolved_y_offset := monster_sprite.position.y + (frame_height * sprite_scale * 0.03)
-		if absf(resolved_y_offset) <= 0.001:
-			resolved_y_offset = minotaur_hurtbox_y_offset
+		var visual_radius := minf(frame_width, frame_height) * sprite_scale * 0.29
+		var resolved_radius := maxf(minotaur_hurtbox_radius, visual_radius)
+		var visual_y_offset := monster_sprite.position.y - (frame_height * sprite_scale * 0.05)
+		var resolved_y_offset := minf(minotaur_hurtbox_y_offset, visual_y_offset)
 		collision_shape.position = collision_shape_base_position + Vector2(0.0, resolved_y_offset)
 		circle.radius = maxf(4.0, resolved_radius)
 		return
@@ -6038,6 +6153,19 @@ func _draw_basic_attack_hitbox_debug() -> void:
 	var attack_direction := _get_basic_attack_direction()
 	if attack_direction.length_squared() <= 0.0001:
 		attack_direction = Vector2.RIGHT
+	if monster_visual_profile == MonsterVisualProfile.MINOTAUR:
+		var oval_polygon := _build_forward_oval_polygon_local(
+			global_position,
+			attack_direction,
+			_get_minotaur_basic_attack_oval_forward_offset(),
+			_get_minotaur_basic_attack_oval_half_extents(),
+			28
+		)
+		if oval_polygon.size() >= 3:
+			draw_colored_polygon(oval_polygon, Color(1.0, 0.46, 0.24, 0.12))
+			draw_polyline(oval_polygon, Color(1.0, 0.58, 0.34, 0.94), 2.0, true)
+			draw_line(oval_polygon[oval_polygon.size() - 1], oval_polygon[0], Color(1.0, 0.58, 0.34, 0.94), 2.0, true)
+		return
 	var segment_start := global_position + (attack_direction * basic_attack_hit_start_offset)
 	var segment_end := global_position + (attack_direction * (attack_range + basic_attack_hit_end_bonus))
 	_draw_segment_hitbox_debug(
@@ -6226,15 +6354,25 @@ func _update_attack_telegraph(to_player: Vector2) -> void:
 	attack_telegraph.width = lerpf(2.0, 3.2, progress)
 	attack_telegraph.default_color = Color(1.0, lerpf(0.82, 0.46, progress), lerpf(0.4, 0.2, progress), 0.96)
 	var attack_direction := aim_direction.normalized()
-	var segment_start := global_position + (attack_direction * basic_attack_hit_start_offset)
-	var segment_end := global_position + (attack_direction * (attack_range + basic_attack_hit_end_bonus))
-	var attack_polygon := _build_segment_hitbox_polygon_local(
-		segment_start,
-		segment_end,
-		maxf(6.0, basic_attack_hit_half_width),
-		maxf(8.0, basic_attack_tip_radius),
-		14
-	)
+	var attack_polygon := PackedVector2Array()
+	if monster_visual_profile == MonsterVisualProfile.MINOTAUR:
+		attack_polygon = _build_forward_oval_polygon_local(
+			global_position,
+			attack_direction,
+			_get_minotaur_basic_attack_oval_forward_offset(),
+			_get_minotaur_basic_attack_oval_half_extents(),
+			26
+		)
+	else:
+		var segment_start := global_position + (attack_direction * basic_attack_hit_start_offset)
+		var segment_end := global_position + (attack_direction * (attack_range + basic_attack_hit_end_bonus))
+		attack_polygon = _build_segment_hitbox_polygon_local(
+			segment_start,
+			segment_end,
+			maxf(6.0, basic_attack_hit_half_width),
+			maxf(8.0, basic_attack_tip_radius),
+			14
+		)
 	attack_telegraph.points = _build_closed_polyline(attack_polygon)
 	if is_instance_valid(melee_attack_telegraph_area):
 		melee_attack_telegraph_area.visible = true

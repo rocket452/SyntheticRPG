@@ -25,7 +25,7 @@ const ABILITY_BAR_LAYOUTS: Dictionary = {
 	ABILITY_LAYOUT_RATFOLK: [
 		{"id": "basic", "icon": "STB", "name": "Stab", "key": "J", "accent": Color(0.98, 0.78, 0.46, 1.0), "uses_cooldown": true},
 		{"id": "ability_1", "icon": "FEAR", "name": "Fear", "key": "K", "accent": Color(0.74, 0.54, 1.0, 1.0), "uses_cooldown": true},
-		{"id": "counter", "icon": "MRK", "name": "Mark", "key": "O", "accent": Color(0.62, 0.96, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "counter", "icon": "BSTB", "name": "Backstab", "key": "O", "accent": Color(1.0, 0.68, 0.58, 1.0), "uses_cooldown": true},
 		{"id": "ability_2", "icon": "STRK", "name": "Strike", "key": "L", "accent": Color(0.86, 0.72, 1.0, 1.0), "uses_cooldown": true},
 		{"id": "roll", "icon": "RLL", "name": "Roll", "key": "Space", "accent": Color(0.74, 0.9, 1.0, 1.0), "uses_cooldown": true},
 		{"id": "block", "icon": "SURG", "name": "Surge", "key": "I", "accent": Color(0.92, 0.7, 1.0, 1.0), "uses_cooldown": true}

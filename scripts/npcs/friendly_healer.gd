@@ -90,7 +90,7 @@ enum CastAction {
 @export var big_heal_cast_time_multiplier: float = 2.0
 @export var light_bolt_enabled: bool = true
 @export var light_bolt_damage: float = 7.5
-@export var light_bolt_cooldown: float = 1.9
+@export var light_bolt_cooldown: float = 0.0
 @export var light_bolt_range: float = 208.0
 @export var light_bolt_stun_duration: float = 0.1
 @export var light_bolt_hitstop_duration: float = 0.045
