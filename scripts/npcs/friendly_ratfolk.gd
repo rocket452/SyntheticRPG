@@ -57,6 +57,12 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var attack_knockback_scale: float = 0.82
 @export var attack_hitstop_duration: float = 0.045
 @export var attack_impact_vfx_scale: float = 1.15
+@export var shadow_dash_enabled: bool = true
+@export var shadow_dash_cooldown: float = 3.0
+@export var shadow_dash_duration: float = 0.10
+@export var shadow_dash_speed: float = 1400.0
+@export var shadow_dash_damage_scale: float = 1.0
+@export var shadow_dash_return_window: float = 3.0
 @export var backstab_enabled: bool = true
 @export var backstab_damage_multiplier: float = 2.85
 @export var backstab_range: float = 34.0
@@ -122,10 +128,10 @@ const DPS_AI_STATE_NAMES: Dictionary = {
 @export var shadow_clone_cooldown: float = 11.25
 @export_range(1, 5, 1) var shadow_strike_combo_cost: int = 2
 @export var shadow_strike_windup_scale: float = 0.94
-@export_range(1, 5, 1) var shadow_surge_combo_cost: int = 5
+@export_range(1, 5, 1) var shadow_surge_combo_cost: int = 3
 @export var shadow_surge_speed: float = 412.0
 @export var shadow_surge_duration: float = 0.18
-@export var shadow_surge_damage_multiplier: float = 1.35
+@export var shadow_surge_damage_multiplier: float = 2.7
 @export var shadow_surge_hit_radius: float = 18.0
 @export var shadow_surge_hitstop_duration: float = 0.065
 @export var boss_mark_duration: float = 6.0
@@ -304,6 +310,12 @@ var shadow_clone_cast_active: bool = false
 var shadow_clone_cooldown_left: float = 0.0
 var boss_mark_cooldown_left: float = 0.0
 var backstab_cooldown_left: float = 0.0
+var shadow_dash_ability_cooldown_left: float = 0.0
+var shadow_dash_ability_left: float = 0.0
+var shadow_dash_ability_direction: Vector2 = Vector2.ZERO
+var shadow_dash_return_window_left: float = 0.0
+var shadow_dash_origin_position: Vector2 = Vector2.ZERO
+var shadow_dash_clone_ref: FriendlyRatfolk = null
 var shadow_clone_lifetime_left: float = 0.0
 var shadow_clone_scatter_left: float = 0.0
 var shadow_clone_scatter_direction: Vector2 = Vector2.ZERO
@@ -497,7 +509,7 @@ func _uses_combo_points() -> bool:
 
 
 func _get_combo_point_max() -> int:
-	return 5
+	return 3
 
 
 func _get_starting_combo_points() -> int:
@@ -517,8 +529,8 @@ func get_manual_control_cooldown_state() -> Dictionary:
 		"basic_unlocked": true,
 		"ability_1": shadow_fear_cooldown_left,
 		"ability_1_unlocked": shadow_fear_enabled and not is_shadow_clone,
-		"counter": backstab_cooldown_left,
-		"counter_unlocked": backstab_enabled and not is_shadow_clone,
+		"counter": shadow_dash_return_window_left if shadow_dash_return_window_left > 0.0 else shadow_dash_ability_cooldown_left,
+		"counter_unlocked": shadow_dash_enabled and not is_shadow_clone,
 		"ability_2": 0.0,
 		"ability_2_unlocked": shadow_clone_enabled and shadow_clone_count > 0 and _can_pay_combo_points(shadow_strike_combo_cost) and not is_shadow_clone,
 		"roll": manual_roll_cooldown_left,
@@ -1118,6 +1130,11 @@ func _tick_timers(delta: float) -> void:
 		shadow_clone_cast_left = maxf(0.0, shadow_clone_cast_left - delta)
 	shadow_clone_cooldown_left = maxf(0.0, shadow_clone_cooldown_left - delta)
 	backstab_cooldown_left = maxf(0.0, backstab_cooldown_left - delta)
+	shadow_dash_ability_cooldown_left = maxf(0.0, shadow_dash_ability_cooldown_left - delta)
+	if shadow_dash_return_window_left > 0.0:
+		shadow_dash_return_window_left = maxf(0.0, shadow_dash_return_window_left - delta)
+		if shadow_dash_return_window_left <= 0.0:
+			shadow_dash_clone_ref = null
 	shadow_surge_left = maxf(0.0, shadow_surge_left - delta)
 	boss_mark_cooldown_left = maxf(0.0, boss_mark_cooldown_left - delta)
 	shadow_clone_scatter_left = maxf(0.0, shadow_clone_scatter_left - delta)
@@ -1165,9 +1182,11 @@ func _tick_timers(delta: float) -> void:
 		elif manual_roll_left > 0.0:
 			sprite.scale = sprite_base_scale * Vector2(1.08, 0.92)
 		elif current_attack_mode == AttackMode.BACKSTAB and (attack_windup_left > 0.0 or attack_recovery_left > 0.0):
-			sprite.scale = sprite_base_scale * Vector2(1.08, 0.98)
+			sprite.scale = sprite_base_scale * Vector2(1.18, 0.86)
 		elif current_attack_mode == AttackMode.SHADOW_STRIKE and (attack_windup_left > 0.0 or attack_recovery_left > 0.0):
-			sprite.scale = sprite_base_scale * Vector2(1.06, 1.02)
+			sprite.scale = sprite_base_scale * Vector2(1.12, 0.9)
+		elif current_attack_mode == AttackMode.BASIC and (attack_windup_left > 0.0 or attack_recovery_left > 0.0):
+			sprite.scale = sprite_base_scale * Vector2(1.1, 0.93)
 		else:
 			sprite.scale = sprite_base_scale
 	if is_shadow_clone and not dead:
@@ -1337,6 +1356,13 @@ func _tick_manual_control_logic(delta: float) -> void:
 	elif backstab_dash_left > 0.0:
 		backstab_dash_left = 0.0
 		backstab_dash_target_enemy = null
+	if shadow_dash_ability_left > 0.0:
+		shadow_dash_ability_left = maxf(0.0, shadow_dash_ability_left - delta)
+		velocity = shadow_dash_ability_direction * maxf(48.0, shadow_dash_speed)
+		_update_facing(shadow_dash_ability_direction)
+		if shadow_dash_ability_left <= 0.0:
+			_finish_shadow_dash()
+		return
 	_handle_manual_control_movement()
 	_handle_manual_control_actions()
 
@@ -1438,6 +1464,24 @@ func _tick_combat_logic(delta: float) -> void:
 		_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
 		_start_attack_windup("close_ready")
 		velocity = Vector2.ZERO
+		return
+
+	if target_enemy.is_miniboss and is_shadow_clone:
+		# Shadow clones use a simplified miniboss approach: advance and attack with relaxed Y tolerance
+		var clone_commit_window := absf(to_enemy.y) <= (attack_depth_tolerance * 2.1) \
+			and distance_to_enemy <= attack_range * 2.1
+		if clone_commit_window:
+			_set_dps_ai_state(DPSAIState.ATTACKING, target_enemy)
+			_update_facing(to_enemy)
+			if attack_connect_window and attack_cooldown_left <= 0.0 and attack_windup_left <= 0.0 and attack_recovery_left <= 0.0:
+				_start_attack_windup("clone_boss_commit")
+				velocity = Vector2.ZERO
+				return
+			velocity = _compute_reposition_velocity(target_enemy, to_enemy, distance_to_enemy)
+			return
+		_set_dps_ai_state(DPSAIState.REPOSITIONING, target_enemy)
+		velocity = to_enemy.normalized() * move_speed * 0.9
+		_update_facing(to_enemy)
 		return
 
 	if not is_shadow_clone and target_enemy.is_miniboss:
@@ -1577,6 +1621,8 @@ func _handle_manual_control_actions() -> void:
 		return
 	if backstab_dash_left > 0.0:
 		return
+	if shadow_dash_ability_left > 0.0:
+		return
 	if Input.is_action_just_pressed("roll"):
 		if _can_start_manual_roll():
 			_start_manual_roll()
@@ -1588,13 +1634,11 @@ func _handle_manual_control_actions() -> void:
 			_start_shadow_fear_cast(fear_target)
 			return
 	if Input.is_action_just_pressed("counter_strike"):
-		var backstab_target := _find_manual_backstab_target()
-		if _can_start_manual_backstab(backstab_target):
-			target_enemy = backstab_target
-			_set_dps_ai_state(DPSAIState.ATTACKING, backstab_target)
-			_update_facing(backstab_target.global_position - global_position)
-			_start_backstab("manual")
-			velocity = Vector2.ZERO
+		if shadow_dash_return_window_left > 0.0:
+			_execute_shadow_dash_return()
+			return
+		if shadow_dash_enabled and not is_shadow_clone and shadow_dash_ability_cooldown_left <= 0.0 and shadow_dash_ability_left <= 0.0:
+			_start_shadow_dash()
 			return
 	if Input.is_action_just_pressed("ability_2"):
 		var strike_target := _find_manual_shadow_strike_target()
@@ -1674,7 +1718,7 @@ func _is_backstab_target_usable(enemy: EnemyBase) -> bool:
 
 
 func _find_manual_backstab_target() -> EnemyBase:
-	if _is_backstab_target_usable(target_enemy):
+	if is_instance_valid(target_enemy) and _is_backstab_target_usable(target_enemy):
 		return target_enemy
 	var nearest_enemy: EnemyBase = null
 	var nearest_distance_sq := INF
@@ -1728,6 +1772,91 @@ func _can_start_manual_shadow_fear_cast(enemy: EnemyBase) -> bool:
 	if shadow_clone_cast_active or backstab_dash_left > 0.0:
 		return false
 	return true
+
+
+func _start_shadow_dash() -> void:
+	shadow_dash_origin_position = global_position
+	var dash_target := _find_manual_basic_attack_target()
+	var dash_dir: Vector2
+	if dash_target != null and is_instance_valid(dash_target):
+		dash_dir = (dash_target.global_position - global_position).normalized()
+	else:
+		dash_dir = Vector2.LEFT if facing_left else Vector2.RIGHT
+	if dash_dir.length_squared() <= 0.0001:
+		dash_dir = Vector2.RIGHT
+	shadow_dash_ability_direction = dash_dir
+	shadow_dash_ability_left = maxf(0.04, shadow_dash_duration)
+	shadow_dash_ability_cooldown_left = maxf(0.1, shadow_dash_cooldown)
+	_update_facing(dash_dir)
+	velocity = Vector2.ZERO
+	_spawn_shadow_dash_clone()
+	_spawn_hit_effect(global_position + Vector2(0.0, -12.0), Color(0.62, 0.38, 0.88, 0.82), 6.0)
+
+
+func _finish_shadow_dash() -> void:
+	velocity = Vector2.ZERO
+	shadow_dash_return_window_left = maxf(0.1, shadow_dash_return_window)
+	var hit_radius_sq := 42.0 * 42.0
+	var hit_any := false
+	if get_tree() != null:
+		for node in get_tree().get_nodes_in_group("enemies"):
+			var enemy := node as EnemyBase
+			if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+				continue
+			if global_position.distance_squared_to(enemy.global_position) <= hit_radius_sq:
+				var dmg := maxf(0.1, attack_damage * maxf(0.1, shadow_dash_damage_scale))
+				if enemy.has_method("receive_hit"):
+					var landed := bool(enemy.call("receive_hit", dmg, global_position, outgoing_hit_stun_duration, true, attack_knockback_scale, self))
+					if landed:
+						add_special_meter_from_damage(dmg)
+						hit_any = true
+	if hit_any:
+		_add_combo_points(1)
+	_spawn_hit_effect(global_position + Vector2(0.0, -12.0), Color(0.72, 0.46, 1.0, 0.9), 8.0)
+
+
+func _execute_shadow_dash_return() -> void:
+	if shadow_dash_return_window_left <= 0.0:
+		return
+	shadow_dash_return_window_left = 0.0
+	var return_position := shadow_dash_origin_position
+	if is_instance_valid(shadow_dash_clone_ref):
+		return_position = shadow_dash_clone_ref.global_position
+		shadow_dash_clone_ref.call("_die")
+	shadow_dash_clone_ref = null
+	global_position = return_position
+	velocity = Vector2.ZERO
+	_spawn_hit_effect(global_position + Vector2(0.0, -12.0), Color(0.52, 0.34, 0.82, 0.88), 7.0)
+
+
+func _spawn_shadow_dash_clone() -> void:
+	var spawn_scene := _get_ratfolk_scene()
+	if spawn_scene == null:
+		return
+	var scene_root := get_parent()
+	if scene_root == null:
+		return
+	var clone := spawn_scene.instantiate() as FriendlyRatfolk
+	if clone == null:
+		return
+	clone.setup_as_shadow_clone(player)
+	clone.facing_left = facing_left
+	scene_root.add_child(clone)
+	clone.position = position
+	clone.set_arena_bounds(lane_min_x, lane_max_x, lane_min_y, lane_max_y)
+	clone.set_player(player)
+	_copy_equipment_to_shadow_clone(clone)
+	clone.attack_cooldown_left = maxf(0.02, clone.attack_cooldown * 0.18)
+	clone.shadow_clone_lifetime_left = maxf(0.2, shadow_clone_lifetime)
+	clone.shadow_clone_tint = shadow_clone_tint
+	clone.shadow_clone_lifetime = maxf(0.2, shadow_clone_lifetime)
+	clone.shadow_clone_speed_scale = shadow_clone_speed_scale
+	clone.shadow_clone_damage_scale = shadow_clone_damage_scale
+	clone.shadow_clone_health_scale = shadow_clone_health_scale
+	clone.shadow_clone_attack_cooldown_scale = shadow_clone_attack_cooldown_scale
+	clone.set_shadow_clone_scatter(shadow_dash_ability_direction * -1.0, 0.0)
+	_spawn_shadow_clone_birth_effect(clone.global_position)
+	shadow_dash_clone_ref = clone
 
 
 func _can_start_manual_backstab(enemy: EnemyBase = null) -> bool:
@@ -1844,6 +1973,7 @@ func _start_manual_roll(direction_override: Vector2 = Vector2.ZERO) -> void:
 	manual_roll_vector = movement_vector.normalized()
 	manual_roll_left = maxf(0.05, manual_roll_duration)
 	manual_roll_cooldown_left = maxf(manual_roll_cooldown_left, manual_roll_cooldown)
+	_spawn_roll_dash_effect(manual_roll_vector)
 	velocity = manual_roll_vector * maxf(48.0, manual_roll_speed)
 	if manual_roll_vector.length_squared() > 0.0001:
 		_update_facing(velocity)
@@ -3024,12 +3154,13 @@ func _perform_attack() -> void:
 			facing_direction = to_target.normalized()
 	if shadow_strike_ready:
 		_spawn_shadow_strike_swing_effect(facing_direction)
+	else:
+		_spawn_basic_attack_swing_effect(facing_direction)
 	var hit_any := false
 	var basic_hit_target_ids: Dictionary = {}
-	if not shadow_strike_ready:
-		for hit_target in _query_basic_attack_hitbox_targets():
-			if hit_target != null and is_instance_valid(hit_target) and not hit_target.dead:
-				basic_hit_target_ids[hit_target.get_instance_id()] = true
+	for hit_target in _query_basic_attack_hitbox_targets():
+		if hit_target != null and is_instance_valid(hit_target) and not hit_target.dead:
+			basic_hit_target_ids[hit_target.get_instance_id()] = true
 	var hit_damage := attack_damage
 	var impact_color := Color(1.0, 0.8, 0.42, 0.95)
 	if shadow_strike_ready:
@@ -3045,32 +3176,34 @@ func _perform_attack() -> void:
 			if not basic_hit_target_ids.has(enemy.get_instance_id()):
 				continue
 		else:
-			var target_point := enemy.global_position
-			var target_radius := 0.0
-			if manual_control_enabled:
-				target_point = _get_manual_attack_target_point(enemy, global_position)
-				target_radius = _get_manual_attack_target_radius(enemy)
-			else:
-				target_point = _get_enemy_attack_target_point(enemy, global_position)
-				target_radius = _get_enemy_attack_collision_radius(enemy)
-			var to_enemy := target_point - global_position
-			var effective_depth_tolerance := attack_depth_tolerance * 1.35
-			if absf(to_enemy.y) > effective_depth_tolerance + target_radius:
-				continue
-			var attack_radius := _get_basic_attack_hit_radius()
-			var effective_attack_radius := attack_radius + target_radius
-			if to_enemy.length_squared() > effective_attack_radius * effective_attack_radius:
-				continue
-			var arc_threshold := cos(deg_to_rad(attack_arc_degrees * 0.5))
-			var direction_to_enemy := to_enemy.normalized() if to_enemy.length_squared() > 0.0001 else facing_direction
-			if to_enemy.length_squared() > 0.0001:
-				var distance_to_target := to_enemy.length()
-				var radius_arc_allowance := asin(clampf(target_radius / maxf(1.0, distance_to_target), 0.0, 0.99))
-				var alignment_threshold := cos(deg_to_rad(attack_arc_degrees * 0.5) + radius_arc_allowance + deg_to_rad(3.0))
-				if facing_direction.dot(direction_to_enemy) < alignment_threshold:
+			# If the Area2D hitbox already confirmed this enemy, skip the manual check
+			if not basic_hit_target_ids.has(enemy.get_instance_id()):
+				var target_point := enemy.global_position
+				var target_radius := 0.0
+				if manual_control_enabled:
+					target_point = _get_manual_attack_target_point(enemy, global_position)
+					target_radius = _get_manual_attack_target_radius(enemy)
+				else:
+					target_point = _get_enemy_attack_target_point(enemy, global_position)
+					target_radius = _get_enemy_attack_collision_radius(enemy)
+				var to_enemy := target_point - global_position
+				var effective_depth_tolerance := attack_depth_tolerance * 1.35
+				if absf(to_enemy.y) > effective_depth_tolerance + target_radius:
 					continue
-			elif facing_direction.dot(direction_to_enemy) < arc_threshold:
-				continue
+				var attack_radius := _get_basic_attack_hit_radius()
+				var effective_attack_radius := attack_radius + target_radius
+				if to_enemy.length_squared() > effective_attack_radius * effective_attack_radius:
+					continue
+				var arc_threshold := cos(deg_to_rad(attack_arc_degrees * 0.5))
+				var direction_to_enemy := to_enemy.normalized() if to_enemy.length_squared() > 0.0001 else facing_direction
+				if to_enemy.length_squared() > 0.0001:
+					var distance_to_target := to_enemy.length()
+					var radius_arc_allowance := asin(clampf(target_radius / maxf(1.0, distance_to_target), 0.0, 0.99))
+					var alignment_threshold := cos(deg_to_rad(attack_arc_degrees * 0.5) + radius_arc_allowance + deg_to_rad(3.0))
+					if facing_direction.dot(direction_to_enemy) < alignment_threshold:
+						continue
+				elif facing_direction.dot(direction_to_enemy) < arc_threshold:
+					continue
 		if not enemy.has_method("receive_hit"):
 			continue
 		var enemy_hit_damage := hit_damage
@@ -3084,7 +3217,8 @@ func _perform_attack() -> void:
 			if enemy.has_method("apply_hitstop"):
 				enemy.apply_hitstop(maxf(0.0, attack_hitstop_duration))
 			var impact_scale := maxf(0.6, attack_impact_vfx_scale)
-			_spawn_hit_effect(enemy.global_position + Vector2(0.0, -12.0), impact_color, 7.2 * impact_scale)
+			var ai_vfx_scale := 0.5 if not manual_control_enabled else 1.0
+			_spawn_hit_effect(enemy.global_position + Vector2(0.0, -12.0), impact_color, 7.2 * impact_scale * ai_vfx_scale)
 			if shadow_strike_ready:
 				_spawn_shadow_strike_impact_effect(enemy.global_position + Vector2(0.0, -12.0))
 
@@ -3095,10 +3229,11 @@ func _perform_attack() -> void:
 		if shadow_strike_ready:
 			_spawn_shadow_clones()
 		var swing_scale := maxf(0.6, attack_impact_vfx_scale)
+		var ai_swing_scale := 0.5 if not manual_control_enabled else 1.0
 		var swing_color := Color(0.94, 0.78, 0.36, 0.95)
 		if shadow_strike_ready:
 			swing_color = Color(0.9, 0.54, 1.0, 0.95)
-		_spawn_hit_effect(global_position + (facing_direction * 14.0) + Vector2(0.0, -10.0), swing_color, 8.0 * swing_scale)
+		_spawn_hit_effect(global_position + (facing_direction * 14.0) + Vector2(0.0, -10.0), swing_color, 8.0 * swing_scale * ai_swing_scale)
 
 	if not shadow_strike_ready:
 		basic_attack_hitbox_active_left = maxf(basic_attack_hitbox_active_left, maxf(0.01, basic_attack_hitbox_active_duration))
@@ -3106,7 +3241,7 @@ func _perform_attack() -> void:
 
 func _perform_backstab_attack() -> void:
 	var backstab_target := target_enemy
-	if not _is_backstab_target_usable(backstab_target):
+	if not is_instance_valid(backstab_target) or not _is_backstab_target_usable(backstab_target):
 		backstab_target = _find_manual_backstab_target()
 	if backstab_target == null:
 		return
@@ -3114,7 +3249,7 @@ func _perform_backstab_attack() -> void:
 	if facing_direction.length_squared() <= 0.0001:
 		facing_direction = Vector2.LEFT if facing_left else Vector2.RIGHT
 	_update_facing(facing_direction)
-	_spawn_shadow_strike_swing_effect(facing_direction)
+	_spawn_backstab_swing_effect(facing_direction)
 	if not backstab_target.has_method("receive_hit"):
 		return
 	var backstab_damage := attack_damage * maxf(0.1, backstab_damage_multiplier)
@@ -3261,6 +3396,10 @@ func receive_hit(amount: float, source_position: Vector2, _guard_break: bool = f
 		return false
 	if is_instance_valid(player) and player.is_point_inside_block_shield(global_position):
 		return false
+	if is_shadow_clone:
+		_spawn_hit_effect(global_position + Vector2(0.0, -12.0), Color(0.72, 0.44, 1.0, 0.95), 9.0)
+		_die()
+		return true
 
 	amount *= _get_ratfolk_damage_taken_multiplier()
 	var knockback_direction := (global_position - source_position).normalized()
@@ -3322,6 +3461,9 @@ func _die() -> void:
 	manual_roll_vector = Vector2.ZERO
 	death_anim_time = 0.0
 	died.emit(self)
+	if is_shadow_clone:
+		_spawn_shadow_clone_vanish_poof()
+		queue_free()
 
 
 func _configure_sprite() -> void:
@@ -3606,7 +3748,13 @@ func _update_health_bar() -> void:
 				continue
 			combo_point.position = Vector2(start_x + (float(point_index) * combo_point_spacing), special_bar_vertical_offset)
 			var filled := point_index < combo_point_count
-			combo_point.color = Color(0.98, 0.84, 0.36, 0.96) if filled else Color(0.16, 0.16, 0.2, 0.94)
+			var at_max := combo_point_count >= _get_combo_point_max()
+			if filled and at_max:
+				combo_point.color = Color(0.76, 0.38, 1.0, 0.98)
+			elif filled:
+				combo_point.color = Color(0.98, 0.84, 0.36, 0.96)
+			else:
+				combo_point.color = Color(0.16, 0.16, 0.2, 0.94)
 		return
 
 	if not is_instance_valid(special_bar_background) or not is_instance_valid(special_bar_fill):
@@ -3760,14 +3908,106 @@ func _update_breath_safe_indicator() -> void:
 	breath_safe_indicator.default_color = Color(0.46, 0.92, 1.0, lerpf(0.24, 0.78, clampf(breath_safe_indicator_left / 0.6, 0.0, 1.0)))
 
 
+func _spawn_shadow_clone_vanish_poof() -> void:
+	var scene_root := get_tree().current_scene if get_tree() != null else get_parent()
+	if scene_root == null:
+		return
+	var poof_center := global_position + Vector2(0.0, -14.0)
+	var smoke_configs := [
+		{"offset": Vector2(0.0, 0.0),    "r": 7.0,  "color": Color(0.72, 0.68, 0.78, 0.72), "drift": Vector2(0.0, -22.0),   "delay": 0.0,   "dur": 0.45},
+		{"offset": Vector2(-8.0, -4.0),  "r": 5.5,  "color": Color(0.62, 0.58, 0.70, 0.64), "drift": Vector2(-10.0, -28.0), "delay": 0.04,  "dur": 0.42},
+		{"offset": Vector2(8.0, -4.0),   "r": 5.5,  "color": Color(0.62, 0.58, 0.70, 0.64), "drift": Vector2(10.0, -28.0),  "delay": 0.04,  "dur": 0.42},
+		{"offset": Vector2(-5.0, 5.0),   "r": 4.5,  "color": Color(0.55, 0.52, 0.62, 0.58), "drift": Vector2(-6.0, -18.0),  "delay": 0.07,  "dur": 0.38},
+		{"offset": Vector2(5.0, 5.0),    "r": 4.5,  "color": Color(0.55, 0.52, 0.62, 0.58), "drift": Vector2(6.0, -18.0),   "delay": 0.07,  "dur": 0.38},
+		{"offset": Vector2(0.0, -10.0),  "r": 4.0,  "color": Color(0.68, 0.64, 0.76, 0.50), "drift": Vector2(0.0, -32.0),   "delay": 0.10,  "dur": 0.35},
+	]
+	for cfg in smoke_configs:
+		var blob := Node2D.new()
+		blob.top_level = true
+		blob.global_position = poof_center + (cfg["offset"] as Vector2)
+		blob.z_index = 233
+		scene_root.add_child(blob)
+		var circle := Polygon2D.new()
+		var r := cfg["r"] as float
+		var pts: PackedVector2Array = PackedVector2Array()
+		for s in range(10):
+			var a := (float(s) / 10.0) * TAU
+			pts.append(Vector2(cos(a) * r, sin(a) * r))
+		circle.polygon = pts
+		circle.color = cfg["color"] as Color
+		blob.add_child(circle)
+		var drift := cfg["drift"] as Vector2
+		var dur := cfg["dur"] as float
+		var delay := cfg["delay"] as float
+		var tween := create_tween()
+		tween.tween_interval(delay)
+		tween.tween_property(blob, "position", (cfg["offset"] as Vector2) + drift, dur).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tween.parallel().tween_property(blob, "scale", Vector2(1.8, 1.8), dur).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tween.parallel().tween_property(blob, "modulate:a", 0.0, dur).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		tween.finished.connect(func() -> void:
+			if is_instance_valid(blob):
+				blob.queue_free()
+		)
+
+
+func _spawn_roll_dash_effect(roll_direction: Vector2) -> void:
+	var scene_root := get_tree().current_scene if get_tree() != null else get_parent()
+	if scene_root == null:
+		return
+	var dir := roll_direction.normalized() if roll_direction.length_squared() > 0.0001 else Vector2.RIGHT
+	var perp := Vector2(-dir.y, dir.x)
+	var streak_color := Color(0.78, 0.52, 1.0, 0.68)
+	var streak_configs := [
+		{"offset": perp * 5.0,  "length": 14.0, "width": 2.2, "delay": 0.0},
+		{"offset": Vector2.ZERO, "length": 18.0, "width": 2.8, "delay": 0.02},
+		{"offset": perp * -5.0, "length": 14.0, "width": 2.2, "delay": 0.04},
+		{"offset": perp * 8.0,  "length": 9.0,  "width": 1.6, "delay": 0.01},
+		{"offset": perp * -8.0, "length": 9.0,  "width": 1.6, "delay": 0.03},
+	]
+	var origin := global_position + Vector2(0.0, -10.0) - dir * 8.0
+	for cfg in streak_configs:
+		var streak := Polygon2D.new()
+		streak.top_level = true
+		var half_w := (cfg["width"] as float) * 0.5
+		var half_l := (cfg["length"] as float) * 0.5
+		streak.polygon = PackedVector2Array([
+			-dir * half_l - perp * half_w,
+			-dir * half_l + perp * half_w,
+			dir * half_l + perp * half_w,
+			dir * half_l - perp * half_w,
+		])
+		streak.color = streak_color
+		streak.global_position = origin + (cfg["offset"] as Vector2)
+		streak.z_index = 228
+		scene_root.add_child(streak)
+		var delay := cfg["delay"] as float
+		var tween := create_tween()
+		tween.tween_interval(delay)
+		tween.tween_property(streak, "modulate:a", 0.0, 0.22).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		tween.finished.connect(func() -> void:
+			if is_instance_valid(streak):
+				streak.queue_free()
+		)
+
+
 func _spawn_hit_effect(world_position: Vector2, effect_color: Color, effect_size: float) -> void:
 	var scene_root := get_tree().current_scene
 	if scene_root == null:
 		return
+	var container := Node2D.new()
+	container.top_level = true
+	container.global_position = world_position
+	container.z_index = 232
+	scene_root.add_child(container)
+	var ring := Line2D.new()
+	ring.default_color = Color(effect_color.r, effect_color.g, effect_color.b, effect_color.a * 0.72)
+	ring.width = 1.6
+	ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	ring.end_cap_mode = Line2D.LINE_CAP_ROUND
+	ring.closed = true
+	ring.points = _build_ring_points(effect_size * 0.88, 12)
+	container.add_child(ring)
 	var effect := Polygon2D.new()
-	effect.top_level = true
-	effect.global_position = world_position
-	effect.z_index = 232
 	effect.color = effect_color
 	effect.polygon = PackedVector2Array([
 		Vector2(0.0, -effect_size),
@@ -3775,13 +4015,13 @@ func _spawn_hit_effect(world_position: Vector2, effect_color: Color, effect_size
 		Vector2(0.0, effect_size),
 		Vector2(-effect_size * 0.55, 0.0)
 	])
-	scene_root.add_child(effect)
+	container.add_child(effect)
 	var tween := create_tween()
-	tween.tween_property(effect, "scale", Vector2(1.7, 1.7), hit_effect_duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tween.parallel().tween_property(effect, "modulate:a", 0.0, hit_effect_duration)
+	tween.tween_property(container, "scale", Vector2(1.7, 1.7), hit_effect_duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(container, "modulate:a", 0.0, hit_effect_duration)
 	tween.finished.connect(func() -> void:
-		if is_instance_valid(effect):
-			effect.queue_free()
+		if is_instance_valid(container):
+			container.queue_free()
 	)
 
 
@@ -3792,6 +4032,7 @@ func _spawn_shadow_surge_start_effect(world_position: Vector2, direction: Vector
 	if scene_root == null:
 		return
 
+	var is_clone := reason == "clone"
 	var burst := Node2D.new()
 	burst.top_level = true
 	burst.global_position = world_position
@@ -3799,39 +4040,74 @@ func _spawn_shadow_surge_start_effect(world_position: Vector2, direction: Vector
 	burst.z_index = 234
 	scene_root.add_child(burst)
 
+	# Dark shadow wake trailing behind
+	var shadow_wake := Polygon2D.new()
+	shadow_wake.color = Color(0.18, 0.04, 0.32, 0.52) if not is_clone else Color(0.12, 0.02, 0.22, 0.38)
+	shadow_wake.polygon = PackedVector2Array([
+		Vector2(-38.0, -7.0),
+		Vector2(-8.0, -3.0),
+		Vector2(-8.0, 3.0),
+		Vector2(-38.0, 7.0),
+		Vector2(-50.0, 0.0)
+	])
+	burst.add_child(shadow_wake)
+
+	# Main forward-pointing arrow body
 	var core := Polygon2D.new()
-	core.color = Color(0.56, 0.2, 0.86, 0.24) if reason == "clone" else Color(0.68, 0.3, 0.94, 0.28)
+	core.color = Color(0.74, 0.32, 0.98, 0.86) if not is_clone else Color(0.56, 0.2, 0.86, 0.68)
 	core.polygon = PackedVector2Array([
-		Vector2(-9.0, -10.0),
-		Vector2(18.0, 0.0),
-		Vector2(-9.0, 10.0),
-		Vector2(-2.0, 0.0)
+		Vector2(-13.0, -12.0),
+		Vector2(26.0, 0.0),
+		Vector2(-13.0, 12.0),
+		Vector2(-3.0, 0.0)
 	])
 	burst.add_child(core)
 
-	var arc := Line2D.new()
-	arc.default_color = Color(0.95, 0.72, 1.0, 0.96)
-	arc.width = 2.8
-	arc.begin_cap_mode = Line2D.LINE_CAP_ROUND
-	arc.end_cap_mode = Line2D.LINE_CAP_ROUND
-	arc.points = PackedVector2Array([
-		Vector2(-8.0, -8.0),
-		Vector2(8.0, 0.0),
-		Vector2(-8.0, 8.0)
+	# Bright inner spike highlight
+	var inner_spike := Polygon2D.new()
+	inner_spike.color = Color(0.96, 0.88, 1.0, 0.96)
+	inner_spike.polygon = PackedVector2Array([
+		Vector2(-4.0, -4.0),
+		Vector2(20.0, 0.0),
+		Vector2(-4.0, 4.0),
+		Vector2(2.0, 0.0)
 	])
-	burst.add_child(arc)
+	burst.add_child(inner_spike)
 
+	# Blade-wing arcs on top and bottom
+	for sign_y: float in [-1.0, 1.0]:
+		var wing := Line2D.new()
+		wing.default_color = Color(0.88, 0.62, 1.0, 0.88)
+		wing.width = 2.2
+		wing.begin_cap_mode = Line2D.LINE_CAP_ROUND
+		wing.end_cap_mode = Line2D.LINE_CAP_ROUND
+		wing.points = PackedVector2Array([
+			Vector2(-8.0, sign_y * 14.0),
+			Vector2(12.0, sign_y * 4.0),
+			Vector2(22.0, 0.0)
+		])
+		burst.add_child(wing)
+
+	# Speed trail running through centre
 	var trail := Line2D.new()
-	trail.default_color = Color(0.72, 0.36, 1.0, 0.72)
-	trail.width = 2.2
+	trail.default_color = Color(0.72, 0.38, 1.0, 0.82)
+	trail.width = 2.8
 	trail.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	trail.end_cap_mode = Line2D.LINE_CAP_ROUND
-	trail.points = PackedVector2Array([Vector2(-16.0, 0.0), Vector2(16.0, 0.0)])
+	trail.points = PackedVector2Array([Vector2(-34.0, 0.0), Vector2(18.0, 0.0)])
 	burst.add_child(trail)
 
-	var tween := create_tween()
-	tween.tween_property(burst, "scale", Vector2(1.32, 1.12), 0.14).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
-	tween.parallel().tween_property(burst, "modulate:a", 0.0, 0.14)
+	# Origin ring flash
+	var ring := Line2D.new()
+	ring.default_color = Color(0.96, 0.78, 1.0, 0.88)
+	ring.width = 2.4
+	ring.closed = true
+	ring.points = _build_ring_points(11.0, 14)
+	burst.add_child(ring)
+
+	var tween := burst.create_tween()
+	tween.tween_property(burst, "scale", Vector2(1.54, 1.28), 0.22).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(burst, "modulate:a", 0.0, 0.22)
 	tween.finished.connect(func() -> void:
 		if is_instance_valid(burst):
 			burst.queue_free()
@@ -3851,34 +4127,59 @@ func _spawn_shadow_surge_impact_effect(world_position: Vector2) -> void:
 	impact.z_index = 235
 	scene_root.add_child(impact)
 
-	var ring := Line2D.new()
-	ring.default_color = Color(0.96, 0.78, 1.0, 0.98)
-	ring.width = 2.4
-	ring.begin_cap_mode = Line2D.LINE_CAP_ROUND
-	ring.end_cap_mode = Line2D.LINE_CAP_ROUND
-	ring.closed = true
-	ring.points = _build_ring_points(8.5, 16)
-	impact.add_child(ring)
+	# Dark shadow core bloom
+	var shadow_core := Polygon2D.new()
+	shadow_core.color = Color(0.28, 0.06, 0.48, 0.76)
+	shadow_core.polygon = _build_circle_points(13.0, 12)
+	impact.add_child(shadow_core)
 
-	var slash := Line2D.new()
-	slash.default_color = Color(0.68, 0.28, 0.92, 0.94)
-	slash.width = 2.6
-	slash.begin_cap_mode = Line2D.LINE_CAP_ROUND
-	slash.end_cap_mode = Line2D.LINE_CAP_ROUND
-	slash.points = PackedVector2Array([Vector2(-9.0, -6.0), Vector2(10.0, 6.0)])
-	impact.add_child(slash)
+	# Outer expanding ring
+	var outer_ring := Line2D.new()
+	outer_ring.default_color = Color(0.86, 0.62, 1.0, 0.72)
+	outer_ring.width = 2.0
+	outer_ring.closed = true
+	outer_ring.points = _build_ring_points(12.0, 20)
+	impact.add_child(outer_ring)
 
-	var slash_back := Line2D.new()
-	slash_back.default_color = Color(0.88, 0.54, 1.0, 0.82)
-	slash_back.width = 1.8
-	slash_back.begin_cap_mode = Line2D.LINE_CAP_ROUND
-	slash_back.end_cap_mode = Line2D.LINE_CAP_ROUND
-	slash_back.points = PackedVector2Array([Vector2(-6.0, 8.0), Vector2(7.0, -7.0)])
-	impact.add_child(slash_back)
+	# Inner bright flash ring
+	var inner_ring := Line2D.new()
+	inner_ring.default_color = Color(1.0, 0.92, 1.0, 0.98)
+	inner_ring.width = 3.2
+	inner_ring.closed = true
+	inner_ring.points = _build_ring_points(6.0, 14)
+	impact.add_child(inner_ring)
 
-	var tween := create_tween()
-	tween.tween_property(impact, "scale", Vector2(1.38, 1.38), 0.1).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tween.parallel().tween_property(impact, "modulate:a", 0.0, 0.1)
+	# Three slash marks — X cross plus vertical
+	var slash_defs: Array = [
+		[Vector2(-14.0, -9.0), Vector2(15.0, 9.0),  Color(0.68, 0.28, 0.94, 0.96), 3.4],
+		[Vector2(-11.0, 10.0), Vector2(13.0, -10.0), Color(0.88, 0.56, 1.0, 0.84), 2.6],
+		[Vector2(0.0, -13.0),  Vector2(0.0, 13.0),   Color(0.76, 0.44, 1.0, 0.72), 2.0],
+	]
+	for sd: Array in slash_defs:
+		var sl := Line2D.new()
+		sl.default_color = sd[2]
+		sl.width = float(sd[3])
+		sl.begin_cap_mode = Line2D.LINE_CAP_ROUND
+		sl.end_cap_mode = Line2D.LINE_CAP_ROUND
+		sl.points = PackedVector2Array([sd[0], sd[1]])
+		impact.add_child(sl)
+
+	# Six radial spark spikes
+	var spike_count := 6
+	for spike_i in range(spike_count):
+		var angle := (TAU * float(spike_i)) / float(spike_count) + (PI / float(spike_count))
+		var spike_len := 18.0 if spike_i % 2 == 0 else 12.0
+		var spike := Line2D.new()
+		spike.default_color = Color(0.92, 0.76, 1.0, 0.86)
+		spike.width = 1.8
+		spike.begin_cap_mode = Line2D.LINE_CAP_ROUND
+		spike.end_cap_mode = Line2D.LINE_CAP_ROUND
+		spike.points = PackedVector2Array([Vector2.ZERO, Vector2(cos(angle), sin(angle)) * spike_len])
+		impact.add_child(spike)
+
+	var tween := impact.create_tween()
+	tween.tween_property(impact, "scale", Vector2(1.74, 1.74), 0.2).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(impact, "modulate:a", 0.0, 0.2)
 	tween.finished.connect(func() -> void:
 		if is_instance_valid(impact):
 			impact.queue_free()
@@ -3886,7 +4187,62 @@ func _spawn_shadow_surge_impact_effect(world_position: Vector2) -> void:
 
 
 func _spawn_shadow_surge_finish_effect(world_position: Vector2) -> void:
-	_spawn_shadow_clone_birth_effect(world_position)
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		scene_root = get_parent()
+	if scene_root == null:
+		return
+
+	var finish := Node2D.new()
+	finish.top_level = true
+	finish.global_position = world_position
+	finish.z_index = 233
+	scene_root.add_child(finish)
+
+	# Dark expanding shadow disc
+	var shadow_disc := Polygon2D.new()
+	shadow_disc.color = Color(0.24, 0.05, 0.42, 0.62)
+	shadow_disc.polygon = _build_circle_points(20.0, 18)
+	finish.add_child(shadow_disc)
+
+	# Outer glow ring
+	var glow_ring := Line2D.new()
+	glow_ring.default_color = Color(0.78, 0.48, 1.0, 0.82)
+	glow_ring.width = 3.6
+	glow_ring.closed = true
+	glow_ring.points = _build_ring_points(18.0, 22)
+	finish.add_child(glow_ring)
+
+	# Inner bright ring
+	var inner_ring := Line2D.new()
+	inner_ring.default_color = Color(0.96, 0.82, 1.0, 0.94)
+	inner_ring.width = 2.0
+	inner_ring.closed = true
+	inner_ring.points = _build_ring_points(9.0, 16)
+	finish.add_child(inner_ring)
+
+	# Eight radial shadow darts
+	var dart_count := 8
+	for dart_i in range(dart_count):
+		var angle := (TAU * float(dart_i)) / float(dart_count)
+		var dart := Polygon2D.new()
+		dart.rotation = angle
+		dart.color = Color(0.56, 0.18, 0.86, 0.78)
+		dart.polygon = PackedVector2Array([
+			Vector2(8.0, -2.5),
+			Vector2(26.0, 0.0),
+			Vector2(8.0, 2.5),
+			Vector2(11.0, 0.0)
+		])
+		finish.add_child(dart)
+
+	var tween := finish.create_tween()
+	tween.tween_property(finish, "scale", Vector2(1.62, 1.62), 0.3).set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(finish, "modulate:a", 0.0, 0.3)
+	tween.finished.connect(func() -> void:
+		if is_instance_valid(finish):
+			finish.queue_free()
+	)
 
 
 func _spawn_attack_range_indicator(reason: String = "") -> void:
@@ -3989,7 +4345,7 @@ func _spawn_attack_range_indicator(reason: String = "") -> void:
 
 func _get_attack_indicator_target() -> EnemyBase:
 	if current_attack_mode == AttackMode.BACKSTAB:
-		if _is_backstab_target_usable(target_enemy):
+		if is_instance_valid(target_enemy) and _is_backstab_target_usable(target_enemy):
 			return target_enemy
 		return _find_manual_backstab_target()
 	if target_enemy != null and is_instance_valid(target_enemy) and not target_enemy.dead and not _is_enemy_shadow_feared(target_enemy):
@@ -4064,6 +4420,101 @@ func _get_manual_attack_target_radius(enemy: EnemyBase) -> float:
 		return 0.0
 	var cap := maxf(6.0, attack_range * 0.25)
 	return minf(base_radius, cap)
+
+
+func _spawn_basic_attack_swing_effect(facing_direction: Vector2) -> void:
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		scene_root = get_parent()
+	if scene_root == null:
+		return
+
+	var swing := Node2D.new()
+	swing.top_level = true
+	swing.global_position = global_position + (facing_direction.normalized() * 12.0) + Vector2(0.0, -12.0)
+	swing.rotation = facing_direction.angle()
+	swing.z_index = 232
+	scene_root.add_child(swing)
+
+	var slash_fill := Polygon2D.new()
+	slash_fill.color = Color(0.88, 0.62, 0.18, 0.22)
+	var slash_points := PackedVector2Array([Vector2.ZERO])
+	for point in _build_attack_arc_points(maxf(10.0, attack_range * 0.52), attack_arc_degrees * 0.68, 13):
+		slash_points.append(point)
+	slash_fill.polygon = slash_points
+	swing.add_child(slash_fill)
+
+	var slash_arc := Line2D.new()
+	slash_arc.default_color = Color(1.0, 0.82, 0.42, 0.94)
+	slash_arc.width = 2.8
+	slash_arc.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	slash_arc.end_cap_mode = Line2D.LINE_CAP_ROUND
+	slash_arc.points = _build_attack_arc_points(maxf(10.0, attack_range * 0.56), attack_arc_degrees * 0.72, 13)
+	swing.add_child(slash_arc)
+
+	var core := Line2D.new()
+	core.default_color = Color(1.0, 0.94, 0.62, 0.88)
+	core.width = 1.8
+	core.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	core.end_cap_mode = Line2D.LINE_CAP_ROUND
+	core.points = PackedVector2Array([Vector2.ZERO, Vector2(maxf(14.0, attack_range * 0.5), 0.0)])
+	swing.add_child(core)
+
+	var tween := create_tween()
+	tween.tween_property(swing, "scale", Vector2(1.18, 1.18), 0.11).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(swing, "modulate:a", 0.0, 0.11)
+	tween.finished.connect(func() -> void:
+		if is_instance_valid(swing):
+			swing.queue_free()
+	)
+
+
+func _spawn_backstab_swing_effect(facing_direction: Vector2) -> void:
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		scene_root = get_parent()
+	if scene_root == null:
+		return
+
+	var swing := Node2D.new()
+	swing.top_level = true
+	swing.global_position = global_position + (facing_direction.normalized() * 12.0) + Vector2(0.0, -12.0)
+	swing.rotation = facing_direction.angle()
+	swing.z_index = 232
+	scene_root.add_child(swing)
+
+	var backstab_radius := maxf(14.0, _get_backstab_hit_radius())
+	var slash_fill := Polygon2D.new()
+	slash_fill.color = Color(0.72, 0.18, 0.12, 0.26)
+	var slash_points := PackedVector2Array([Vector2.ZERO])
+	for point in _build_attack_arc_points(backstab_radius * 0.62, backstab_arc_degrees * 0.7, 13):
+		slash_points.append(point)
+	slash_fill.polygon = slash_points
+	swing.add_child(slash_fill)
+
+	var slash_arc := Line2D.new()
+	slash_arc.default_color = Color(1.0, 0.52, 0.38, 0.96)
+	slash_arc.width = 3.0
+	slash_arc.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	slash_arc.end_cap_mode = Line2D.LINE_CAP_ROUND
+	slash_arc.points = _build_attack_arc_points(backstab_radius * 0.66, backstab_arc_degrees * 0.76, 13)
+	swing.add_child(slash_arc)
+
+	var core := Line2D.new()
+	core.default_color = Color(1.0, 0.76, 0.52, 0.92)
+	core.width = 2.0
+	core.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	core.end_cap_mode = Line2D.LINE_CAP_ROUND
+	core.points = PackedVector2Array([Vector2.ZERO, Vector2(backstab_radius * 0.58, 0.0)])
+	swing.add_child(core)
+
+	var tween := create_tween()
+	tween.tween_property(swing, "scale", Vector2(1.22, 1.22), 0.13).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(swing, "modulate:a", 0.0, 0.13)
+	tween.finished.connect(func() -> void:
+		if is_instance_valid(swing):
+			swing.queue_free()
+	)
 
 
 func _spawn_shadow_strike_swing_effect(facing_direction: Vector2) -> void:
@@ -4320,8 +4771,10 @@ func _build_basic_attack_hitbox_polygon() -> PackedVector2Array:
 
 
 func _configure_basic_attack_hitbox() -> void:
-	if not is_instance_valid(basic_attack_hitbox_polygon):
+	if not is_instance_valid(basic_attack_hitbox) or not is_instance_valid(basic_attack_hitbox_polygon):
 		return
+	basic_attack_hitbox.collision_mask = 1
+	basic_attack_hitbox.monitoring = false
 	_deactivate_basic_attack_hitbox()
 
 
@@ -4335,6 +4788,7 @@ func _activate_basic_attack_hitbox() -> void:
 	basic_attack_hitbox_shape.points = polygon
 	basic_attack_hitbox_polygon.polygon = polygon
 	basic_attack_hitbox_polygon.disabled = false
+	basic_attack_hitbox.monitoring = true
 	basic_attack_hitbox_active_left = attack_windup_left + maxf(0.01, basic_attack_hitbox_active_duration)
 	_sync_basic_attack_hitbox_transform()
 
@@ -4353,36 +4807,20 @@ func _deactivate_basic_attack_hitbox() -> void:
 	if not is_instance_valid(basic_attack_hitbox_polygon):
 		return
 	basic_attack_hitbox_polygon.disabled = true
+	if is_instance_valid(basic_attack_hitbox):
+		basic_attack_hitbox.monitoring = false
 
 
 func _query_basic_attack_hitbox_targets() -> Array[EnemyBase]:
 	var hit_targets: Array[EnemyBase] = []
 	if not is_instance_valid(basic_attack_hitbox):
 		return hit_targets
-	if basic_attack_hitbox_shape.points.size() < 3:
+	if not basic_attack_hitbox.monitoring:
 		return hit_targets
 	_sync_basic_attack_hitbox_transform()
-	var world_2d := get_world_2d()
-	if world_2d == null:
-		return hit_targets
-	var space_state := world_2d.direct_space_state
-	if space_state == null:
-		return hit_targets
-	var query := PhysicsShapeQueryParameters2D.new()
-	query.shape = basic_attack_hitbox_shape
-	query.transform = basic_attack_hitbox.global_transform
-	query.collision_mask = 1
-	query.collide_with_bodies = true
-	query.collide_with_areas = false
-	query.exclude = [get_rid()]
-	var results := space_state.intersect_shape(query, 16)
 	var seen_enemy_ids: Dictionary = {}
-	for result_variant in results:
-		if not (result_variant is Dictionary):
-			continue
-		var result := result_variant as Dictionary
-		var collider := result.get("collider") as Node
-		var enemy := collider as EnemyBase
+	for body in basic_attack_hitbox.get_overlapping_bodies():
+		var enemy := body as EnemyBase
 		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
 			continue
 		if _is_enemy_shadow_feared(enemy):

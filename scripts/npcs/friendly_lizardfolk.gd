@@ -32,6 +32,7 @@ const LIZARD_ANIM_FPS: Dictionary = {
 	"death": 8.0
 }
 const LIZARDFOLK_ITEM_PRICE: int = 15
+const PRCS_HOLD_FRAME: int = 2
 const LIZARDFOLK_WEAPON_DEFINITIONS: Dictionary = {
 	"boghunter_longbow": {
 		"id": "boghunter_longbow",
@@ -165,6 +166,23 @@ var lizard_arrow_projectile_scene_cache: PackedScene = null
 @export_range(-0.25, 0.95, 0.01) var tank_guard_alignment_threshold: float = 0.35
 @export var tank_guard_max_distance: float = 228.0
 
+@export var freeze_trap_enabled: bool = true
+@export var freeze_trap_cooldown: float = 14.0
+@export var freeze_trap_duration: float = 12.0
+@export var freeze_trap_trigger_radius: float = 36.0
+@export var freeze_trap_lifetime: float = 30.0
+@export var distracting_shot_enabled: bool = true
+@export var distracting_shot_cooldown: float = 18.0
+@export var distracting_shot_taunt_amount: float = 99999.0
+@export var distracting_shot_damage_scale: float = 0.4
+
+@export var precision_shot_enabled: bool = true
+@export var precision_shot_cooldown: float = 1.5
+@export var precision_shot_cast_duration: float = 0.78
+@export var precision_shot_damage_scale: float = 2.1
+@export var precision_shot_perfect_bonus: float = 0.20
+@export var precision_shot_perfect_ratio: float = 0.88
+
 var flurry_cooldown_left: float = 0.0
 var flurry_windup_left: float = 0.0
 var flurry_active_left: float = 0.0
@@ -182,6 +200,19 @@ var base_flurry_duration: float = 0.0
 var base_flurry_shot_interval: float = 0.0
 var base_flurry_trigger_range: float = 0.0
 var base_flurry_arrow_damage_scale: float = 0.0
+var freeze_trap_cooldown_left: float = 0.0
+var freeze_trap_active: bool = false
+var freeze_trap_position: Vector2 = Vector2.ZERO
+var freeze_trap_lifetime_left: float = 0.0
+var freeze_trap_visual_node: Node2D = null
+var distracting_shot_cooldown_left: float = 0.0
+var pending_distracting_shot: bool = false
+var distracting_shot_pending_target: EnemyBase = null
+var precision_shot_cooldown_left: float = 0.0
+var precision_shot_charging: bool = false
+var precision_shot_charge_time: float = 0.0
+var precision_shot_firing: bool = false
+var _prcs_recovery_duration: float = 0.0
 
 
 func _ready() -> void:
@@ -210,6 +241,11 @@ func _ready() -> void:
 	flurry_shot_left = 0.0
 	flurry_sequence_active = false
 	flurry_has_started_firing = false
+	precision_shot_cooldown_left = 0.0
+	precision_shot_charging = false
+	precision_shot_charge_time = 0.0
+	precision_shot_firing = false
+	_ensure_precision_shot_action()
 
 
 func _uses_combo_points() -> bool:
@@ -221,16 +257,16 @@ func get_manual_control_cooldown_state() -> Dictionary:
 		"ability_layout": "lizardfolk",
 		"basic": attack_cooldown_left,
 		"basic_unlocked": true,
-		"ability_1": 0.0,
-		"ability_1_unlocked": false,
-		"counter": 0.0,
-		"counter_unlocked": false,
+		"ability_1": freeze_trap_cooldown_left,
+		"ability_1_unlocked": freeze_trap_enabled and not is_shadow_clone,
+		"counter": distracting_shot_cooldown_left,
+		"counter_unlocked": distracting_shot_enabled and not is_shadow_clone,
 		"ability_2": flurry_cooldown_left,
 		"ability_2_unlocked": _can_start_manual_flurry(),
 		"roll": manual_roll_cooldown_left,
 		"roll_unlocked": not is_shadow_clone,
-		"block_cooldown_left": 0.0,
-		"block_unlocked": false,
+		"block_cooldown_left": precision_shot_cooldown_left,
+		"block_unlocked": precision_shot_enabled and not is_shadow_clone,
 		"special_meter_ratio": _get_special_meter_ratio()
 	}
 
@@ -647,15 +683,21 @@ func _tick_timers(delta: float) -> void:
 	flurry_windup_left = maxf(0.0, flurry_windup_left - maxf(0.0, delta))
 	flurry_active_left = maxf(0.0, flurry_active_left - maxf(0.0, delta))
 	flurry_shot_left = maxf(0.0, flurry_shot_left - maxf(0.0, delta))
+	freeze_trap_cooldown_left = maxf(0.0, freeze_trap_cooldown_left - maxf(0.0, delta))
+	distracting_shot_cooldown_left = maxf(0.0, distracting_shot_cooldown_left - maxf(0.0, delta))
+	precision_shot_cooldown_left = maxf(0.0, precision_shot_cooldown_left - maxf(0.0, delta))
+	_tick_freeze_trap(delta)
 
 
 func _interrupt_attack() -> void:
 	super._interrupt_attack()
 	_reset_flurry_state()
+	_cancel_precision_shot_charge()
 
 
 func _die() -> void:
 	_reset_flurry_state()
+	_cancel_precision_shot_charge()
 	super._die()
 
 
@@ -663,6 +705,29 @@ func _update_animation(delta: float) -> void:
 	if flurry_sequence_active and (flurry_windup_left > 0.0 or flurry_active_left > 0.0):
 		_set_loop_anim("attack", delta)
 		return
+	if precision_shot_charging:
+		var fps := float(LIZARD_ANIM_FPS.get("attack", 10.4))
+		var columns: Array = LIZARD_ANIM_FRAME_COLUMNS.get("attack", [])
+		if not columns.is_empty():
+			sprite_anim_key = "attack"
+			var hold_idx := mini(PRCS_HOLD_FRAME, columns.size() - 1)
+			# Play draw frames at natural speed, then freeze on the hold frame.
+			var frame_idx := mini(int(floor(precision_shot_charge_time * fps)), hold_idx)
+			_set_sprite_frame("attack", frame_idx)
+		return
+	if precision_shot_firing:
+		if attack_recovery_left > 0.0:
+			var fps := float(LIZARD_ANIM_FPS.get("attack", 10.4))
+			var columns: Array = LIZARD_ANIM_FRAME_COLUMNS.get("attack", [])
+			if not columns.is_empty():
+				sprite_anim_key = "attack"
+				var hold_idx := mini(PRCS_HOLD_FRAME, columns.size() - 1)
+				# Start immediately at the first release frame, advance at natural speed.
+				var time_into_fire := maxf(0.0, _prcs_recovery_duration) - attack_recovery_left
+				var frame_idx := mini(hold_idx + 1 + int(floor(time_into_fire * fps)), columns.size() - 1)
+				_set_sprite_frame("attack", frame_idx)
+			return
+		precision_shot_firing = false
 	super._update_animation(delta)
 
 
@@ -830,11 +895,20 @@ func _tick_manual_control_logic(delta: float) -> void:
 			current_attack_mode = AttackMode.BASIC
 		velocity = Vector2.ZERO
 		return
+	if precision_shot_charging:
+		velocity = Vector2.ZERO
+		_tick_precision_shot_charge(delta)
+		return
 	_handle_manual_control_movement()
 	_handle_lizard_manual_control_actions()
 
 
 func _perform_attack() -> void:
+	if pending_distracting_shot:
+		pending_distracting_shot = false
+		_fire_distracting_shot()
+		attack_recovery_left = maxf(0.01, attack_recovery)
+		return
 	attack_cooldown_left = maxf(0.01, attack_cooldown)
 	var target := target_enemy
 	if target == null or not is_instance_valid(target) or target.dead:
@@ -870,9 +944,31 @@ func _handle_lizard_manual_control_actions() -> void:
 		if _can_start_manual_roll():
 			_start_manual_roll()
 			return
+	if Input.is_action_just_pressed("ability_1"):
+		if freeze_trap_enabled and not is_shadow_clone and freeze_trap_cooldown_left <= 0.0 and not freeze_trap_active:
+			_place_freeze_trap()
+			return
+	if Input.is_action_just_pressed("counter_strike"):
+		if distracting_shot_enabled and not is_shadow_clone and distracting_shot_cooldown_left <= 0.0:
+			var shot_target := _find_manual_arrow_target()
+			if shot_target == null:
+				shot_target = target_enemy
+			if shot_target != null:
+				distracting_shot_pending_target = shot_target
+				pending_distracting_shot = true
+				_update_facing(shot_target.global_position - global_position)
+				_start_attack_windup("distracting_shot")
+				velocity = Vector2.ZERO
+			return
 	if Input.is_action_just_pressed("ability_2"):
 		if _can_start_manual_flurry():
 			_start_flurry()
+			velocity = Vector2.ZERO
+			return
+	if Input.is_action_just_pressed("ability_3"):
+		if precision_shot_enabled and not is_shadow_clone and precision_shot_cooldown_left <= 0.0:
+			precision_shot_charging = true
+			precision_shot_charge_time = 0.0
 			velocity = Vector2.ZERO
 			return
 	if Input.is_action_just_pressed("basic_attack") and attack_cooldown_left <= 0.0:
@@ -1222,6 +1318,12 @@ func _get_arrow_telegraph_target() -> EnemyBase:
 
 
 func _get_cast_progress_ratio() -> float:
+	if precision_shot_charging:
+		var ratio := clampf(precision_shot_charge_time / maxf(0.01, precision_shot_cast_duration), 0.0, 1.0)
+		if is_instance_valid(cast_bar_fill):
+			var in_perfect_zone := ratio >= clampf(precision_shot_perfect_ratio, 0.0, 1.0)
+			cast_bar_fill.default_color = Color(0.28, 0.96, 0.38, 0.95) if in_perfect_zone else Color(0.38, 0.72, 1.0, 0.95)
+		return ratio
 	var inherited_ratio := super._get_cast_progress_ratio()
 	if inherited_ratio >= 0.0:
 		return inherited_ratio
@@ -1253,3 +1355,259 @@ func _get_arrow_projectile_scene() -> PackedScene:
 	if loaded_scene is PackedScene:
 		lizard_arrow_projectile_scene_cache = loaded_scene as PackedScene
 	return lizard_arrow_projectile_scene_cache
+
+
+func _place_freeze_trap() -> void:
+	freeze_trap_active = true
+	freeze_trap_position = global_position
+	freeze_trap_lifetime_left = maxf(1.0, freeze_trap_lifetime)
+	freeze_trap_cooldown_left = maxf(0.1, freeze_trap_cooldown)
+	_spawn_freeze_trap_visual()
+
+
+func _spawn_freeze_trap_visual() -> void:
+	if is_instance_valid(freeze_trap_visual_node):
+		freeze_trap_visual_node.queue_free()
+	freeze_trap_visual_node = null
+	var scene_root := get_parent()
+	if scene_root == null:
+		return
+	var container := Node2D.new()
+	container.z_index = 1
+	scene_root.add_child(container)
+	container.global_position = freeze_trap_position
+	freeze_trap_visual_node = container
+	var point_count := 24
+	var radius := maxf(8.0, freeze_trap_trigger_radius)
+	# Inner frost fill
+	var fill := Polygon2D.new()
+	fill.color = Color(0.44, 0.72, 0.96, 0.28)
+	var fill_poly: PackedVector2Array = PackedVector2Array()
+	for i in range(point_count):
+		var angle := (float(i) / float(point_count)) * TAU
+		fill_poly.append(Vector2(cos(angle) * radius, sin(angle) * radius * 0.44))
+	fill.polygon = fill_poly
+	container.add_child(fill)
+	# Outer frost ring
+	var ring := Line2D.new()
+	ring.width = 3.0
+	ring.default_color = Color(0.56, 0.88, 1.0, 0.92)
+	ring.closed = true
+	for i in range(point_count):
+		var angle := (float(i) / float(point_count)) * TAU
+		ring.add_point(Vector2(cos(angle) * radius, sin(angle) * radius * 0.44))
+	container.add_child(ring)
+	# Crosshair lines
+	for dir in [Vector2(1, 0), Vector2(0, 1)]:
+		var line := Line2D.new()
+		line.width = 1.6
+		line.default_color = Color(0.72, 0.94, 1.0, 0.72)
+		line.add_point(-dir * radius * 0.78)
+		line.add_point(dir * radius * 0.78)
+		container.add_child(line)
+
+
+func _tick_freeze_trap(delta: float) -> void:
+	if not freeze_trap_active:
+		return
+	freeze_trap_lifetime_left = maxf(0.0, freeze_trap_lifetime_left - maxf(0.0, delta))
+	if freeze_trap_lifetime_left <= 0.0:
+		_deactivate_freeze_trap()
+		return
+	if get_tree() == null:
+		return
+	var trigger_radius_sq := maxf(8.0, freeze_trap_trigger_radius) * maxf(8.0, freeze_trap_trigger_radius)
+	for node in get_tree().get_nodes_in_group("enemies"):
+		var enemy := node as EnemyBase
+		if enemy == null or not is_instance_valid(enemy) or enemy.dead:
+			continue
+		if enemy.global_position.distance_squared_to(freeze_trap_position) <= trigger_radius_sq:
+			enemy.call("apply_freeze", maxf(0.5, freeze_trap_duration))
+			_spawn_hit_effect(freeze_trap_position, Color(0.56, 0.82, 1.0, 0.9), 14.0)
+			_deactivate_freeze_trap()
+			return
+
+
+func _deactivate_freeze_trap() -> void:
+	freeze_trap_active = false
+	if is_instance_valid(freeze_trap_visual_node):
+		freeze_trap_visual_node.queue_free()
+	freeze_trap_visual_node = null
+
+
+func _fire_distracting_shot() -> void:
+	distracting_shot_cooldown_left = maxf(0.1, distracting_shot_cooldown)
+	var shot_target := distracting_shot_pending_target
+	distracting_shot_pending_target = null
+	if shot_target == null or not is_instance_valid(shot_target) or shot_target.dead:
+		shot_target = _find_manual_arrow_target()
+	if shot_target == null or not is_instance_valid(shot_target) or shot_target.dead:
+		shot_target = target_enemy
+	if shot_target == null or not is_instance_valid(shot_target) or shot_target.dead:
+		return
+	if shot_target.has_method("apply_taunt"):
+		shot_target.call("apply_taunt", self, distracting_shot_taunt_amount, 10.0)
+	_fire_distracting_arrow_at_target(shot_target)
+
+
+func _fire_distracting_arrow_at_target(target: EnemyBase) -> void:
+	if target == null or not is_instance_valid(target) or target.dead:
+		return
+	var fallback_direction := target.global_position - global_position
+	if fallback_direction.length_squared() <= 0.0001:
+		fallback_direction = Vector2.LEFT if facing_left else Vector2.RIGHT
+	var spawn_position := _get_arrow_spawn_position(fallback_direction)
+	var aim_point := _get_enemy_arrow_target_point(target)
+	var to_target := aim_point - spawn_position
+	var fire_direction := to_target.normalized() if to_target.length_squared() > 0.0001 else fallback_direction.normalized()
+	spawn_position = _get_arrow_spawn_position(fire_direction)
+	_update_facing(fire_direction)
+	var projectile_scene := _get_arrow_projectile_scene()
+	if projectile_scene == null:
+		return
+	var projectile := projectile_scene.instantiate()
+	if projectile == null:
+		return
+	var scene_root := get_parent()
+	if scene_root == null:
+		projectile.queue_free()
+		return
+	var arrow := projectile as LizardArrowProjectile
+	if arrow != null:
+		arrow.is_distracting_shot = true
+	scene_root.add_child(projectile)
+	if projectile.has_method("setup"):
+		projectile.call(
+			"setup",
+			self,
+			spawn_position,
+			fire_direction,
+			maxf(1.0, arrow_projectile_speed),
+			maxf(24.0, arrow_projectile_max_distance),
+			maxf(0.1, attack_damage * maxf(0.1, distracting_shot_damage_scale)),
+			maxf(0.0, outgoing_hit_stun_duration),
+			maxf(0.1, attack_knockback_scale),
+			target,
+			true
+		)
+	_spawn_hit_effect(spawn_position, Color(1.0, 0.78, 0.28, 0.9), 5.0)
+
+
+func _ensure_precision_shot_action() -> void:
+	if not InputMap.has_action("ability_3"):
+		InputMap.add_action("ability_3")
+		var event := InputEventKey.new()
+		event.physical_keycode = KEY_U
+		InputMap.action_add_event("ability_3", event)
+
+
+func _cancel_precision_shot_charge() -> void:
+	if precision_shot_charging:
+		precision_shot_charging = false
+		precision_shot_charge_time = 0.0
+	precision_shot_firing = false
+
+
+func _tick_precision_shot_charge(delta: float) -> void:
+	precision_shot_charge_time += maxf(0.0, delta)
+	var cast_dur := maxf(0.01, precision_shot_cast_duration)
+	if precision_shot_charge_time >= cast_dur:
+		# Held too long — overcharged, fires as a normal (non-perfect) shot.
+		_fire_precision_shot(false)
+		return
+	var ratio := precision_shot_charge_time / cast_dur
+	if not Input.is_action_pressed("ability_3"):
+		var is_perfect := ratio >= clampf(precision_shot_perfect_ratio, 0.0, 1.0)
+		_fire_precision_shot(is_perfect)
+
+
+func _fire_precision_shot(is_perfect: bool) -> void:
+	precision_shot_charging = false
+	precision_shot_charge_time = 0.0
+	precision_shot_firing = true
+	precision_shot_cooldown_left = maxf(0.1, precision_shot_cooldown)
+	var fire_dir := Vector2.LEFT if facing_left else Vector2.RIGHT
+	var damage_mult := precision_shot_damage_scale
+	if is_perfect:
+		damage_mult *= (1.0 + maxf(0.0, precision_shot_perfect_bonus))
+	_update_facing(fire_dir)
+	var projectile_scene := _get_arrow_projectile_scene()
+	if projectile_scene == null:
+		return
+	var projectile := projectile_scene.instantiate()
+	if projectile == null:
+		return
+	var scene_root := get_parent()
+	if scene_root == null:
+		projectile.queue_free()
+		return
+	scene_root.add_child(projectile)
+	var spawn_position := _get_arrow_spawn_position(fire_dir)
+	if projectile.has_method("setup"):
+		projectile.call(
+			"setup",
+			self,
+			spawn_position,
+			fire_dir,
+			maxf(1.0, arrow_projectile_speed * 2.44),
+			maxf(24.0, arrow_projectile_max_distance * 1.3),
+			maxf(0.1, attack_damage * maxf(0.1, damage_mult)),
+			maxf(0.0, outgoing_hit_stun_duration),
+			maxf(0.1, attack_knockback_scale),
+			null,
+			true
+		)
+	if is_perfect:
+		_spawn_hit_effect(spawn_position, Color(1.0, 0.96, 0.36, 0.98), 7.2)
+		_spawn_perfect_shot_vfx()
+	else:
+		_spawn_hit_effect(spawn_position, Color(0.62, 0.84, 1.0, 0.9), 5.6)
+	# Give enough recovery time for the release frames to play at natural animation speed.
+	var release_frames: int = (LIZARD_ANIM_FRAME_COLUMNS.get("attack", []) as Array).size() - 1 - PRCS_HOLD_FRAME
+	var fps := float(LIZARD_ANIM_FPS.get("attack", 10.4))
+	_prcs_recovery_duration = maxf(attack_recovery, float(release_frames) / fps + 0.04)
+	attack_recovery_left = _prcs_recovery_duration
+
+
+func _spawn_perfect_shot_vfx() -> void:
+	var scene_root := get_parent()
+	if scene_root == null:
+		return
+	var vfx := Node2D.new()
+	vfx.top_level = true
+	vfx.global_position = global_position
+	vfx.z_index = 230
+	scene_root.add_child(vfx)
+	var point_count := 24
+	var radius := 34.0
+	var ring := Line2D.new()
+	ring.width = 3.2
+	ring.default_color = Color(1.0, 0.92, 0.24, 0.98)
+	ring.closed = true
+	for i in range(point_count):
+		var angle := (float(i) / float(point_count)) * TAU
+		ring.add_point(Vector2(cos(angle) * radius, sin(angle) * radius * 0.5))
+	vfx.add_child(ring)
+	for i in range(8):
+		var spoke := Line2D.new()
+		spoke.width = 1.8
+		spoke.default_color = Color(1.0, 1.0, 0.58, 0.88)
+		var ang := (float(i) / 8.0) * TAU
+		spoke.add_point(Vector2(cos(ang) * radius * 0.6, sin(ang) * radius * 0.3))
+		spoke.add_point(Vector2(cos(ang) * (radius + 14.0), sin(ang) * (radius + 8.0) * 0.5))
+		vfx.add_child(spoke)
+	var label := Label.new()
+	label.text = "PERFECT!"
+	label.add_theme_font_size_override("font_size", 10)
+	label.modulate = Color(1.0, 0.96, 0.24, 1.0)
+	label.position = Vector2(-26.0, -56.0)
+	vfx.add_child(label)
+	var tween := create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(vfx, "scale", Vector2(1.6, 1.6), 0.22)
+	tween.tween_property(vfx, "modulate:a", 0.0, 0.48)
+	tween.set_parallel(false)
+	tween.tween_callback(func() -> void:
+		if is_instance_valid(vfx):
+			vfx.queue_free()
+	)

@@ -28,6 +28,7 @@ const MELEE_ENEMY_SCENE: PackedScene = preload("res://scenes/enemies/MeleeEnemy.
 const ITEM_SCENE: PackedScene = preload("res://scenes/items/ItemPickup.tscn")
 const DEFAULT_DUNGEON_TILESET_TEXTURE: Texture2D = preload("res://assets/external/ElthenAssets/tilesets/dungeon/Dungeon_Tileset.png")
 const ARENA_TILESET_TEXTURE: Texture2D = preload("res://assets/external/ElthenAssets/tilesets/arena/Arena Tileset.png")
+const TORCH_TEXTURE: Texture2D = preload("res://assets/external/ElthenAssets/tilesets/arena/Torch.png")
 const COMPANION_BREATH_RESPONSE_SCRIPT := preload("res://ai/CompanionBreathResponse.gd")
 const IMP_SUMMON_PENTAGRAM_EFFECT_SCRIPT := preload("res://scripts/effects/imp_summon_pentagram.gd")
 const PARTY_MEMBER_TANK: String = "tank"
@@ -267,6 +268,8 @@ func _process(delta: float) -> void:
 	_emit_manual_control_cooldowns()
 	_try_auto_activate_two_room_exit_if_ready()
 	_try_auto_activate_two_room_return_portal_if_ready()
+	if two_room_test_active and two_room_test_room_index == 3:
+		_enforce_room_three_bridge_walkway()
 
 
 func start_demo_with_encounter(encounter_type: int) -> void:
@@ -728,6 +731,8 @@ func start_demo() -> void:
 	_teardown_two_room_fifth_play_area()
 	_teardown_two_room_sixth_play_area()
 	_apply_floor_tileset_to_node(floor_root, _get_default_floor_tileset_texture())
+	if _get_default_floor_tileset_texture() != ARENA_TILESET_TEXTURE:
+		_spawn_dungeon_room_atmosphere(floor_root)
 	_spawn_player()
 	if _encounter_uses_companions():
 		_apply_party_selection_runtime()
@@ -1140,16 +1145,74 @@ func _setup_two_room_third_play_area(room_three_bounds: Rect2) -> void:
 	_teardown_two_room_third_play_area()
 	if not is_instance_valid(floor_root):
 		return
+	# Compute bridge geometry (must match _get_room_three_walkable_rects exactly)
+	var template_width := maxf(room_three_bounds.size.x, float(floor_root.get("arena_width")))
+	var template_height := maxf(room_three_bounds.size.y, float(floor_root.get("arena_height")))
+	var full_room_size := Vector2(
+		maxf(room_three_bounds.size.x + 24.0, template_width),
+		maxf(room_three_bounds.size.y + 48.0, template_height)
+	)
+	var platform_width := clampf(room_three_bounds.size.x * 0.34, 272.0, full_room_size.x * 0.4)
+	var platform_height := clampf(room_three_bounds.size.y + 68.0, room_three_bounds.size.y + 28.0, full_room_size.y - 44.0)
+	var bridge_width := clampf(room_three_bounds.size.x * 0.42, 320.0, full_room_size.x * 0.52)
+	var bridge_height := clampf(room_three_bounds.size.y * 0.62, 150.0, platform_height - 72.0)
+	var platform_offset_x := room_three_bounds.size.x * 0.26
+	var dungeon_floor_coords: Array = [Vector2i(5, 8), Vector2i(6, 8), Vector2i(8, 8), Vector2i(9, 8)]
 	var duplicate_flags := Node.DUPLICATE_GROUPS | Node.DUPLICATE_SIGNALS | Node.DUPLICATE_SCRIPTS
+	# Parent container — suppress its own tile draw by setting tiny dimensions before _ready()
 	var third_floor := floor_root.duplicate(duplicate_flags) as Node2D
 	if third_floor == null:
 		return
 	third_floor.name = "FloorRoom3"
+	third_floor.set("arena_width", 1.0)
+	third_floor.set("arena_height", 1.0)
 	add_child(third_floor)
 	move_child(third_floor, get_child_count() - 1)
-	third_floor.position = room_three_bounds.position + (room_three_bounds.size * 0.5)
+	var room_center := room_three_bounds.position + (room_three_bounds.size * 0.5)
+	third_floor.position = room_center
 	two_room_third_floor_root = third_floor
-	_apply_floor_tileset_to_node(two_room_third_floor_root, _get_default_floor_tileset_texture())
+	# Rift (chasm) visuals — added first so platform tiles render above them
+	var rift_half_width := clampf(bridge_width * 0.22, 48.0, room_three_bounds.size.x * 0.12)
+	_spawn_room_three_rift_visuals(third_floor, room_three_bounds.size, bridge_height, rift_half_width)
+	# West platform — dungeon floor tiles, full height, right edge faces the chasm
+	var west_chunk := _duplicate_floor_template_chunk(third_floor, "WestPlatform", Vector2(-platform_offset_x, 0.0))
+	if west_chunk != null:
+		_configure_floor_chunk_visual(west_chunk, Vector2(platform_width, platform_height),
+			DEFAULT_DUNGEON_TILESET_TEXTURE, dungeon_floor_coords, 0.0, 1, 1, 1, 0.0, 0.22, 0.1, true)
+		_decorate_room_three_platform_chunk(west_chunk, true)
+		_spawn_dungeon_room_atmosphere(west_chunk)
+		_spawn_dungeon_torches_on_floor(west_chunk, 160.0)
+		_add_floor_center_highlight(west_chunk, platform_width, platform_height)
+	# Bridge — narrow horizontal strip connecting the platforms
+	var bridge_chunk := _duplicate_floor_template_chunk(third_floor, "Bridge", Vector2.ZERO)
+	if bridge_chunk != null:
+		_configure_floor_chunk_visual(bridge_chunk, Vector2(bridge_width, bridge_height),
+			DEFAULT_DUNGEON_TILESET_TEXTURE, dungeon_floor_coords, 0.0, 1, 1, 0, 0.0, 0.18, 0.1, true)
+		_decorate_room_three_bridge_chunk(bridge_chunk)
+		_add_floor_center_highlight(bridge_chunk, bridge_width, bridge_height)
+	# East platform — mirror of west, left edge faces the chasm
+	var east_chunk := _duplicate_floor_template_chunk(third_floor, "EastPlatform", Vector2(platform_offset_x, 0.0))
+	if east_chunk != null:
+		_configure_floor_chunk_visual(east_chunk, Vector2(platform_width, platform_height),
+			DEFAULT_DUNGEON_TILESET_TEXTURE, dungeon_floor_coords, 0.0, 1, 1, 1, 0.0, 0.22, 0.1, true)
+		_decorate_room_three_platform_chunk(east_chunk, false)
+		_spawn_dungeon_room_atmosphere(east_chunk)
+		_spawn_dungeon_torches_on_floor(east_chunk, 160.0)
+		_add_floor_center_highlight(east_chunk, platform_width, platform_height)
+	# Boss dais — small raised platform at bridge center where the minotaur stands
+	var dais_width := clampf(bridge_width * 0.36, 72.0, 160.0)
+	var dais_height := clampf(bridge_height * 0.64, 56.0, 116.0)
+	var dais_offset_x := room_three_bounds.size.x * 0.06
+	var dais_chunk := _duplicate_floor_template_chunk(third_floor, "BossDais", Vector2(dais_offset_x, 0.0))
+	if dais_chunk != null:
+		_configure_floor_chunk_visual(dais_chunk, Vector2(dais_width, dais_height),
+			DEFAULT_DUNGEON_TILESET_TEXTURE, dungeon_floor_coords, 0.0, 1, 1, 1, 0.0, 0.18, 0.12, true)
+		_decorate_room_three_boss_dais_chunk(dais_chunk)
+		_spawn_dungeon_room_atmosphere(dais_chunk)
+		_add_floor_center_highlight(dais_chunk, dais_width, dais_height)
+	# Atmospheric shadow, bridge rails, and boss spawn glow
+	var boss_spawn_local := Vector2(dais_offset_x, 0.0)
+	_spawn_room_three_bridge_ambience(third_floor, bridge_width, bridge_height, boss_spawn_local)
 
 
 func _duplicate_floor_template_chunk(parent_node: Node, chunk_name: String, local_position: Vector2 = Vector2.ZERO) -> Node2D:
@@ -1232,6 +1295,48 @@ func _decorate_room_three_platform_chunk(target_floor: Node2D, is_left_platform:
 	decor_layer.set_cell(Vector2i(brace_x, top_row + 1), source_id, Vector2i(4, 13))
 	decor_layer.set_cell(Vector2i(brace_x, max(top_row + 1, bottom_row - 1)), source_id, Vector2i(4, 14))
 
+	# Chasm-facing edge overlays — rift upwelling glow + void drop shadow
+	var pw := maxf(64.0, float(target_floor.get("arena_width")))
+	var ph := maxf(32.0, float(target_floor.get("arena_height")))
+	var hw := pw * 0.5
+	var hh := ph * 0.5
+	# chasm_sign: +1 means chasm is on the right (left platform), -1 means left (right platform)
+	var chasm_sign: float = 1.0 if is_left_platform else -1.0
+	var chasm_x := hw * chasm_sign
+
+	# Void drop shadow — dark edge strip where platform meets the chasm
+	var void_shadow := Polygon2D.new()
+	void_shadow.z_index = -88
+	void_shadow.color = Color(0.0, 0.0, 0.0, 0.32)
+	void_shadow.polygon = PackedVector2Array([
+		Vector2(chasm_x,                         -hh),
+		Vector2(chasm_x - chasm_sign * 18.0,     -hh),
+		Vector2(chasm_x - chasm_sign * 18.0,      hh),
+		Vector2(chasm_x,                           hh)
+	])
+	target_floor.add_child(void_shadow)
+
+	# Rift warmth glow — wider, warm red-orange tinting from below
+	var rift_upwelling := Polygon2D.new()
+	rift_upwelling.z_index = -89
+	rift_upwelling.color = Color(0.90, 0.28, 0.06, 0.13)
+	rift_upwelling.polygon = PackedVector2Array([
+		Vector2(chasm_x,                          -hh),
+		Vector2(chasm_x - chasm_sign * 80.0,      -hh),
+		Vector2(chasm_x - chasm_sign * 80.0,       hh),
+		Vector2(chasm_x,                            hh)
+	])
+	target_floor.add_child(rift_upwelling)
+
+	# Pulse warmth in sync with rift ember breathing
+	var uw_tween := rift_upwelling.create_tween()
+	uw_tween.set_loops()
+	var uw_phase := 0.0 if is_left_platform else 0.8
+	if uw_phase > 0.0:
+		uw_tween.tween_interval(uw_phase)
+	uw_tween.tween_property(rift_upwelling, "color:a", 0.05, 2.0).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	uw_tween.tween_property(rift_upwelling, "color:a", 0.22, 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
 
 func _decorate_room_three_bridge_chunk(target_floor: Node2D) -> void:
 	if target_floor == null or not is_instance_valid(target_floor):
@@ -1302,6 +1407,26 @@ func _build_room_three_ellipse_polygon(center: Vector2, radii: Vector2, segments
 func _spawn_room_three_bridge_ambience(parent_node: Node2D, bridge_width: float, bridge_height: float, boss_spawn_local: Vector2) -> void:
 	if parent_node == null or not is_instance_valid(parent_node):
 		return
+	# Rift warmth — warm orange tint on the bridge deck from below
+	var rift_warmth := Polygon2D.new()
+	rift_warmth.z_index = -96
+	rift_warmth.color = Color(0.86, 0.28, 0.06, 0.09)
+	rift_warmth.polygon = PackedVector2Array([
+		Vector2(-bridge_width * 0.40, -bridge_height * 0.32),
+		Vector2( bridge_width * 0.54, -bridge_height * 0.32),
+		Vector2( bridge_width * 0.64,  0.0),
+		Vector2( bridge_width * 0.54,  bridge_height * 0.32),
+		Vector2(-bridge_width * 0.40,  bridge_height * 0.32),
+		Vector2(-bridge_width * 0.52,  0.0)
+	])
+	parent_node.add_child(rift_warmth)
+
+	# Pulse the warmth tint in sync with the rift ember breathing
+	var warmth_tween := rift_warmth.create_tween()
+	warmth_tween.set_loops()
+	warmth_tween.tween_property(rift_warmth, "color:a", 0.04, 2.0).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	warmth_tween.tween_property(rift_warmth, "color:a", 0.14, 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
 	var bridge_shadow := Polygon2D.new()
 	bridge_shadow.z_index = -95
 	bridge_shadow.color = Color(0.0, 0.0, 0.0, 0.26)
@@ -1315,30 +1440,444 @@ func _spawn_room_three_bridge_ambience(parent_node: Node2D, bridge_width: float,
 	])
 	parent_node.add_child(bridge_shadow)
 
-	for rail_y in [-bridge_height * 0.42, bridge_height * 0.42]:
-		var bridge_rail := Line2D.new()
-		bridge_rail.z_index = -89
-		bridge_rail.width = 2.0
-		bridge_rail.default_color = Color(0.48, 0.42, 0.32, 0.84)
-		bridge_rail.begin_cap_mode = Line2D.LINE_CAP_ROUND
-		bridge_rail.end_cap_mode = Line2D.LINE_CAP_ROUND
-		bridge_rail.points = PackedVector2Array([
-			Vector2(-bridge_width * 0.46, rail_y),
-			Vector2(bridge_width * 0.46, rail_y)
+	# Shared edge references used by all structural elements below
+	var deck_top := -bridge_height * 0.40
+	var deck_bot :=  bridge_height * 0.40
+	var parapet_h := 11.0
+
+	# --- Top parapet: stone wall face running the bridge length ---
+	var parapet_face := Polygon2D.new()
+	parapet_face.z_index = -88
+	parapet_face.color = Color(0.46, 0.44, 0.40, 0.90)
+	parapet_face.polygon = PackedVector2Array([
+		Vector2(-bridge_width * 0.45, deck_top - parapet_h),
+		Vector2( bridge_width * 0.45, deck_top - parapet_h),
+		Vector2( bridge_width * 0.45, deck_top),
+		Vector2(-bridge_width * 0.45, deck_top)
+	])
+	parent_node.add_child(parapet_face)
+	# Cap stone — lit top surface of parapet
+	var cap_line := Line2D.new()
+	cap_line.z_index = -87
+	cap_line.width = 1.8
+	cap_line.default_color = Color(0.62, 0.60, 0.56, 0.76)
+	cap_line.points = PackedVector2Array([
+		Vector2(-bridge_width * 0.45, deck_top - parapet_h),
+		Vector2( bridge_width * 0.45, deck_top - parapet_h)
+	])
+	parent_node.add_child(cap_line)
+	# Shadow cast by parapet onto the deck surface
+	var parapet_shadow_line := Line2D.new()
+	parapet_shadow_line.z_index = -89
+	parapet_shadow_line.width = 8.0
+	parapet_shadow_line.default_color = Color(0.0, 0.0, 0.0, 0.20)
+	parapet_shadow_line.points = PackedVector2Array([
+		Vector2(-bridge_width * 0.45, deck_top + 3.0),
+		Vector2( bridge_width * 0.45, deck_top + 3.0)
+	])
+	parent_node.add_child(parapet_shadow_line)
+
+	# --- Bottom fascia: underside face of the bridge deck slab ---
+	var fascia_face := Polygon2D.new()
+	fascia_face.z_index = -88
+	fascia_face.color = Color(0.34, 0.32, 0.30, 0.88)
+	fascia_face.polygon = PackedVector2Array([
+		Vector2(-bridge_width * 0.45, deck_bot),
+		Vector2( bridge_width * 0.45, deck_bot),
+		Vector2( bridge_width * 0.45, deck_bot + 9.0),
+		Vector2(-bridge_width * 0.45, deck_bot + 9.0)
+	])
+	parent_node.add_child(fascia_face)
+	# Drop shadow from fascia into the chasm — tapered for depth
+	var drop_shadow := Polygon2D.new()
+	drop_shadow.z_index = -91
+	drop_shadow.color = Color(0.0, 0.0, 0.0, 0.44)
+	drop_shadow.polygon = PackedVector2Array([
+		Vector2(-bridge_width * 0.45, deck_bot + 9.0),
+		Vector2( bridge_width * 0.45, deck_bot + 9.0),
+		Vector2( bridge_width * 0.34, deck_bot + 52.0),
+		Vector2(-bridge_width * 0.34, deck_bot + 52.0)
+	])
+	parent_node.add_child(drop_shadow)
+
+	# --- End stone walls: panels at each bridge terminus ---
+	for end_sign: float in [-1.0, 1.0]:
+		var ex := end_sign * bridge_width * 0.45
+		var wall_t := 9.0
+		var end_wall := Polygon2D.new()
+		end_wall.z_index = -88
+		end_wall.color = Color(0.42, 0.40, 0.37, 0.88)
+		end_wall.polygon = PackedVector2Array([
+			Vector2(ex,                      deck_top - parapet_h),
+			Vector2(ex - end_sign * wall_t,  deck_top - parapet_h),
+			Vector2(ex - end_sign * wall_t,  deck_bot + 9.0),
+			Vector2(ex,                      deck_bot + 9.0)
 		])
-		parent_node.add_child(bridge_rail)
+		parent_node.add_child(end_wall)
+		# Lit inner face of end wall
+		var ew_hl := Line2D.new()
+		ew_hl.z_index = -87
+		ew_hl.width = 1.4
+		ew_hl.default_color = Color(0.58, 0.56, 0.52, 0.50)
+		ew_hl.begin_cap_mode = Line2D.LINE_CAP_ROUND
+		ew_hl.end_cap_mode = Line2D.LINE_CAP_ROUND
+		ew_hl.points = PackedVector2Array([
+			Vector2(ex - end_sign * wall_t, deck_top - parapet_h),
+			Vector2(ex - end_sign * wall_t, deck_bot + 9.0)
+		])
+		parent_node.add_child(ew_hl)
+
+	# --- Stone block joint lines across the deck surface ---
+	var plank_count := maxi(4, int(bridge_height / 16.0))
+	for pi in range(plank_count):
+		var py := lerpf(deck_top, deck_bot, float(pi) / float(maxi(1, plank_count - 1)))
+		var plank := Line2D.new()
+		plank.z_index = -94
+		plank.width = 0.9
+		plank.default_color = Color(0.22, 0.18, 0.13, 0.42)
+		plank.points = PackedVector2Array([
+			Vector2(-bridge_width * 0.44, py),
+			Vector2( bridge_width * 0.44, py)
+		])
+		parent_node.add_child(plank)
+
+	# Outer atmospheric glow ring
+	var far_glow := Polygon2D.new()
+	far_glow.z_index = -91
+	far_glow.color = Color(0.82, 0.22, 0.06, 0.06)
+	far_glow.polygon = _build_room_three_ellipse_polygon(boss_spawn_local + Vector2(0.0, 8.0), Vector2(136.0, 68.0), 26)
+	parent_node.add_child(far_glow)
 
 	var outer_glow := Polygon2D.new()
 	outer_glow.z_index = -89
-	outer_glow.color = Color(1.0, 0.36, 0.12, 0.08)
+	outer_glow.color = Color(1.0, 0.36, 0.12, 0.14)
 	outer_glow.polygon = _build_room_three_ellipse_polygon(boss_spawn_local + Vector2(0.0, 8.0), Vector2(90.0, 48.0), 22)
 	parent_node.add_child(outer_glow)
 
+	var mid_glow := Polygon2D.new()
+	mid_glow.z_index = -88
+	mid_glow.color = Color(1.0, 0.44, 0.14, 0.18)
+	mid_glow.polygon = _build_room_three_ellipse_polygon(boss_spawn_local + Vector2(0.0, 8.0), Vector2(66.0, 34.0), 20)
+	parent_node.add_child(mid_glow)
+
 	var inner_glow := Polygon2D.new()
-	inner_glow.z_index = -88
-	inner_glow.color = Color(1.0, 0.5, 0.18, 0.12)
-	inner_glow.polygon = _build_room_three_ellipse_polygon(boss_spawn_local + Vector2(0.0, 8.0), Vector2(54.0, 28.0), 18)
+	inner_glow.z_index = -87
+	inner_glow.color = Color(1.0, 0.56, 0.22, 0.22)
+	inner_glow.polygon = _build_room_three_ellipse_polygon(boss_spawn_local + Vector2(0.0, 8.0), Vector2(36.0, 18.0), 16)
 	parent_node.add_child(inner_glow)
+
+	# Boss spawn rune ring outline
+	var rune_ring := Line2D.new()
+	rune_ring.z_index = -87
+	rune_ring.width = 1.6
+	rune_ring.default_color = Color(1.0, 0.62, 0.28, 0.44)
+	rune_ring.begin_cap_mode = Line2D.LINE_CAP_NONE
+	rune_ring.end_cap_mode = Line2D.LINE_CAP_NONE
+	var rune_segments := 28
+	var rune_points := PackedVector2Array()
+	for ri in range(rune_segments + 1):
+		var angle := (TAU * float(ri)) / float(rune_segments)
+		rune_points.append(boss_spawn_local + Vector2(0.0, 8.0) + Vector2(cos(angle) * 44.0, sin(angle) * 22.0))
+	rune_ring.points = rune_points
+	parent_node.add_child(rune_ring)
+
+	# Rune cross — two lines through the centre
+	var rune_cross_h := Line2D.new()
+	rune_cross_h.z_index = -87
+	rune_cross_h.width = 1.2
+	rune_cross_h.default_color = Color(1.0, 0.62, 0.28, 0.28)
+	rune_cross_h.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	rune_cross_h.end_cap_mode = Line2D.LINE_CAP_ROUND
+	rune_cross_h.points = PackedVector2Array([
+		boss_spawn_local + Vector2(-44.0, 8.0),
+		boss_spawn_local + Vector2( 44.0, 8.0)
+	])
+	parent_node.add_child(rune_cross_h)
+
+	var rune_cross_v := Line2D.new()
+	rune_cross_v.z_index = -87
+	rune_cross_v.width = 1.2
+	rune_cross_v.default_color = Color(1.0, 0.62, 0.28, 0.28)
+	rune_cross_v.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	rune_cross_v.end_cap_mode = Line2D.LINE_CAP_ROUND
+	rune_cross_v.points = PackedVector2Array([
+		boss_spawn_local + Vector2(0.0, 8.0 - 22.0),
+		boss_spawn_local + Vector2(0.0, 8.0 + 22.0)
+	])
+	parent_node.add_child(rune_cross_v)
+
+	# Rune tick marks at 45° diagonals
+	for ti in range(4):
+		var tick_angle := PI * 0.25 + float(ti) * PI * 0.5
+		var tick_inner := Vector2(cos(tick_angle) * 34.0, sin(tick_angle) * 17.0)
+		var tick_outer := Vector2(cos(tick_angle) * 44.0, sin(tick_angle) * 22.0)
+		var tick := Line2D.new()
+		tick.z_index = -87
+		tick.width = 1.4
+		tick.default_color = Color(1.0, 0.62, 0.28, 0.38)
+		tick.begin_cap_mode = Line2D.LINE_CAP_ROUND
+		tick.end_cap_mode = Line2D.LINE_CAP_ROUND
+		tick.points = PackedVector2Array([
+			boss_spawn_local + Vector2(0.0, 8.0) + tick_inner,
+			boss_spawn_local + Vector2(0.0, 8.0) + tick_outer
+		])
+		parent_node.add_child(tick)
+
+	# Outer rune ring — larger, subtler, offset pulse from the inner ring
+	var outer_rune_ring := Line2D.new()
+	outer_rune_ring.z_index = -88
+	outer_rune_ring.width = 0.9
+	outer_rune_ring.default_color = Color(0.90, 0.48, 0.14, 0.20)
+	outer_rune_ring.begin_cap_mode = Line2D.LINE_CAP_NONE
+	outer_rune_ring.end_cap_mode = Line2D.LINE_CAP_NONE
+	var outer_rune_pts := PackedVector2Array()
+	for ri in range(rune_segments + 1):
+		var angle := (TAU * float(ri)) / float(rune_segments)
+		outer_rune_pts.append(boss_spawn_local + Vector2(0.0, 8.0) + Vector2(cos(angle) * 62.0, sin(angle) * 31.0))
+	outer_rune_ring.points = outer_rune_pts
+	parent_node.add_child(outer_rune_ring)
+
+	var outer_rune_tween := outer_rune_ring.create_tween()
+	outer_rune_tween.set_loops()
+	outer_rune_tween.tween_interval(0.65)
+	outer_rune_tween.tween_property(outer_rune_ring, "default_color:a", 0.08, 1.8).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	outer_rune_tween.tween_property(outer_rune_ring, "default_color:a", 0.40, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+	# Pulse the rune alpha gently
+	var rune_tween := rune_ring.create_tween()
+	rune_tween.set_loops()
+	rune_tween.tween_property(rune_ring, "default_color:a", 0.22, 1.8).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	rune_tween.tween_property(rune_ring, "default_color:a", 0.58, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+
+func _spawn_dungeon_room_atmosphere(floor_node: Node2D) -> void:
+	if floor_node == null or not is_instance_valid(floor_node):
+		return
+	var old := floor_node.get_node_or_null("AtmosphereRoot") as Node2D
+	if old != null and is_instance_valid(old):
+		old.queue_free()
+	var arena_w := maxf(64.0, float(floor_node.get("arena_width")))
+	var arena_h := maxf(32.0, float(floor_node.get("arena_height")))
+	var hw := arena_w * 0.5
+	var hh := arena_h * 0.5
+	var top_border_rows := maxi(1, int(floor_node.get("top_border_rows")))
+	var top_wall_bottom := -hh + float(top_border_rows) * 32.0
+
+	var atm := Node2D.new()
+	atm.name = "AtmosphereRoot"
+	atm.z_index = -92
+	floor_node.add_child(atm)
+
+	# Subtle ambient darkening — makes torchlight pop more
+	var ambient := Polygon2D.new()
+	ambient.color = Color(0.05, 0.04, 0.07, 0.16)
+	ambient.polygon = PackedVector2Array([
+		Vector2(-hw, -hh), Vector2(hw, -hh), Vector2(hw, hh), Vector2(-hw, hh)
+	])
+	atm.add_child(ambient)
+
+	# Shadow strip just below the top wall — mimics the shadow a wall casts downward
+	var top_fade := minf(hh * 0.30, 68.0)
+	var top_shadow := Polygon2D.new()
+	top_shadow.color = Color(0.04, 0.03, 0.05, 0.48)
+	top_shadow.polygon = PackedVector2Array([
+		Vector2(-hw, top_wall_bottom),
+		Vector2( hw, top_wall_bottom),
+		Vector2( hw, top_wall_bottom + top_fade),
+		Vector2(-hw, top_wall_bottom + top_fade)
+	])
+	atm.add_child(top_shadow)
+
+	# Thinner bottom edge shadow
+	var bot_fade := minf(hh * 0.18, 36.0)
+	var bot_shadow := Polygon2D.new()
+	bot_shadow.color = Color(0.04, 0.03, 0.05, 0.28)
+	bot_shadow.polygon = PackedVector2Array([
+		Vector2(-hw, hh - bot_fade), Vector2(hw, hh - bot_fade),
+		Vector2( hw, hh),            Vector2(-hw, hh)
+	])
+	atm.add_child(bot_shadow)
+
+	# Left edge shadow
+	var side_w := minf(hw * 0.07, 40.0)
+	var left_shadow := Polygon2D.new()
+	left_shadow.color = Color(0.04, 0.03, 0.05, 0.38)
+	left_shadow.polygon = PackedVector2Array([
+		Vector2(-hw,           -hh), Vector2(-hw + side_w, -hh),
+		Vector2(-hw + side_w,  hh), Vector2(-hw,            hh)
+	])
+	atm.add_child(left_shadow)
+
+	# Right edge shadow
+	var right_shadow := Polygon2D.new()
+	right_shadow.color = Color(0.04, 0.03, 0.05, 0.38)
+	right_shadow.polygon = PackedVector2Array([
+		Vector2(hw - side_w, -hh), Vector2(hw,          -hh),
+		Vector2(hw,            hh), Vector2(hw - side_w,  hh)
+	])
+	atm.add_child(right_shadow)
+
+	# Corner vignettes — dark triangles deepening each corner
+	var cv_x := minf(hw * 0.36, 170.0)
+	var cv_y := minf(hh * 0.48, 120.0)
+	for cx: float in [-hw, hw]:
+		for cy: float in [-hh, hh]:
+			var dx: float = cv_x if cx < 0.0 else -cv_x
+			var dy: float = cv_y if cy < 0.0 else -cv_y
+			var vig := Polygon2D.new()
+			vig.color = Color(0.03, 0.02, 0.04, 0.60)
+			vig.polygon = PackedVector2Array([
+				Vector2(cx, cy), Vector2(cx + dx, cy), Vector2(cx, cy + dy)
+			])
+			atm.add_child(vig)
+
+
+func _build_torch_light_texture() -> GradientTexture2D:
+	var gradient := Gradient.new()
+	gradient.colors = PackedColorArray([Color.WHITE, Color(1.0, 1.0, 1.0, 0.0)])
+	gradient.offsets = PackedFloat32Array([0.0, 1.0])
+	var tex := GradientTexture2D.new()
+	tex.gradient = gradient
+	tex.fill = GradientTexture2D.FILL_RADIAL
+	tex.fill_from = Vector2(0.5, 0.5)
+	tex.fill_to = Vector2(1.0, 0.5)
+	tex.width = 128
+	tex.height = 128
+	return tex
+
+
+func _build_torch_sprite_frames() -> SpriteFrames:
+	var sf := SpriteFrames.new()
+	sf.add_animation("burn")
+	sf.set_animation_loop("burn", true)
+	sf.set_animation_speed("burn", 8.0)
+	for fi in range(5):
+		var at := AtlasTexture.new()
+		at.atlas = TORCH_TEXTURE
+		at.region = Rect2(fi * 16, 0, 16, 16)
+		sf.add_frame("burn", at)
+	return sf
+
+
+func _spawn_dungeon_torches_on_floor(floor_node: Node2D, spacing: float = 180.0) -> void:
+	if floor_node == null or not is_instance_valid(floor_node):
+		return
+	var old_root := floor_node.get_node_or_null("TorchRoot") as Node2D
+	if old_root != null and is_instance_valid(old_root):
+		old_root.queue_free()
+	var arena_w := maxf(64.0, float(floor_node.get("arena_width")))
+	var arena_h := maxf(32.0, float(floor_node.get("arena_height")))
+	var half_w := arena_w * 0.5
+	var half_h := arena_h * 0.5
+	var top_border_rows := maxi(1, int(floor_node.get("top_border_rows")))
+	# Torches sit just below the wall cap — bottom edge of the top border row
+	var torch_y := -half_h + float(top_border_rows) * 32.0 - 8.0
+	var torch_root := Node2D.new()
+	torch_root.name = "TorchRoot"
+	torch_root.z_index = -85
+	floor_node.add_child(torch_root)
+	var sprite_frames := _build_torch_sprite_frames()
+	var light_texture := _build_torch_light_texture()
+	var margin := 56.0
+	var usable_w := arena_w - margin * 2.0
+	var torch_count := maxi(2, int(round(usable_w / spacing)))
+	var actual_spacing := usable_w / float(maxi(1, torch_count - 1))
+	for i in range(torch_count):
+		var tx := -half_w + margin + float(i) * actual_spacing
+		_place_torch_at(torch_root, Vector2(tx, torch_y), sprite_frames, light_texture, float(i) * 0.41)
+
+
+func _place_torch_at(parent: Node2D, local_pos: Vector2, sprite_frames: SpriteFrames, light_texture: Texture2D, phase_offset: float) -> void:
+	var container := Node2D.new()
+	container.position = local_pos
+	parent.add_child(container)
+
+	# Wall glow halo — soft warm bloom on the stone surface behind the torch
+	var wall_halo := Polygon2D.new()
+	wall_halo.z_index = -86
+	wall_halo.color = Color(1.0, 0.58, 0.18, 0.20)
+	wall_halo.polygon = PackedVector2Array([
+		Vector2(-24.0, -20.0), Vector2(24.0, -20.0),
+		Vector2(32.0,   2.0), Vector2(0.0,  14.0),
+		Vector2(-32.0,  2.0)
+	])
+	container.add_child(wall_halo)
+
+	# Floor light pool — warm ellipse fanning down from the torch base
+	var floor_pool := Polygon2D.new()
+	floor_pool.z_index = -86
+	floor_pool.color = Color(1.0, 0.70, 0.28, 0.10)
+	floor_pool.polygon = PackedVector2Array([
+		Vector2(-16.0, 8.0), Vector2(16.0, 8.0),
+		Vector2(38.0, 34.0), Vector2(0.0,  40.0),
+		Vector2(-38.0, 34.0)
+	])
+	container.add_child(floor_pool)
+
+	# Animated flame sprite
+	var sprite := AnimatedSprite2D.new()
+	sprite.sprite_frames = sprite_frames
+	sprite.scale = Vector2(2.0, 2.0)
+	sprite.frame = randi() % 5
+	sprite.play("burn")
+	container.add_child(sprite)
+
+	# Smoke wisp — faint curling line above the flame
+	var wisp := Line2D.new()
+	wisp.z_index = -85
+	wisp.default_color = Color(0.52, 0.42, 0.32, 0.28)
+	wisp.width = 1.4
+	wisp.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	wisp.end_cap_mode = Line2D.LINE_CAP_ROUND
+	wisp.points = PackedVector2Array([
+		Vector2(0.0, -16.0), Vector2(2.0, -23.0),
+		Vector2(-2.0, -30.0), Vector2(1.5, -37.0)
+	])
+	container.add_child(wisp)
+
+	# PointLight2D for dynamic illumination
+	var light := PointLight2D.new()
+	light.texture = light_texture
+	light.color = Color(1.0, 0.66, 0.28, 1.0)
+	light.energy = 0.82
+	light.texture_scale = 3.6
+	light.shadow_enabled = false
+	light.range_z_max = 1024
+	light.range_layer_max = 512
+	light.position = Vector2(0.0, -8.0)
+	container.add_child(light)
+
+	# --- Flicker tween (light energy + halo alpha in sync, wisp opacity slow-pulse) ---
+	var base_e := 0.82
+	var flicker := light.create_tween()
+	flicker.set_loops()
+	if phase_offset > 0.01:
+		flicker.tween_interval(fmod(phase_offset, 0.88))
+	flicker.tween_property(light, "energy", base_e * 0.70, 0.10).set_trans(Tween.TRANS_SINE)
+	flicker.tween_property(light, "energy", base_e * 1.12, 0.08).set_trans(Tween.TRANS_SINE)
+	flicker.tween_property(light, "energy", base_e * 0.84, 0.14).set_trans(Tween.TRANS_SINE)
+	flicker.tween_property(light, "energy", base_e * 1.18, 0.11).set_trans(Tween.TRANS_SINE)
+	flicker.tween_property(light, "energy", base_e * 0.76, 0.09).set_trans(Tween.TRANS_SINE)
+	flicker.tween_property(light, "energy", base_e,        0.16).set_trans(Tween.TRANS_SINE)
+
+	# Halo mirrors the light energy
+	var halo_tween := wall_halo.create_tween()
+	halo_tween.set_loops()
+	if phase_offset > 0.01:
+		halo_tween.tween_interval(fmod(phase_offset, 0.88))
+	halo_tween.tween_property(wall_halo, "color:a", 0.11, 0.10).set_trans(Tween.TRANS_SINE)
+	halo_tween.tween_property(wall_halo, "color:a", 0.26, 0.08).set_trans(Tween.TRANS_SINE)
+	halo_tween.tween_property(wall_halo, "color:a", 0.16, 0.14).set_trans(Tween.TRANS_SINE)
+	halo_tween.tween_property(wall_halo, "color:a", 0.30, 0.11).set_trans(Tween.TRANS_SINE)
+	halo_tween.tween_property(wall_halo, "color:a", 0.12, 0.09).set_trans(Tween.TRANS_SINE)
+	halo_tween.tween_property(wall_halo, "color:a", 0.20, 0.16).set_trans(Tween.TRANS_SINE)
+
+	# Smoke wisp slow drift
+	var wisp_tween := wisp.create_tween()
+	wisp_tween.set_loops()
+	wisp_tween.tween_interval(fmod(phase_offset * 1.7 + 0.3, 1.6))
+	wisp_tween.tween_property(wisp, "modulate:a", 0.08, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	wisp_tween.tween_property(wisp, "modulate:a", 0.72, 1.1).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 
 
 func _spawn_room_three_rift_visuals(parent_node: Node2D, room_size: Vector2, bridge_height: float, rift_half_width: float) -> void:
@@ -1367,13 +1906,13 @@ func _spawn_room_three_rift_visuals(parent_node: Node2D, room_size: Vector2, bri
 		outer_polygon_points.append(point)
 	var outer_rift := Polygon2D.new()
 	outer_rift.z_index = -100
-	outer_rift.color = Color(0.12, 0.09, 0.08, 0.96)
+	outer_rift.color = Color(0.06, 0.04, 0.04, 0.78)
 	outer_rift.polygon = outer_polygon_points
 	parent_node.add_child(outer_rift)
 
 	var inner_rift := Polygon2D.new()
 	inner_rift.z_index = -100
-	inner_rift.color = Color(0.05, 0.04, 0.04, 0.98)
+	inner_rift.color = Color(0.03, 0.02, 0.02, 0.88)
 	inner_rift.polygon = PackedVector2Array([
 		Vector2(-rift_half_width * 0.58, -half_room_h + 32.0),
 		Vector2(-rift_half_width * 0.46, -bridge_shoulder - 10.0),
@@ -1388,7 +1927,7 @@ func _spawn_room_three_rift_visuals(parent_node: Node2D, room_size: Vector2, bri
 
 	var ember_glow := Polygon2D.new()
 	ember_glow.z_index = -99
-	ember_glow.color = Color(0.72, 0.18, 0.08, 0.14)
+	ember_glow.color = Color(0.84, 0.24, 0.08, 0.32)
 	ember_glow.polygon = PackedVector2Array([
 		Vector2(-rift_half_width * 0.32, -half_room_h + 44.0),
 		Vector2(-rift_half_width * 0.22, -bridge_shoulder - 12.0),
@@ -1401,9 +1940,15 @@ func _spawn_room_three_rift_visuals(parent_node: Node2D, room_size: Vector2, bri
 	])
 	parent_node.add_child(ember_glow)
 
+	# Ember glow breathes slowly
+	var eg_tween := ember_glow.create_tween()
+	eg_tween.set_loops()
+	eg_tween.tween_property(ember_glow, "color:a", 0.18, 2.0).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	eg_tween.tween_property(ember_glow, "color:a", 0.44, 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
 	var ember_core := Polygon2D.new()
 	ember_core.z_index = -98
-	ember_core.color = Color(1.0, 0.32, 0.08, 0.08)
+	ember_core.color = Color(1.0, 0.38, 0.08, 0.22)
 	ember_core.polygon = PackedVector2Array([
 		Vector2(-rift_half_width * 0.16, -half_room_h + 56.0),
 		Vector2(-rift_half_width * 0.1, -bridge_shoulder + 6.0),
@@ -1416,10 +1961,86 @@ func _spawn_room_three_rift_visuals(parent_node: Node2D, room_size: Vector2, bri
 	])
 	parent_node.add_child(ember_core)
 
+	# Core pulses slightly faster, offset from the glow
+	var ec_tween := ember_core.create_tween()
+	ec_tween.set_loops()
+	ec_tween.tween_interval(0.7)
+	ec_tween.tween_property(ember_core, "color:a", 0.12, 1.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	ec_tween.tween_property(ember_core, "color:a", 0.30, 1.3).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+	# Bright inner hotspot — the deepest, hottest part of the chasm
+	var ember_hotspot := Polygon2D.new()
+	ember_hotspot.z_index = -97
+	ember_hotspot.color = Color(1.0, 0.58, 0.18, 0.16)
+	ember_hotspot.polygon = PackedVector2Array([
+		Vector2(-rift_half_width * 0.07, -half_room_h + 72.0),
+		Vector2(-rift_half_width * 0.04, -bridge_shoulder + 18.0),
+		Vector2(-rift_half_width * 0.04, bridge_shoulder - 12.0),
+		Vector2(-rift_half_width * 0.06, half_room_h - 68.0),
+		Vector2(rift_half_width * 0.06, half_room_h - 64.0),
+		Vector2(rift_half_width * 0.04, bridge_shoulder + 8.0),
+		Vector2(rift_half_width * 0.04, -bridge_shoulder + 14.0),
+		Vector2(rift_half_width * 0.08, -half_room_h + 68.0)
+	])
+	parent_node.add_child(ember_hotspot)
+
+	# Hotspot flickers fastest — brief bright pulses
+	var eh_tween := ember_hotspot.create_tween()
+	eh_tween.set_loops()
+	eh_tween.tween_interval(1.1)
+	eh_tween.tween_property(ember_hotspot, "color:a", 0.06, 0.9).set_trans(Tween.TRANS_SINE)
+	eh_tween.tween_property(ember_hotspot, "color:a", 0.24, 0.7).set_trans(Tween.TRANS_SINE)
+	eh_tween.tween_property(ember_hotspot, "color:a", 0.10, 0.5).set_trans(Tween.TRANS_SINE)
+	eh_tween.tween_property(ember_hotspot, "color:a", 0.20, 0.8).set_trans(Tween.TRANS_SINE)
+
+	# Rift PointLight2D — casts deep red-orange up through the chasm onto the bridge
+	var rift_light_tex := _build_torch_light_texture()
+	var rift_light := PointLight2D.new()
+	rift_light.texture = rift_light_tex
+	rift_light.color = Color(0.96, 0.26, 0.06, 1.0)
+	rift_light.energy = 0.52
+	rift_light.texture_scale = 7.0
+	rift_light.shadow_enabled = false
+	rift_light.range_z_max = 1024
+	rift_light.range_layer_max = 512
+	parent_node.add_child(rift_light)
+
+	# Rift light pulses in time with the ember glow
+	var rl_tween := rift_light.create_tween()
+	rl_tween.set_loops()
+	rl_tween.tween_property(rift_light, "energy", 0.34, 2.0).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	rl_tween.tween_property(rift_light, "energy", 0.64, 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+	# Bright rim highlights where the chasm edge catches reflected light
+	var left_rim_highlight := Line2D.new()
+	left_rim_highlight.z_index = -99
+	left_rim_highlight.width = 1.2
+	left_rim_highlight.default_color = Color(0.72, 0.52, 0.32, 0.46)
+	left_rim_highlight.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	left_rim_highlight.end_cap_mode = Line2D.LINE_CAP_ROUND
+	# Offset slightly inward from left_edge to sit on the inner face
+	var left_highlight_pts := PackedVector2Array()
+	for pt in left_edge:
+		left_highlight_pts.append(pt + Vector2(rift_half_width * 0.04, 0.0))
+	left_rim_highlight.points = left_highlight_pts
+	parent_node.add_child(left_rim_highlight)
+
+	var right_rim_highlight := Line2D.new()
+	right_rim_highlight.z_index = -99
+	right_rim_highlight.width = 1.2
+	right_rim_highlight.default_color = Color(0.72, 0.52, 0.32, 0.46)
+	right_rim_highlight.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	right_rim_highlight.end_cap_mode = Line2D.LINE_CAP_ROUND
+	var right_highlight_pts := PackedVector2Array()
+	for pt in right_edge:
+		right_highlight_pts.append(pt + Vector2(-rift_half_width * 0.04, 0.0))
+	right_rim_highlight.points = right_highlight_pts
+	parent_node.add_child(right_rim_highlight)
+
 	var left_rim := Line2D.new()
 	left_rim.z_index = -100
-	left_rim.width = 2.4
-	left_rim.default_color = Color(0.34, 0.3, 0.24, 0.82)
+	left_rim.width = 3.0
+	left_rim.default_color = Color(0.42, 0.36, 0.28, 0.92)
 	left_rim.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	left_rim.end_cap_mode = Line2D.LINE_CAP_ROUND
 	left_rim.points = left_edge
@@ -1430,12 +2051,94 @@ func _spawn_room_three_rift_visuals(parent_node: Node2D, room_size: Vector2, bri
 		right_rim_points.append(right_edge[idx])
 	var right_rim := Line2D.new()
 	right_rim.z_index = -100
-	right_rim.width = 2.4
-	right_rim.default_color = Color(0.34, 0.3, 0.24, 0.82)
+	right_rim.width = 3.0
+	right_rim.default_color = Color(0.42, 0.36, 0.28, 0.92)
 	right_rim.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	right_rim.end_cap_mode = Line2D.LINE_CAP_ROUND
 	right_rim.points = right_rim_points
 	parent_node.add_child(right_rim)
+
+	# Rising ember sparks — small glowing diamonds drifting up from the chasm
+	var spark_count := 12
+	for si in range(spark_count):
+		var spark_x := randf_range(-rift_half_width * 0.22, rift_half_width * 0.22)
+		var spark_start_y := randf_range(-half_room_h * 0.55, half_room_h * 0.55)
+		var spark_rise := randf_range(64.0, 130.0)
+		var spark_dur := randf_range(2.0, 3.8)
+		var spark_delay := float(si) * 0.28
+		var spark_node := Node2D.new()
+		spark_node.position = Vector2(spark_x, spark_start_y)
+		spark_node.z_index = -97
+		parent_node.add_child(spark_node)
+		var spark := Polygon2D.new()
+		var g := randf_range(0.40, 0.72)
+		spark.color = Color(1.0, g, 0.10, 0.0)
+		var sr := randf_range(1.4, 2.8)
+		spark.polygon = PackedVector2Array([
+			Vector2(0.0, -sr), Vector2(sr * 0.55, 0.0),
+			Vector2(0.0,  sr), Vector2(-sr * 0.55, 0.0)
+		])
+		spark_node.add_child(spark)
+		# Fade in then out over one cycle
+		var alpha_tween := spark.create_tween()
+		alpha_tween.set_loops()
+		if spark_delay > 0.01:
+			alpha_tween.tween_interval(spark_delay)
+		alpha_tween.tween_property(spark, "color:a", 0.88, spark_dur * 0.22).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+		alpha_tween.tween_property(spark, "color:a", 0.0,  spark_dur * 0.78).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+		# Rise upward then snap back to start position
+		var pos_tween := spark_node.create_tween()
+		pos_tween.set_loops()
+		if spark_delay > 0.01:
+			pos_tween.tween_interval(spark_delay)
+		pos_tween.tween_property(spark_node, "position:y", spark_start_y - spark_rise, spark_dur).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+		pos_tween.tween_property(spark_node, "position:y", spark_start_y, 0.001)
+
+
+func _add_floor_center_highlight(floor_node: Node2D, chunk_w: float, chunk_h: float) -> void:
+	if floor_node == null or not is_instance_valid(floor_node):
+		return
+	# Soft warm oval — ambient bounce light pooling in the center of the stone slab.
+	# Kept subtle so it reads as lighting rather than a shape.
+	var seg_count := 22
+	var rx := chunk_w * 0.28
+	var ry := chunk_h * 0.20
+	var pts := PackedVector2Array()
+	for i in range(seg_count):
+		var a := (TAU * float(i)) / float(seg_count)
+		pts.append(Vector2(cos(a) * rx, sin(a) * ry))
+	var highlight := Polygon2D.new()
+	highlight.z_index = -91
+	highlight.color = Color(0.86, 0.74, 0.52, 0.048)
+	highlight.polygon = pts
+	floor_node.add_child(highlight)
+
+	# Inner core — slightly warmer and brighter for a two-stop falloff
+	var inner_pts := PackedVector2Array()
+	for i in range(seg_count):
+		var a := (TAU * float(i)) / float(seg_count)
+		inner_pts.append(Vector2(cos(a) * rx * 0.44, sin(a) * ry * 0.44))
+	var inner_highlight := Polygon2D.new()
+	inner_highlight.z_index = -91
+	inner_highlight.color = Color(0.94, 0.84, 0.64, 0.034)
+	inner_highlight.polygon = inner_pts
+	floor_node.add_child(inner_highlight)
+
+	# Horizontal floor seam lines — subtle rows mimicking stone block courses
+	var tile_h := 32.0
+	var hw := chunk_w * 0.5
+	var hh := chunk_h * 0.5
+	var seam_top := -hh + tile_h * 2.0   # skip the wall border rows
+	var seam_bot :=  hh - tile_h * 1.5
+	var seam_y := seam_top + tile_h
+	while seam_y < seam_bot:
+		var seam := Line2D.new()
+		seam.z_index = -91
+		seam.width = 0.7
+		seam.default_color = Color(0.18, 0.15, 0.12, 0.18)
+		seam.points = PackedVector2Array([Vector2(-hw + tile_h, seam_y), Vector2(hw - tile_h, seam_y)])
+		floor_node.add_child(seam)
+		seam_y += tile_h
 
 
 func _get_room_three_walkable_rects(room_three_bounds: Rect2) -> Array[Rect2]:
@@ -1468,6 +2171,14 @@ func _get_room_three_walkable_rects(room_three_bounds: Rect2) -> Array[Rect2]:
 		center + Vector2(-(bridge_width * 0.5), -(bridge_height * 0.5)),
 		Vector2(bridge_width, bridge_height)
 	).grow(-bridge_clearance)
+	# Door corridor — bridges the gap between the east platform and the right-side room exit
+	var door_right := room_three_bounds.end.x + 8.0
+	if east_platform.end.x < door_right:
+		var door_corridor := Rect2(
+			Vector2(east_platform.end.x, east_platform.position.y),
+			Vector2(door_right - east_platform.end.x, east_platform.size.y)
+		)
+		return [west_platform, east_platform, bridge_rect, door_corridor]
 	return [west_platform, east_platform, bridge_rect]
 
 
@@ -1567,6 +2278,9 @@ func _setup_two_room_fourth_play_area(room_four_bounds: Rect2) -> void:
 	fourth_floor.position = room_four_bounds.position + (room_four_bounds.size * 0.5)
 	two_room_fourth_floor_root = fourth_floor
 	_apply_floor_tileset_to_node(two_room_fourth_floor_root, _get_default_floor_tileset_texture())
+	if _get_default_floor_tileset_texture() != ARENA_TILESET_TEXTURE:
+		_spawn_dungeon_room_atmosphere(two_room_fourth_floor_root)
+		_spawn_dungeon_torches_on_floor(two_room_fourth_floor_root)
 
 
 func _teardown_two_room_fourth_play_area() -> void:
@@ -1589,6 +2303,9 @@ func _setup_two_room_fifth_play_area(room_five_bounds: Rect2) -> void:
 	fifth_floor.position = room_five_bounds.position + (room_five_bounds.size * 0.5)
 	two_room_fifth_floor_root = fifth_floor
 	_apply_floor_tileset_to_node(two_room_fifth_floor_root, _get_default_floor_tileset_texture())
+	if _get_default_floor_tileset_texture() != ARENA_TILESET_TEXTURE:
+		_spawn_dungeon_room_atmosphere(two_room_fifth_floor_root)
+		_spawn_dungeon_torches_on_floor(two_room_fifth_floor_root)
 
 
 func _teardown_two_room_fifth_play_area() -> void:
@@ -1611,6 +2328,9 @@ func _setup_two_room_sixth_play_area(room_six_bounds: Rect2) -> void:
 	sixth_floor.position = room_six_bounds.position + (room_six_bounds.size * 0.5)
 	two_room_sixth_floor_root = sixth_floor
 	_apply_floor_tileset_to_node(two_room_sixth_floor_root, _get_default_floor_tileset_texture())
+	if _get_default_floor_tileset_texture() != ARENA_TILESET_TEXTURE:
+		_spawn_dungeon_room_atmosphere(two_room_sixth_floor_root)
+		_spawn_dungeon_torches_on_floor(two_room_sixth_floor_root)
 
 
 func _teardown_two_room_sixth_play_area() -> void:
@@ -2771,14 +3491,12 @@ func _sync_two_room_rescued_companions(room_bounds: Rect2) -> void:
 
 func _spawn_two_room_third_room_minotaur(room_three_bounds: Rect2) -> void:
 	alive_regular_enemies = 0
-	var center_x := room_three_bounds.position.x + (room_three_bounds.size.x * 0.5)
-	var center_y := room_three_bounds.position.y + (room_three_bounds.size.y * 0.5)
-	var base_spawn_x := room_three_bounds.end.x - maxf(40.0, two_room_test_spawn_margin_x)
-	var pull_ratio := clampf(two_room_test_room3_spawn_center_pull_ratio, 0.0, 0.95)
-	var spawn_x := lerpf(base_spawn_x, center_x, pull_ratio)
+	# Spawn on the bridge center, slightly east — guards the crossing
+	var center := room_three_bounds.position + (room_three_bounds.size * 0.5)
+	var spawn_pos := Vector2(center.x + room_three_bounds.size.x * 0.06, center.y)
 	var enemy := _spawn_enemy(
 		MELEE_ENEMY_SCENE,
-		to_global(Vector2(spawn_x, center_y)),
+		to_global(spawn_pos),
 		int(EnemyBase.MonsterVisualProfile.MINOTAUR),
 		false
 	)
@@ -3524,7 +4242,7 @@ func _update_objective() -> void:
 		objective_changed.emit("Objective: Defeat the Cobra")
 		return
 	if selected_encounter == EncounterType.SHARDSOUL:
-		objective_changed.emit("Objective: Defeat the Shardsoul")
+		objective_changed.emit("Objective: Defeat the Dragon")
 		return
 	objective_changed.emit("Objective: Defeat enemies (%d remaining)" % alive_regular_enemies)
 

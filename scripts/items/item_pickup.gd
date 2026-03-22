@@ -2,14 +2,6 @@ extends Area2D
 class_name ItemPickup
 
 const ITEM_DATA: Dictionary = {
-	"iron_shard": {
-		"name": "Iron Shard",
-		"color": Color(0.88, 0.88, 0.95, 1.0)
-	},
-	"sturdy_hide": {
-		"name": "Sturdy Hide",
-		"color": Color(0.6, 0.4, 0.2, 1.0)
-	},
 	"swift_boots": {
 		"name": "Swift Boots",
 		"color": Color(0.35, 0.8, 1.0, 1.0)
@@ -60,7 +52,7 @@ const ITEM_DATA: Dictionary = {
 	}
 }
 
-@export var item_id: String = "iron_shard"
+@export var item_id: String = "swift_boots"
 @export var value: int = 1
 @export var bob_height: float = 5.0
 @export var bob_speed: float = 2.8
@@ -105,7 +97,7 @@ func try_collect(player: Node) -> void:
 
 
 func _apply_item_style() -> void:
-	var data: Dictionary = ITEM_DATA.get(item_id, ITEM_DATA["iron_shard"])
+	var data: Dictionary = ITEM_DATA.get(item_id, ITEM_DATA["swift_boots"])
 	var item_name := String(data["name"])
 	var item_color: Color = data["color"]
 	visual.color = item_color

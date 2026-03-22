@@ -222,8 +222,6 @@ const BASIC_ATTACK_RANGE_SCALE: float = 0.6
 @export var ai_block_mistime_window: float = 0.2
 
 const ITEM_NAMES: Dictionary = {
-	"iron_shard": "Iron Shard",
-	"sturdy_hide": "Sturdy Hide",
 	"swift_boots": "Swift Boots",
 	"strider_boots": "Strider Boots",
 	"bodyguard_boots": "Bodyguard Boots",
@@ -3308,6 +3306,7 @@ func _start_roll() -> void:
 	roll_vector = movement_vector.normalized()
 	is_rolling = true
 	is_invulnerable = true
+	_spawn_roll_dash_effect(roll_vector)
 	roll_time_left = roll_duration
 	roll_cooldown_left = _get_roll_cooldown_duration()
 	is_blocking = false
@@ -4353,12 +4352,6 @@ func _collect_nearby_pickups() -> void:
 
 func _apply_item_bonus(item_id: String, value: int) -> void:
 	match item_id:
-		"iron_shard":
-			basic_attack_damage += 0.5 * float(value)
-			ability_1_damage += 0.6 * float(value)
-		"sturdy_hide":
-			max_health += 4.0 * float(value)
-			current_health = minf(max_health, current_health + (4.0 * float(value)))
 		ROLL_COOLDOWN_BOOT_ITEM_ID:
 			roll_cooldown_left = minf(roll_cooldown_left, _get_roll_cooldown_duration())
 		MOVE_SPEED_BOOT_ITEM_ID:
@@ -5428,6 +5421,46 @@ func _build_slash_points(attack_range: float, arc_degrees: float, segments: int)
 		var angle := lerpf(-half_arc, half_arc, t)
 		points.append(Vector2.RIGHT.rotated(angle) * radius)
 	return points
+
+
+func _spawn_roll_dash_effect(roll_direction: Vector2) -> void:
+	var scene_root := get_tree().current_scene
+	if scene_root == null:
+		return
+	var dir := roll_direction.normalized() if roll_direction.length_squared() > 0.0001 else Vector2.RIGHT
+	var perp := Vector2(-dir.y, dir.x)
+	var streak_color := Color(0.72, 0.88, 1.0, 0.72)
+	var streak_configs := [
+		{"offset": perp * 5.0,  "length": 14.0, "width": 2.2, "delay": 0.0},
+		{"offset": Vector2.ZERO, "length": 18.0, "width": 2.8, "delay": 0.02},
+		{"offset": perp * -5.0, "length": 14.0, "width": 2.2, "delay": 0.04},
+		{"offset": perp * 8.0,  "length": 9.0,  "width": 1.6, "delay": 0.01},
+		{"offset": perp * -8.0, "length": 9.0,  "width": 1.6, "delay": 0.03},
+	]
+	var origin := global_position + Vector2(0.0, -10.0) - dir * 8.0
+	for cfg in streak_configs:
+		var streak := Polygon2D.new()
+		streak.top_level = true
+		var half_w := (cfg["width"] as float) * 0.5
+		var half_l := (cfg["length"] as float) * 0.5
+		streak.polygon = PackedVector2Array([
+			-dir * half_l - perp * half_w,
+			-dir * half_l + perp * half_w,
+			dir * half_l + perp * half_w,
+			dir * half_l - perp * half_w,
+		])
+		streak.color = streak_color
+		streak.global_position = origin + (cfg["offset"] as Vector2)
+		streak.z_index = 228
+		scene_root.add_child(streak)
+		var delay := cfg["delay"] as float
+		var tween := create_tween()
+		tween.tween_interval(delay)
+		tween.tween_property(streak, "modulate:a", 0.0, 0.22).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		tween.finished.connect(func() -> void:
+			if is_instance_valid(streak):
+				streak.queue_free()
+		)
 
 
 func _spawn_hit_effect(world_position: Vector2, effect_color: Color, effect_size: float) -> void:
