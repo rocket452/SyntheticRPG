@@ -57,6 +57,7 @@ var adventure_death_popup_opened_at_ms: int = 0
 
 
 func _ready() -> void:
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	InputConfig.ensure_actions()
 	_connect_signals()
 	if is_instance_valid(hud) and hud.has_method("set_text_debug_visible"):
@@ -101,6 +102,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 		else:
 			get_viewport().set_input_as_handled()
+		return
+	var f1_key_event := event as InputEventKey
+	if f1_key_event != null and f1_key_event.pressed and not f1_key_event.echo and f1_key_event.keycode == KEY_F1:
+		if is_instance_valid(hud) and hud.has_method("toggle_guide"):
+			hud.call("toggle_guide")
+		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("inventory_toggle"):
 		if not _has_active_encounter_picker():
@@ -287,7 +294,7 @@ func _show_encounter_picker() -> void:
 	content.add_child(cacodemon_button)
 
 	var shardsoul_button := Button.new()
-	shardsoul_button.text = "4. Start Shardsoul Fight"
+	shardsoul_button.text = "4. Start Dragon Encounter"
 	shardsoul_button.custom_minimum_size = Vector2(0.0, 44.0)
 	shardsoul_button.pressed.connect(func() -> void:
 		_start_selected_encounter(Arena.EncounterType.SHARDSOUL)

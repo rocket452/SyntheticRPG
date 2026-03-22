@@ -579,9 +579,23 @@ func _rebuild_gear_lists() -> void:
 			var card := PanelContainer.new()
 			_party_list_root.add_child(card)
 
+			var card_style := StyleBoxFlat.new()
+			card_style.set_corner_radius_all(5)
+			card_style.set_border_width_all(2)
+			if not available or blocked_by_party_limit:
+				card_style.bg_color = Color(0.10, 0.11, 0.15, 0.82)
+				card_style.border_color = Color(0.28, 0.32, 0.42, 0.55)
+			elif enabled:
+				card_style.bg_color = Color(0.10, 0.22, 0.14, 0.92)
+				card_style.border_color = Color(0.38, 0.88, 0.52, 0.92)
+			else:
+				card_style.bg_color = Color(0.11, 0.14, 0.20, 0.88)
+				card_style.border_color = Color(0.30, 0.38, 0.52, 0.72)
+			card.add_theme_stylebox_override("panel", card_style)
+
 			var card_margin := MarginContainer.new()
-			card_margin.add_theme_constant_override("margin_left", 8)
-			card_margin.add_theme_constant_override("margin_right", 8)
+			card_margin.add_theme_constant_override("margin_left", 10)
+			card_margin.add_theme_constant_override("margin_right", 10)
 			card_margin.add_theme_constant_override("margin_top", 8)
 			card_margin.add_theme_constant_override("margin_bottom", 8)
 			card.add_child(card_margin)
@@ -595,17 +609,25 @@ func _rebuild_gear_lists() -> void:
 			toggle.button_pressed = enabled
 			toggle.disabled = (not available) or blocked_by_party_limit
 			toggle.toggled.connect(_on_party_toggle_toggled.bind(member_id))
+			toggle.add_theme_font_size_override("font_size", 14)
+			toggle.add_theme_color_override("font_color", Color(0.88, 0.92, 1.0, 1.0))
+			toggle.add_theme_color_override("font_pressed_color", Color(0.48, 0.98, 0.62, 1.0))
+			toggle.add_theme_color_override("font_hover_color", Color(1.0, 1.0, 0.88, 1.0))
+			toggle.add_theme_color_override("font_hover_pressed_color", Color(0.56, 1.0, 0.68, 1.0))
+			toggle.add_theme_color_override("font_disabled_color", Color(0.46, 0.50, 0.60, 0.72))
 			card_content.add_child(toggle)
 			_toggle_by_party_member_id[member_id] = toggle
 
 			var desc := Label.new()
 			desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			desc.modulate = Color(0.8, 0.86, 0.96, 0.92)
 			if not available:
+				desc.modulate = Color(0.56, 0.60, 0.72, 0.82)
 				desc.text = "%s\nUnavailable in this encounter." % member_description
 			elif blocked_by_party_limit:
+				desc.modulate = Color(0.84, 0.76, 0.52, 0.88)
 				desc.text = "%s\nParty full: disable one companion to add this one." % member_description
 			else:
+				desc.modulate = Color(0.72, 0.80, 0.94, 0.88)
 				desc.text = member_description
 			card_content.add_child(desc)
 

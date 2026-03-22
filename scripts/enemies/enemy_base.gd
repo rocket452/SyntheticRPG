@@ -205,7 +205,7 @@ const THREAT_EPSILON: float = 0.001
 @export var cacodemon_breath_pocket_half_width: float = 42.0
 @export var cacodemon_breath_pocket_half_depth: float = 32.0
 @export var cacodemon_breath_first_use_delay: float = 10.8
-@export_enum("Mode A - Torrent Split:0", "Mode B - Rolling Cells:1", "Mode C - Rolling Cells Dense Small:2", "Mode D - Ribbon Sheets:3", "Mode E - XYEzawr Flipbook:4") var cacodemon_breath_visual_style: int = 4
+@export_enum("Mode A - Torrent Split:0", "Mode B - Rolling Cells:1", "Mode C - Rolling Cells Dense Small:2", "Mode D - Ribbon Sheets:3", "Mode E - XYEzawr Flipbook:4") var cacodemon_breath_visual_style: int = 0
 @export var cacodemon_fireball_enabled: bool = true
 @export var cacodemon_fireball_range: float = 348.4
 @export var cacodemon_fireball_cooldown: float = 2.9
@@ -279,7 +279,7 @@ const THREAT_EPSILON: float = 0.001
 @export var melee_trade_depth_tolerance: float = 52.0
 @export var xp_reward: int = 26
 @export var drop_chance: float = 0.45
-@export var drop_table: Array[String] = ["iron_shard", "sturdy_hide"]
+@export var drop_table: Array[String] = []
 @export var hit_stun_duration: float = 0.22
 @export var outgoing_hit_stun_duration: float = 0.2
 @export var hit_effect_duration: float = 0.14
@@ -319,9 +319,9 @@ const THREAT_EPSILON: float = 0.001
 @export var debug_orientation_overlay: bool = false
 @export var debug_focus_nearest_enemy_only: bool = true
 @export var monster_visual_profile: MonsterVisualProfile = MonsterVisualProfile.MINOTAUR
-@export var minotaur_hurtbox_radius: float = 38.0
+@export var minotaur_hurtbox_radius: float = 58.0
 @export var minotaur_hurtbox_y_offset: float = -6.0
-@export var cacodemon_hurtbox_radius: float = 36.0
+@export var cacodemon_hurtbox_radius: float = 46.0
 @export var cacodemon_hurtbox_y_offset: float = -26.0
 @export var imp_fireball_enabled: bool = true
 @export var imp_fireball_speed: float = 190.0
@@ -334,10 +334,10 @@ const THREAT_EPSILON: float = 0.001
 @export var imp_fireball_attack_anim_duration: float = 0.56
 @export var imp_visual_scale_multiplier: float = 1.0
 @export var fire_elemental_visual_scale_multiplier: float = 1.0
-@export var fire_elemental_hurtbox_radius: float = 19.0
+@export var fire_elemental_hurtbox_radius: float = 19.5
 @export var fire_elemental_hurtbox_y_offset: float = -6.0
 @export var cobra_visual_scale_multiplier: float = 1.0
-@export var cobra_hurtbox_radius: float = 8.4
+@export var cobra_hurtbox_radius: float = 11.2
 @export var cobra_hurtbox_y_offset: float = -8.0
 
 const MONSTER_HD_HFRAMES: int = 10
@@ -595,6 +595,10 @@ var hurt_anim_left: float = 0.0
 var cosmetic_hurt_anim_left: float = 0.0
 var periodic_hurt_anim_cooldown_left: float = 0.0
 var stun_left: float = 0.0
+var frozen_left: float = 0.0
+var taunt_duration_left: float = 0.0
+var taunted_by_actor: Node2D = null
+var freeze_visual_node: Node2D = null
 var hitstop_left: float = 0.0
 var attack_flash_left: float = 0.0
 var attack_anim_left: float = 0.0
@@ -957,7 +961,7 @@ func is_shadow_fear_active() -> bool:
 
 
 func has_hard_cc_active() -> bool:
-	return shadow_fear_left > 0.0 or stun_left > 0.0
+	return shadow_fear_left > 0.0 or stun_left > 0.0 or frozen_left > 0.0
 
 
 func apply_shadow_fear(duration: float) -> bool:
@@ -990,6 +994,118 @@ func apply_shadow_fear(duration: float) -> bool:
 	_spawn_shadow_fear_vfx()
 	_log_shadow_fear("APPLIED enemy=%s duration=%.2f" % [name, applied_duration])
 	return true
+
+
+func apply_freeze(duration: float) -> bool:
+	if dead:
+		return false
+	var applied_duration := maxf(0.0, duration)
+	if applied_duration <= 0.0:
+		return false
+	frozen_left = maxf(frozen_left, applied_duration)
+	_spawn_freeze_visual()
+	_cancel_spin_attack()
+	_cancel_imp_fireball_release()
+	pending_attack = false
+	attack_windup_left = 0.0
+	attack_prestrike_hold_left = 0.0
+	attack_recovery_hold_left = 0.0
+	attack_anim_left = 0.0
+	attack_flash_left = 0.0
+	attack_telegraph.visible = false
+	weapon_trail_alpha = 0.0
+	weapon_trail.visible = false
+	slash_effect.visible = false
+	velocity = Vector2.ZERO
+	knockback_velocity = Vector2.ZERO
+	return true
+
+
+func _spawn_freeze_visual() -> void:
+	if is_instance_valid(freeze_visual_node):
+		return
+	var container := Node2D.new()
+	container.z_index = 2
+	add_child(container)
+	freeze_visual_node = container
+	var point_count := 20
+	var rx := 18.0
+	var ry := 8.0
+	# Frosty ellipse ring at feet
+	var ring := Line2D.new()
+	ring.width = 2.6
+	ring.default_color = Color(0.52, 0.86, 1.0, 0.88)
+	ring.closed = true
+	for i in range(point_count):
+		var angle := (float(i) / float(point_count)) * TAU
+		ring.add_point(Vector2(cos(angle) * rx, sin(angle) * ry))
+	container.add_child(ring)
+	# Semi-transparent fill
+	var fill := Polygon2D.new()
+	fill.color = Color(0.44, 0.74, 0.96, 0.22)
+	var poly: PackedVector2Array = PackedVector2Array()
+	for i in range(point_count):
+		var angle := (float(i) / float(point_count)) * TAU
+		poly.append(Vector2(cos(angle) * rx, sin(angle) * ry))
+	fill.polygon = poly
+	container.add_child(fill)
+	# Six ice spike triangles radiating outward
+	var spike_count := 6
+	for s in range(spike_count):
+		var base_angle := (float(s) / float(spike_count)) * TAU
+		var tip := Vector2(cos(base_angle) * (rx + 7.0), sin(base_angle) * (ry + 4.0))
+		var left_base := Vector2(cos(base_angle + 0.32) * rx * 0.72, sin(base_angle + 0.32) * ry * 0.72)
+		var right_base := Vector2(cos(base_angle - 0.32) * rx * 0.72, sin(base_angle - 0.32) * ry * 0.72)
+		var spike := Polygon2D.new()
+		spike.color = Color(0.72, 0.92, 1.0, 0.72)
+		spike.polygon = PackedVector2Array([tip, left_base, right_base])
+		container.add_child(spike)
+	# Snowflake crosshair lines
+	for i in range(3):
+		var angle := (float(i) / 3.0) * PI
+		var line := Line2D.new()
+		line.width = 1.4
+		line.default_color = Color(0.78, 0.96, 1.0, 0.6)
+		line.add_point(Vector2(cos(angle) * rx * 0.82, sin(angle) * ry * 0.82))
+		line.add_point(Vector2(cos(angle + PI) * rx * 0.82, sin(angle + PI) * ry * 0.82))
+		container.add_child(line)
+
+
+func _remove_freeze_visual() -> void:
+	if is_instance_valid(freeze_visual_node):
+		freeze_visual_node.queue_free()
+	freeze_visual_node = null
+
+
+func apply_taunt(source_actor: Node2D, taunt_amount: float, duration: float = 10.0) -> void:
+	if not _is_valid_threat_target(source_actor):
+		return
+	threat_by_target_id.clear()
+	_add_threat_for_target(source_actor, maxf(1.0, taunt_amount))
+	if duration > 0.0:
+		taunt_duration_left = maxf(taunt_duration_left, duration)
+		taunted_by_actor = source_actor
+
+
+func _hold_frozen_state(delta: float) -> void:
+	var locked_facing := external_sprite_facing_direction
+	if locked_facing.length_squared() <= 0.0001:
+		locked_facing = committed_attack_facing_direction
+	if locked_facing.length_squared() <= 0.0001:
+		locked_facing = Vector2.RIGHT
+	locked_facing = locked_facing.normalized()
+	external_sprite_facing_direction = locked_facing
+	if using_external_monster_sprite:
+		rotation = 0.0
+	else:
+		rotation = locked_facing.angle()
+	velocity = Vector2.ZERO
+	knockback_velocity = Vector2.ZERO
+	attack_telegraph.visible = false
+	weapon_trail.visible = false
+	slash_effect.visible = false
+	_update_visuals(delta, locked_facing)
+	_update_health_bar()
 
 
 func _clear_shadow_fear(broken_by_damage: bool) -> void:
@@ -1235,6 +1351,10 @@ func _physics_process(delta: float) -> void:
 	_tick_shadow_fear_status(delta)
 	_tick_player_weapon_debuffs(delta)
 	_tick_imp_fireball_release(delta)
+	frozen_left = maxf(0.0, frozen_left - delta)
+	taunt_duration_left = maxf(0.0, taunt_duration_left - delta)
+	if taunt_duration_left <= 0.0:
+		taunted_by_actor = null
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.45))
 	if _is_exact_cacodemon_visual_profile():
 		cacodemon_runtime_elapsed += maxf(0.0, delta)
@@ -1263,6 +1383,9 @@ func _physics_process(delta: float) -> void:
 	var to_player: Vector2 = player.global_position - global_position
 	if shadow_fear_left > 0.0:
 		_hold_shadow_fear_state(delta)
+		return
+	if frozen_left > 0.0:
+		_hold_frozen_state(delta)
 		return
 	var lock_facing_from_hit := (stun_left > 0.0 or hurt_anim_left > 0.0) and not _is_cacodemon_uninterruptible_action_active()
 	var committed_attack_active := (pending_attack or attack_anim_left > 0.0 or attack_recovery_hold_left > 0.0 or spin_charge_left > 0.0 or spin_active_left > 0.0) and committed_attack_facing_direction.length_squared() > 0.0001
@@ -1434,6 +1557,9 @@ func _physics_process_single_phase(delta: float) -> void:
 
 	if shadow_fear_left > 0.0:
 		_hold_shadow_fear_state(delta)
+		return
+	if frozen_left > 0.0:
+		_hold_frozen_state(delta)
 		return
 
 	_update_boss_facing(delta, to_player)
@@ -1609,6 +1735,10 @@ func _tick_enemy_runtime_timers(delta: float) -> void:
 	_tick_shadow_fear_status(delta)
 	_tick_player_weapon_debuffs(delta)
 	_tick_imp_fireball_release(delta)
+	frozen_left = maxf(0.0, frozen_left - delta)
+	taunt_duration_left = maxf(0.0, taunt_duration_left - delta)
+	if taunt_duration_left <= 0.0:
+		taunted_by_actor = null
 	weapon_trail_alpha = maxf(0.0, weapon_trail_alpha - (delta * 1.45))
 	cacodemon_fireball_cooldown_left = maxf(0.0, cacodemon_fireball_cooldown_left - delta)
 	cacodemon_fireball_cast_left = maxf(0.0, cacodemon_fireball_cast_left - delta)
@@ -3256,6 +3386,8 @@ func _tick_boss_lunge_state(delta: float) -> void:
 			_attempt_boss_lunge_hits(false, blocking_player)
 		elif _is_boss_lunge_contact_with_target(boss_marked_ally):
 			_trigger_boss_lunge_impact("marked_contact")
+		elif _is_boss_lunge_contact_with_any_friendly():
+			_trigger_boss_lunge_impact("collateral_contact")
 		elif boss_charge_lane_start.distance_squared_to(boss_charge_lane_end) > 0.0001 \
 			and boss_lunge_travel_distance >= boss_charge_lane_start.distance_to(boss_charge_lane_end):
 			_trigger_boss_lunge_impact("lane_end")
@@ -3959,6 +4091,24 @@ func _assign_initial_aggro_target(target: Node2D) -> void:
 	player = target
 
 
+func _force_aggro_from_hit(source_actor: Node2D) -> void:
+	if source_actor == null or not is_instance_valid(source_actor):
+		return
+	if not _is_valid_threat_target(source_actor):
+		return
+	if _is_cobra_visual_profile() and not cobra_aggroed:
+		cobra_aggroed = true
+		_assign_initial_aggro_target(source_actor)
+	elif _is_exact_cacodemon_visual_profile() and not cacodemon_aggroed:
+		cacodemon_aggroed = true
+		_assign_initial_aggro_target(source_actor)
+	elif monster_visual_profile == MonsterVisualProfile.MINOTAUR and not minotaur_aggroed:
+		minotaur_aggroed = true
+		_assign_initial_aggro_target(source_actor)
+	elif player == null or not is_instance_valid(player):
+		_assign_initial_aggro_target(source_actor)
+
+
 func _hold_cacodemon_until_player_aggro() -> bool:
 	if not _is_exact_cacodemon_visual_profile():
 		return false
@@ -4447,6 +4597,8 @@ func _prune_threat_table() -> void:
 
 
 func _select_highest_threat_target() -> Node2D:
+	if taunt_duration_left > 0.0 and taunted_by_actor != null and is_instance_valid(taunted_by_actor):
+		return taunted_by_actor
 	var candidates := _get_friendly_threat_candidates()
 	var best_target: Node2D = null
 	var best_threat := 0.0
@@ -4929,6 +5081,7 @@ func receive_hit(amount: float, source_position: Vector2, stun_duration: float =
 		_queue_cacodemon_side_swap_for_thresholds(previous_health_ratio, current_health_ratio)
 	var resolved_threat_source := _resolve_damage_threat_source(source_actor, source_position)
 	_register_damage_threat(resolved_threat_source, damage_to_apply)
+	_force_aggro_from_hit(resolved_threat_source)
 	hit_flash_left = 0.12
 	var applied_stun := 0.0
 	if _is_cacodemon_visual_profile() and cacodemon_combat_lock:
@@ -5477,7 +5630,15 @@ func _update_visuals(delta: float, to_player: Vector2) -> void:
 			base_arm_color,
 			base_weapon_color.lerp(Color(0.8, 0.72, 0.62, 1.0), 0.52)
 		)
+	elif frozen_left > 0.0:
+		_set_model_palette(
+			base_body_color.lerp(Color(0.36, 0.62, 0.88, 1.0), 0.68),
+			base_head_color.lerp(Color(0.52, 0.78, 0.96, 1.0), 0.55),
+			base_arm_color.lerp(Color(0.32, 0.56, 0.84, 1.0), 0.64),
+			base_weapon_color.lerp(Color(0.72, 0.88, 1.0, 1.0), 0.6)
+		)
 	else:
+		_remove_freeze_visual()
 		_set_model_palette(base_body_color, base_head_color, base_arm_color, base_weapon_color)
 
 	scale = scale.lerp(target_scale, clampf(delta * 14.0, 0.0, 1.0))
@@ -5805,7 +5966,7 @@ func _apply_profile_hurtbox() -> void:
 			frame_width = float(monster_sprite.texture.get_width()) / float(max(1, monster_sprite.hframes))
 			frame_height = float(monster_sprite.texture.get_height()) / float(max(1, monster_sprite.vframes))
 		var sprite_scale := maxf(absf(monster_sprite.scale.x), absf(monster_sprite.scale.y))
-		var visual_radius := minf(frame_width, frame_height) * sprite_scale * 0.29
+		var visual_radius := minf(frame_width, frame_height) * sprite_scale * 0.302
 		var resolved_radius := maxf(minotaur_hurtbox_radius, visual_radius)
 		var visual_y_offset := monster_sprite.position.y - (frame_height * sprite_scale * 0.05)
 		var resolved_y_offset := minf(minotaur_hurtbox_y_offset, visual_y_offset)
@@ -5822,7 +5983,7 @@ func _apply_profile_hurtbox() -> void:
 				frame_width = float(monster_sprite.texture.get_width()) / float(max(1, monster_sprite.hframes))
 				frame_height = float(monster_sprite.texture.get_height()) / float(max(1, monster_sprite.vframes))
 			var sprite_scale := maxf(absf(monster_sprite.scale.x), absf(monster_sprite.scale.y))
-			var visual_radius := minf(frame_width, frame_height) * sprite_scale * 0.28
+			var visual_radius := minf(frame_width, frame_height) * sprite_scale * 0.359
 			resolved_radius = maxf(resolved_radius, visual_radius)
 			resolved_y_offset = monster_sprite.position.y + (frame_height * sprite_scale * 0.02)
 		collision_shape.position = collision_shape_base_position + Vector2(0.0, resolved_y_offset)
@@ -5838,7 +5999,7 @@ func _apply_profile_hurtbox() -> void:
 				frame_width = float(monster_sprite.texture.get_width()) / float(max(1, monster_sprite.hframes))
 				frame_height = float(monster_sprite.texture.get_height()) / float(max(1, monster_sprite.vframes))
 			var sprite_scale := maxf(absf(monster_sprite.scale.x), absf(monster_sprite.scale.y))
-			var visual_radius := minf(frame_width, frame_height) * sprite_scale * 0.28
+			var visual_radius := minf(frame_width, frame_height) * sprite_scale * 0.305
 			resolved_radius = maxf(resolved_radius, visual_radius)
 			resolved_y_offset = monster_sprite.position.y + (frame_height * sprite_scale * 0.08)
 		collision_shape.position = collision_shape_base_position + Vector2(0.0, resolved_y_offset)
@@ -5854,7 +6015,7 @@ func _apply_profile_hurtbox() -> void:
 				frame_width = float(monster_sprite.texture.get_width()) / float(max(1, monster_sprite.hframes))
 				frame_height = float(monster_sprite.texture.get_height()) / float(max(1, monster_sprite.vframes))
 			var sprite_scale := maxf(absf(monster_sprite.scale.x), absf(monster_sprite.scale.y))
-			var visual_radius := minf(frame_width, frame_height) * sprite_scale * 0.144
+			var visual_radius := minf(frame_width, frame_height) * sprite_scale * 0.173
 			resolved_radius = maxf(resolved_radius, visual_radius)
 			resolved_y_offset = monster_sprite.position.y + (frame_height * sprite_scale * 0.03)
 		collision_shape.position = collision_shape_base_position + Vector2(0.0, resolved_y_offset)
@@ -6203,7 +6364,7 @@ func _draw_lunge_hitbox_debug() -> void:
 	_draw_segment_hitbox_debug(
 		segment_start,
 		segment_end,
-		maxf(10.0, _get_boss_charge_corridor_half_width()),
+		maxf(10.0, boss_lunge_hit_half_width * 0.5),
 		maxf(10.0, boss_lunge_tip_radius * 0.75),
 		Color(1.0, 0.2, 0.16, 0.2),
 		Color(1.0, 0.42, 0.32, 0.96)

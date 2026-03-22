@@ -25,18 +25,18 @@ const ABILITY_BAR_LAYOUTS: Dictionary = {
 	ABILITY_LAYOUT_RATFOLK: [
 		{"id": "basic", "icon": "STB", "name": "Stab", "key": "J", "accent": Color(0.98, 0.78, 0.46, 1.0), "uses_cooldown": true},
 		{"id": "ability_1", "icon": "FEAR", "name": "Fear", "key": "K", "accent": Color(0.74, 0.54, 1.0, 1.0), "uses_cooldown": true},
-		{"id": "counter", "icon": "BSTB", "name": "Backstab", "key": "O", "accent": Color(1.0, 0.68, 0.58, 1.0), "uses_cooldown": true},
+		{"id": "counter", "icon": "DASH", "name": "Shadow Dash", "key": "O", "accent": Color(0.72, 0.52, 1.0, 1.0), "uses_cooldown": true},
 		{"id": "ability_2", "icon": "STRK", "name": "Strike", "key": "L", "accent": Color(0.86, 0.72, 1.0, 1.0), "uses_cooldown": true},
 		{"id": "roll", "icon": "RLL", "name": "Roll", "key": "Space", "accent": Color(0.74, 0.9, 1.0, 1.0), "uses_cooldown": true},
 		{"id": "block", "icon": "SURG", "name": "Surge", "key": "I", "accent": Color(0.92, 0.7, 1.0, 1.0), "uses_cooldown": true}
 	],
 	ABILITY_LAYOUT_LIZARDFOLK: [
 		{"id": "basic", "icon": "SHOT", "name": "Shot", "key": "J", "accent": Color(0.82, 0.98, 0.62, 1.0), "uses_cooldown": true},
-		{"id": "ability_1", "icon": "--", "name": "None", "key": "K", "accent": Color(0.42, 0.44, 0.52, 1.0), "uses_cooldown": true},
-		{"id": "counter", "icon": "--", "name": "None", "key": "O", "accent": Color(0.42, 0.44, 0.52, 1.0), "uses_cooldown": true},
+		{"id": "ability_1", "icon": "TRAP", "name": "Freeze Trap", "key": "K", "accent": Color(0.52, 0.82, 1.0, 1.0), "uses_cooldown": true},
+		{"id": "counter", "icon": "DIST", "name": "Distracting Shot", "key": "O", "accent": Color(1.0, 0.88, 0.44, 1.0), "uses_cooldown": true},
 		{"id": "ability_2", "icon": "FLRY", "name": "Flurry", "key": "L", "accent": Color(0.74, 0.98, 0.66, 1.0), "uses_cooldown": true},
 		{"id": "roll", "icon": "RLL", "name": "Roll", "key": "Space", "accent": Color(0.76, 0.92, 1.0, 1.0), "uses_cooldown": true},
-		{"id": "block", "icon": "--", "name": "None", "key": "I", "accent": Color(0.42, 0.44, 0.52, 1.0), "uses_cooldown": true}
+		{"id": "block", "icon": "PRCS", "name": "Precision", "key": "U", "accent": Color(1.0, 0.92, 0.32, 1.0), "uses_cooldown": true}
 	]
 }
 
@@ -49,12 +49,48 @@ const ABILITY_BAR_LAYOUTS: Dictionary = {
 @onready var victory_panel: Panel = $VictoryPanel
 @onready var victory_label: Label = $VictoryPanel/Message
 @onready var status_timer: Timer = $StatusTimer
+const ABILITY_GUIDE_DESCRIPTIONS: Dictionary = {
+	ABILITY_LAYOUT_TANK: {
+		"basic":     "Basic melee strike against the nearest enemy.",
+		"ability_1": "Launch a harpoon to pull an enemy toward you.",
+		"counter":   "Parry the next incoming attack and counter-strike.",
+		"ability_2": "Lunge forward with a powerful rushing strike.",
+		"roll":      "Dodge roll to quickly evade attacks.",
+		"block":     "Hold to raise your shield and reduce incoming damage."
+	},
+	ABILITY_LAYOUT_HEALER: {
+		"basic":     "Fire a magical bolt at the nearest enemy.",
+		"ability_1": "Launch a harpoon to reposition an enemy.",
+		"counter":   "Instantly restore a small amount of health to a nearby ally. Hold Shift to heal yourself instead.",
+		"ability_2": "Unleash a tidal wave that heals nearby allies.",
+		"roll":      "Dodge roll to quickly evade attacks.",
+		"block":     "Channel a powerful surge of healing on a nearby ally. Hold Shift to target yourself instead."
+	},
+	ABILITY_LAYOUT_RATFOLK: {
+		"basic":     "Quick melee strike against the nearest enemy.",
+		"ability_1": "Cause an enemy to flee in terror.",
+		"counter":   "Dash through shadows and strike from behind.",
+		"ability_2": "Unleash a devastating shadow strike.",
+		"roll":      "Dodge roll to quickly evade attacks.",
+		"block":     "Unleash a shadow surge — a burst of shadow energy."
+	},
+	ABILITY_LAYOUT_LIZARDFOLK: {
+		"basic":     "Fire an arrow at the nearest enemy.",
+		"ability_1": "Place a trap that freezes enemies who step on it.",
+		"counter":   "Fire a taunting arrow that draws all enemy aggression.",
+		"ability_2": "Rapid arrow volley hitting multiple targets. Requires full special meter.",
+		"roll":      "Dodge roll to quickly evade attacks.",
+		"block":     "Hold to charge. Release in the green window for a perfect shot with bonus damage. Hold too long and it overcharges."
+	}
+}
 var combat_debug_label: Label = null
 var ability_slot_views: Dictionary = {}
 var ability_slot_ready_flags: Dictionary = {}
 var ready_pulse_time: float = 0.0
 var text_debug_visible: bool = false
 var current_ability_layout: String = ABILITY_LAYOUT_TANK
+var _guide_panel: Control = null
+var _guide_hint_label: Label = null
 
 
 func _ready() -> void:
@@ -74,6 +110,19 @@ func _ready() -> void:
 	add_child(combat_debug_label)
 	_build_ability_bar()
 	set_text_debug_visible(false)
+	_guide_hint_label = Label.new()
+	_guide_hint_label.text = "F1  —  Game guide"
+	_guide_hint_label.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	_guide_hint_label.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_guide_hint_label.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_guide_hint_label.offset_left = -160.0
+	_guide_hint_label.offset_top = -28.0
+	_guide_hint_label.offset_right = -12.0
+	_guide_hint_label.offset_bottom = -8.0
+	_guide_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_guide_hint_label.add_theme_font_size_override("font_size", 16)
+	_guide_hint_label.modulate = Color(1.0, 1.0, 1.0, 1.0)
+	add_child(_guide_hint_label)
 	set_process(true)
 
 
@@ -194,16 +243,22 @@ func _update_ratfolk_control_slots(values: Dictionary) -> void:
 func _update_lizardfolk_control_slots(values: Dictionary) -> void:
 	var basic_left := float(values.get("basic", 0.0))
 	var basic_unlocked := bool(values.get("basic_unlocked", true))
+	var trap_left := float(values.get("ability_1", 0.0))
+	var trap_unlocked := bool(values.get("ability_1_unlocked", false))
+	var distract_left := float(values.get("counter", 0.0))
+	var distract_unlocked := bool(values.get("counter_unlocked", false))
 	var flurry_left := float(values.get("ability_2", 0.0))
 	var flurry_unlocked := bool(values.get("ability_2_unlocked", false))
 	var roll_left := float(values.get("roll", 0.0))
 	var roll_unlocked := bool(values.get("roll_unlocked", false))
+	var precision_left := maxf(0.0, float(values.get("block_cooldown_left", 0.0)))
+	var precision_unlocked := bool(values.get("block_unlocked", false))
 	_update_ability_slot("basic", basic_left, false, basic_unlocked)
-	_update_ability_slot("ability_1", 0.0, false, false)
-	_update_ability_slot("counter", 0.0, false, false)
+	_update_ability_slot("ability_1", trap_left, false, trap_unlocked)
+	_update_ability_slot("counter", distract_left, false, distract_unlocked)
 	_update_ability_slot("ability_2", flurry_left, false, flurry_unlocked)
 	_update_ability_slot("roll", roll_left, false, roll_unlocked)
-	_update_ability_slot("block", 0.0, false, false)
+	_update_ability_slot("block", precision_left, false, precision_unlocked)
 
 
 func update_objective(text: String) -> void:
@@ -749,3 +804,167 @@ func _apply_text_visibility() -> void:
 		combat_debug_label.visible = show_non_ability_text
 	if not show_non_ability_text:
 		victory_panel.visible = false
+
+
+func toggle_guide() -> void:
+	if is_instance_valid(_guide_panel):
+		_close_guide()
+	else:
+		_open_guide()
+
+
+func is_guide_open() -> bool:
+	return is_instance_valid(_guide_panel)
+
+
+func _open_guide() -> void:
+	if is_instance_valid(_guide_panel):
+		return
+	get_tree().paused = true
+	if is_instance_valid(_guide_hint_label):
+		_guide_hint_label.visible = false
+
+	var overlay := ColorRect.new()
+	overlay.color = Color(0.02, 0.04, 0.08, 0.82)
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(overlay)
+	_guide_panel = overlay
+
+	var panel_container := PanelContainer.new()
+	panel_container.set_anchors_preset(Control.PRESET_CENTER)
+	panel_container.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	panel_container.grow_vertical = Control.GROW_DIRECTION_BOTH
+	panel_container.custom_minimum_size = Vector2(560.0, 0.0)
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.07, 0.10, 0.15, 0.98)
+	panel_style.border_color = Color(0.30, 0.44, 0.60, 0.80)
+	panel_style.set_border_width_all(2)
+	panel_style.set_corner_radius_all(8)
+	panel_style.content_margin_left = 28.0
+	panel_style.content_margin_right = 28.0
+	panel_style.content_margin_top = 22.0
+	panel_style.content_margin_bottom = 22.0
+	panel_container.add_theme_stylebox_override("panel", panel_style)
+	overlay.add_child(panel_container)
+
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation", 8)
+	panel_container.add_child(content)
+
+	var title := Label.new()
+	title.text = "How to Play"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 22)
+	title.modulate = Color(0.92, 0.96, 1.0, 1.0)
+	content.add_child(title)
+
+	_add_guide_divider(content)
+
+	var tab_row := Label.new()
+	tab_row.text = "Tab  —  Open shop & equipment screen"
+	tab_row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	tab_row.add_theme_font_size_override("font_size", 13)
+	tab_row.modulate = Color(0.74, 0.88, 1.0, 0.95)
+	content.add_child(tab_row)
+
+	_add_guide_divider(content)
+
+	var char_name := _get_layout_display_name(current_ability_layout)
+	var char_label := Label.new()
+	char_label.text = "%s — Abilities" % char_name
+	char_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	char_label.add_theme_font_size_override("font_size", 15)
+	char_label.modulate = Color(0.82, 0.96, 0.68, 1.0)
+	content.add_child(char_label)
+
+	var spacer := Control.new()
+	spacer.custom_minimum_size = Vector2(0.0, 2.0)
+	content.add_child(spacer)
+
+	var slot_defs := _get_layout_slot_defs(current_ability_layout)
+	var descs: Dictionary = ABILITY_GUIDE_DESCRIPTIONS.get(current_ability_layout, {}) as Dictionary
+	for slot_def_variant in slot_defs:
+		var slot_def := slot_def_variant as Dictionary
+		if slot_def == null:
+			continue
+		var slot_id := String(slot_def.get("id", ""))
+		var slot_name := String(slot_def.get("name", slot_id))
+		var slot_key := String(slot_def.get("key", "?"))
+		var slot_accent: Color = slot_def.get("accent", Color(0.9, 0.9, 0.9, 1.0))
+		var slot_desc := String(descs.get(slot_id, ""))
+
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 12)
+		content.add_child(row)
+
+		var key_bg := PanelContainer.new()
+		var key_style := StyleBoxFlat.new()
+		key_style.bg_color = Color(slot_accent.r * 0.18, slot_accent.g * 0.18, slot_accent.b * 0.22, 0.90)
+		key_style.border_color = Color(slot_accent.r, slot_accent.g, slot_accent.b, 0.72)
+		key_style.set_border_width_all(1)
+		key_style.set_corner_radius_all(4)
+		key_style.content_margin_left = 6.0
+		key_style.content_margin_right = 6.0
+		key_style.content_margin_top = 2.0
+		key_style.content_margin_bottom = 2.0
+		key_bg.add_theme_stylebox_override("panel", key_style)
+		key_bg.custom_minimum_size = Vector2(64.0, 0.0)
+		row.add_child(key_bg)
+
+		var key_label := Label.new()
+		key_label.text = slot_key
+		key_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		key_label.add_theme_font_size_override("font_size", 12)
+		key_label.modulate = slot_accent
+		key_bg.add_child(key_label)
+
+		var name_label := Label.new()
+		name_label.text = slot_name
+		name_label.custom_minimum_size = Vector2(128.0, 0.0)
+		name_label.add_theme_font_size_override("font_size", 12)
+		name_label.modulate = Color(0.94, 0.94, 0.86, 1.0)
+		row.add_child(name_label)
+
+		var desc_label := Label.new()
+		desc_label.text = slot_desc
+		desc_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		desc_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		desc_label.add_theme_font_size_override("font_size", 11)
+		desc_label.modulate = Color(0.68, 0.76, 0.92, 0.88)
+		row.add_child(desc_label)
+
+	_add_guide_divider(content)
+
+	var close_hint := Label.new()
+	close_hint.text = "F1 to close"
+	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	close_hint.add_theme_font_size_override("font_size", 11)
+	close_hint.modulate = Color(0.50, 0.58, 0.72, 0.80)
+	content.add_child(close_hint)
+
+
+func _close_guide() -> void:
+	if is_instance_valid(_guide_panel):
+		_guide_panel.queue_free()
+	_guide_panel = null
+	get_tree().paused = false
+	if is_instance_valid(_guide_hint_label):
+		_guide_hint_label.visible = true
+
+
+func _add_guide_divider(parent: Control) -> void:
+	var div := Label.new()
+	div.text = "─────────────────────────────────────────────"
+	div.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	div.add_theme_font_size_override("font_size", 9)
+	div.modulate = Color(0.28, 0.38, 0.52, 0.72)
+	parent.add_child(div)
+
+
+func _get_layout_display_name(layout_id: String) -> String:
+	match layout_id:
+		ABILITY_LAYOUT_TANK: return "Tank"
+		ABILITY_LAYOUT_HEALER: return "Healer"
+		ABILITY_LAYOUT_RATFOLK: return "Ratfolk"
+		ABILITY_LAYOUT_LIZARDFOLK: return "Lizard Ranger"
+		_: return layout_id.capitalize()
